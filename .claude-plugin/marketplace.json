@@ -1,0 +1,13 @@
+{                                                                                                                                 
+    "name": "Erik Agents",
+    "owner": { "name": "Erik Van Norstrand" },                                                                                      
+    "metadata": { "description": "Plugins for claude code and other internal tools" },
+    "plugins": [                                                                                                                    
+      {           
+        "name": "software-development-team",                                                                                                     
+        "source": "./plugins/software-development-team",
+        "description": "Software Development Team plugin for Claude, providing tools for code generation, code review, and project management.",
+        "version": "1.0.0"
+      }
+    ]                                                                                                                               
+  }  

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.team/
+.superpowers/
+
+# Artifacts from a local in-place server build (server/scripts/ensure-build.sh)
+.build.lock/
+.build-stamp
+.npm-stamp

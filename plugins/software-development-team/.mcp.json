@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "software-development-team": {
+      "type": "stdio",
+      "command": "sh",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/server/launch.sh",
+        "${CLAUDE_PLUGIN_ROOT}/server",
+        "${CLAUDE_PLUGIN_DATA}"
+      ]
+    }
+  }
+}
