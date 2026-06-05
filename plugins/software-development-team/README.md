@@ -2,6 +2,8 @@
 
 A [Claude Code](https://claude.ai/claude-code) plugin that orchestrates a multi-agent coding team. A coordinator dispatches planner, coder, reviewer, researcher, and documentation agents that work autonomously through a structured plan with shared memory, a real-time dashboard, and built-in quality gates.
 
+> **Running in OpenAI Codex CLI?** The same team runs on Codex too — see [`../../codex/README.md`](../../codex/README.md). The Codex port reuses this plugin's `server/` unchanged; the two hosts coexist.
+
 ## Features
 
 - **Multi-agent orchestration** -- coordinator manages a pipeline of planner, coder, reviewer, researcher, and documentation agents

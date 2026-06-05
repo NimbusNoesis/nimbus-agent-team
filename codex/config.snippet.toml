@@ -1,0 +1,21 @@
+# Codex MCP server entry for the software-development-team coding team.
+#
+# `codex/install.sh` writes a fully path-resolved copy of this block into
+# ~/.codex/config.toml. The placeholders below (<...>) are substituted by the
+# installer with absolute paths; if you wire this up by hand instead, replace
+# them yourself:
+#
+#   <SERVER_DIR> -> absolute path to plugins/software-development-team/server
+#   <DATA_DIR>   -> a writable, persistent dir for the self-build
+#                   (the installer uses ~/.codex/data/software-development-team)
+#
+# The server is the SAME host-agnostic MCP server the Claude Code plugin uses.
+# launch.sh builds it on first launch (~30-60s) into <DATA_DIR>, then runs it
+# over stdio. dist/ and node_modules/ are never committed.
+
+[mcp_servers.software-development-team]
+command = "sh"
+args = ["<SERVER_DIR>/launch.sh", "<SERVER_DIR>", "<DATA_DIR>"]
+# First launch compiles the server; raise the startup timeout so Codex doesn't
+# give up before the build finishes. Subsequent launches are instant.
+startup_timeout_sec = 120
