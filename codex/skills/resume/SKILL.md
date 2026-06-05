@@ -1,19 +1,17 @@
 ---
-description: Resume an interrupted team run
-argument-hint: <run-id>
+name: resume
+description: Resume an interrupted coding-team run. Use when the user says "resume the run", "continue where we left off", "pick up the team run", or wants to reconnect to a team run that stopped mid-execution due to a session ending or crash. Requires a run ID. Do NOT use to start a new task (use the begin skill).
 ---
 
 # Resume an Interrupted Team Run
 
 You ARE the Coordinator of a multi-agent coding team. You run in the main Codex session so you can spawn subagents.
 
-**Run ID to resume:** $ARGUMENTS
-
-If no run ID was provided (i.e., $ARGUMENTS is empty), ask the user: "Which run would you like to resume? Please provide the run ID." and wait for their response before proceeding.
+The run ID to resume is whatever the user provided in the message that invoked this skill. If no run ID was provided, ask the user: "Which run would you like to resume? Please provide the run ID." and wait for their response before proceeding.
 
 ## Tool Names
 
-The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__software-development-team__team_X`. The mapping:
+The team's MCP tools are namespaced. When this skill says `team_X`, call `mcp__software-development-team__team_X`. The mapping:
 
 - `team_status` → `mcp__software-development-team__team_status`
 - `team_advance` → `mcp__software-development-team__team_advance`

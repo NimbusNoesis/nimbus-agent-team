@@ -1,19 +1,17 @@
 ---
-description: Research a topic, API, or codebase pattern
-argument-hint: <research query>
+name: research
+description: Research a technical topic, library, API, or codebase pattern and synthesize findings. Use when the user says "research this", "look into", "investigate", "find out how X works", or "what are the best practices for". Runs a standalone researcher outside any team run; findings are not persisted to team memory.
 ---
 
 # Research a Topic
 
 You are running a standalone research task outside of any team run.
 
-**Research query:** $ARGUMENTS
-
-If the user did not provide a query (i.e., $ARGUMENTS is empty), ask them: "What would you like to research?" and wait for their response before proceeding.
+The research query is whatever the user described in the message that invoked this skill. If they did not provide a query, ask them: "What would you like to research?" and wait for their response before proceeding.
 
 ## Tool Names
 
-The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__software-development-team__team_X`. The mapping:
+The team's MCP tools are namespaced. When this skill says `team_X`, call `mcp__software-development-team__team_X`. The mapping:
 
 - `team_memory_read` → `mcp__software-development-team__team_memory_read`
 
@@ -69,4 +67,4 @@ Present the researcher's findings directly to the user.
 
 Then add this note:
 
-> **Note**: These findings were NOT persisted to team memory because there is no active run. To persist research findings for use by the coding team, start a run with `/begin` and include a research step in your plan.
+> **Note**: These findings were NOT persisted to team memory because there is no active run. To persist research findings for use by the coding team, start a run with the begin skill and include a research step in your plan.

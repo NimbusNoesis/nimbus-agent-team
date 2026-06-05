@@ -1,19 +1,17 @@
 ---
-description: Plan a task without starting execution
-argument-hint: <task description>
+name: plan
+description: Produce a structured implementation plan for a task WITHOUT starting execution. Use when the user says "plan this", "scope this out", "break this down into steps", "how would the team approach this", or wants to preview steps, files, dependencies, and acceptance criteria before committing to a full run. Do NOT use when the user wants the work actually implemented (use the begin skill).
 ---
 
 # Plan a Task
 
 You are the Coordinator of a multi-agent coding team, running in plan-only mode. You will produce a structured implementation plan without starting execution.
 
-**Task:** $ARGUMENTS
-
-If the user did not provide a task (i.e., $ARGUMENTS is empty), ask them: "What would you like to plan?" and wait for their response before proceeding.
+The task to plan is whatever the user described in the message that invoked this skill. If they did not describe a task, ask them: "What would you like to plan?" and wait for their response before proceeding.
 
 ## Tool Names
 
-The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__software-development-team__team_X`. The mapping:
+The team's MCP tools are namespaced. When this skill says `team_X`, call `mcp__software-development-team__team_X`. The mapping:
 
 - `team_memory_read` → `mcp__software-development-team__team_memory_read`
 - `team_memory_write` → `mcp__software-development-team__team_memory_write`
@@ -179,6 +177,6 @@ After displaying the plan, say:
 
 > This is a plan-only preview. No work has been started.
 >
-> To execute this plan, run: `/begin <task description>`
+> To execute this plan, run the begin skill (`/begin <task description>` or `$begin`).
 >
 > The coordinator will re-run the planner (or you can paste the steps above) and will ask for your approval before any coding begins.

@@ -67,10 +67,11 @@ When loaded via the plugin system, MCP tool names are prefixed with `plugin_<plu
 
 ### Dual-host: also runs in OpenAI Codex CLI
 
-A parallel Codex distribution lives in the repo-root `codex/` directory (`codex/agents/*.toml`, `codex/prompts/*.md`, `codex/install.sh`). It is **additive** — it reuses this plugin's `server/` unchanged via absolute paths and does not touch the Claude Code plugin. Two host-specific differences matter when editing shared behavior:
+A parallel Codex distribution lives in the repo-root `codex/` directory (`codex/agents/*.toml`, `codex/skills/<name>/SKILL.md`, `codex/install.sh`). It is **additive** — it reuses this plugin's `server/` unchanged via absolute paths and does not touch the Claude Code plugin. Three host-specific differences matter when editing shared behavior:
 
 - **Tool prefix differs per host.** Claude Code (plugin): `mcp__plugin_software-development-team_software-development-team__team_X`. Codex: `mcp__software-development-team__team_X` (server name only — Codex does not add a `plugin_…` prefix). The `codex/` files use the shorter form throughout.
 - **Dispatch model differs per host.** Claude Code dispatches subagents via the built-in Agent tool with `subagent_type`. Codex spawns subagents on the coordinator's request (no Agent tool); the coordinator passes the full per-step context in the spawn request, and the static role lives in the agent TOML.
+- **Entry points differ per host.** Claude Code uses `commands/begin.md` + `skills/*.md` (with `$ARGUMENTS` templating). Codex uses **skills** (`codex/skills/<name>/SKILL.md`, `name` + `description` frontmatter only, no `$ARGUMENTS` — the user's request arrives as context, and the `description` drives `/skills` selection and implicit triggering).
 
 When changing coordinator logic or an agent's instructions, update **both** the `plugins/software-development-team/` source of truth and its `codex/` counterpart so the two hosts stay in sync. The `server/` is shared, so server changes apply to both automatically.
 

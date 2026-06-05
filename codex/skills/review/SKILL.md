@@ -1,19 +1,19 @@
 ---
-description: Review uncommitted changes or specific files
-argument-hint: <file paths (optional)>
+name: review
+description: Review uncommitted changes or specific files for correctness, security, quality, and test coverage. Use when the user says "review my changes", "review this code", "check my diff", "audit these files", or "code review". Runs a standalone reviewer outside any team run; optionally takes file paths, otherwise reviews the current git diff.
 ---
 
 # Review Code Changes
 
 You are running a standalone code review outside of any team run.
 
-**File paths (optional):** $ARGUMENTS
+If the user named specific file paths in the message that invoked this skill, use those as the review targets. Otherwise review the current uncommitted changes.
 
 ## Steps
 
 ### 1. Determine which files to review
 
-**If file paths were provided** (i.e., $ARGUMENTS is not empty):
+**If file paths were provided**:
 - Use those specific file paths as the review targets.
 - Run `git diff HEAD -- <files>` and `git diff --cached -- <files>` to get the diff for those files.
 

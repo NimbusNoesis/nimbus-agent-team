@@ -24,7 +24,7 @@ only the host-specific glue differs. They can be installed side by side.
 │       └── server/                   Host-agnostic MCP server (SQLite + bus + memory + dashboard)
 └── codex/                            The OpenAI Codex CLI distribution
     ├── agents/                       Agent definitions (.toml)
-    ├── prompts/                      Slash-command prompts (begin + skills)
+    ├── skills/                       Skills (begin, status, memory, resume, plan, research, review)
     ├── install.sh                    Wires the above into ~/.codex
     └── config.snippet.toml           MCP server config block
 ```

@@ -6,7 +6,7 @@
 #   2. Wires an [mcp_servers.software-development-team] block into ~/.codex/config.toml
 #      (skips with a warning if a block of that name already exists).
 #   3. Copies the Codex agent definitions (agents/*.toml) into ~/.codex/agents/.
-#   4. Copies the Codex prompts (prompts/*.md) into ~/.codex/prompts/.
+#   4. Copies the Codex skills (skills/<name>/SKILL.md) into ~/.codex/skills/.
 #
 # The MCP server is the SAME host-agnostic server the Claude Code plugin uses;
 # it builds itself on first launch into a writable data dir. Nothing here touches
@@ -23,7 +23,7 @@ SERVER_DIR="$REPO_ROOT/plugins/software-development-team/server"
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 CONFIG_FILE="$CODEX_HOME/config.toml"
 AGENTS_DIR="$CODEX_HOME/agents"
-PROMPTS_DIR="$CODEX_HOME/prompts"
+SKILLS_DIR="$CODEX_HOME/skills"
 DATA_DIR="$CODEX_HOME/data/software-development-team"
 
 SERVER_NAME="software-development-team"
@@ -41,7 +41,7 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-mkdir -p "$CODEX_HOME" "$AGENTS_DIR" "$PROMPTS_DIR" "$DATA_DIR"
+mkdir -p "$CODEX_HOME" "$AGENTS_DIR" "$SKILLS_DIR" "$DATA_DIR"
 
 # --- 1. Wire the MCP server into config.toml -------------------------------
 if [ -f "$CONFIG_FILE" ] && grep -q "^\[mcp_servers\.$SERVER_NAME\]" "$CONFIG_FILE"; then
@@ -67,12 +67,15 @@ for f in "$SCRIPT_DIR"/agents/*.toml; do
   log "  agent: $(basename "$f")"
 done
 
-# --- 3. Install prompts ----------------------------------------------------
-log "Installing prompts into $PROMPTS_DIR"
-for f in "$SCRIPT_DIR"/prompts/*.md; do
-  [ -e "$f" ] || continue
-  cp "$f" "$PROMPTS_DIR/"
-  log "  prompt: /$(basename "$f" .md)"
+# --- 3. Install skills -----------------------------------------------------
+# Each skill is a directory containing SKILL.md (plus optional scripts/assets).
+log "Installing skills into $SKILLS_DIR"
+for d in "$SCRIPT_DIR"/skills/*/; do
+  [ -d "$d" ] || continue
+  name=$(basename "$d")
+  rm -rf "$SKILLS_DIR/$name"
+  cp -R "$d" "$SKILLS_DIR/$name"
+  log "  skill: $name"
 done
 
 # --- Done ------------------------------------------------------------------
@@ -84,16 +87,17 @@ cat <<EOF
   Build:   $DATA_DIR  (created on first launch, ~30-60s)
   Config:  $CONFIG_FILE
   Agents:  $AGENTS_DIR
-  Prompts: $PROMPTS_DIR
+  Skills:  $SKILLS_DIR
 
 Next:
-  1. Start Codex:   codex
-  2. Kick off a run: /begin <task description>
+  1. Start Codex:    codex
+  2. Kick off a run: /begin <task description>   (or type \$begin, or run /skills)
      (the dashboard URL prints at the start of the run)
 
 First launch compiles the server; the startup_timeout_sec = 120 setting gives it
 room. If the MCP client still times out, relaunch — the build will have finished.
 
 To uninstall: remove the [mcp_servers.$SERVER_NAME] block from $CONFIG_FILE and
-delete the copied files from $AGENTS_DIR and $PROMPTS_DIR.
+delete the copied agent files from $AGENTS_DIR and the skill directories
+(begin, status, memory, resume, plan, research, review) from $SKILLS_DIR.
 EOF

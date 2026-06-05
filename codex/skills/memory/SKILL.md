@@ -1,23 +1,23 @@
 ---
-description: Browse and search team memory across all namespaces
-argument-hint: <search query (optional)>
+name: memory
+description: Browse and search the coding team's shared memory across all namespaces. Use when the user asks "what did the team learn", "show me team memory", "what decisions were made", "search memory for X", or wants to see decisions, context, learnings, reviews, or reflections stored by the team across runs. Optionally takes a search query.
 ---
 
 # Browse Team Memory
 
 You are browsing or searching the coding team's shared memory.
 
-**Search query:** $ARGUMENTS
+If the user included a search query in the message that invoked this skill, treat it as the search query (see below). Otherwise list all namespaces.
 
 ## Tool Names
 
-The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__software-development-team__team_X`. The mapping:
+The team's MCP tools are namespaced. When this skill says `team_X`, call `mcp__software-development-team__team_X`. The mapping:
 
 - `team_memory_read` → `mcp__software-development-team__team_memory_read`
 
 ## Steps
 
-### If a search query was provided in $ARGUMENTS
+### If the user provided a search query
 
 Call `team_memory_read` with ONLY the `search` parameter (do NOT pass `namespace` — the handler ignores `search` when `namespace` is set):
 
