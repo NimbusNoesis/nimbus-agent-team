@@ -3,6 +3,7 @@ import { allRuns } from './state/store';
 import { fetchRuns, fetchMemory, selectRun } from './state/api';
 import { connectWebSocket } from './state/websocket';
 import { Header } from './components/header/Header';
+import { RunTabs } from './components/header/RunTabs';
 import { StepsPanel } from './components/steps/StepsPanel';
 import { ActivityPanel } from './components/activity/ActivityPanel';
 import { StatusPanel } from './components/status/StatusPanel';
@@ -35,6 +36,7 @@ export function App() {
   return (
     <>
       <Header />
+      <RunTabs />
       <main id="main">
         <aside id="steps-panel">
           <h3>Plan Steps</h3>

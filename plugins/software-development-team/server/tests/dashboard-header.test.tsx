@@ -19,7 +19,7 @@ import { selectRun } from '../src/dashboard/client/state/api';
 // Lazily import components after mocks are established
 import { Header } from '../src/dashboard/client/components/header/Header';
 import { ProgressBar } from '../src/dashboard/client/components/header/ProgressBar';
-import { RunSelector } from '../src/dashboard/client/components/header/RunSelector';
+import { RunTabs } from '../src/dashboard/client/components/header/RunTabs';
 
 function makeStep(overrides: Partial<StepState> = {}): StepState {
   return {
@@ -171,54 +171,72 @@ describe('ProgressBar', () => {
   });
 });
 
-describe('RunSelector', () => {
+describe('RunTabs', () => {
   it('returns null when there are 0 runs', () => {
     allRuns.value = [];
-    const { container } = render(<RunSelector />);
-    expect(container.querySelector('select')).toBeNull();
+    const { container } = render(<RunTabs />);
+    expect(container.querySelector('.run-tabs')).toBeNull();
   });
 
-  it('returns null when there is only 1 run', () => {
-    allRuns.value = [makeRun()];
-    currentRun.value = allRuns.value[0];
-    const { container } = render(<RunSelector />);
-    expect(container.querySelector('select')).toBeNull();
+  it('renders a single tab when there is only 1 run', () => {
+    const run = makeRun();
+    allRuns.value = [run];
+    currentRun.value = run;
+    const { container } = render(<RunTabs />);
+    expect(container.querySelector('.run-tabs')).toBeTruthy();
+    expect(container.querySelectorAll('.run-tab').length).toBe(1);
   });
 
-  it('renders select with options when multiple runs', () => {
+  it('renders one tab per run when multiple runs', () => {
     const run1 = makeRun({ id: 'run-1', status: 'complete' });
     const run2 = makeRun({ id: 'run-2', status: 'in_progress' });
     allRuns.value = [run1, run2];
     currentRun.value = run1;
-    const { container } = render(<RunSelector />);
-    const select = container.querySelector('select');
-    expect(select).toBeTruthy();
-    const options = container.querySelectorAll('option');
-    expect(options.length).toBe(2);
+    const { container } = render(<RunTabs />);
+    expect(container.querySelectorAll('.run-tab').length).toBe(2);
   });
 
-  it('options show run labels and status', () => {
+  it('marks the current run tab active and exposes status via data-status', () => {
+    const run1 = makeRun({ id: 'run-1', status: 'complete' });
+    const run2 = makeRun({ id: 'run-2', status: 'in_progress' });
+    allRuns.value = [run1, run2];
+    currentRun.value = run2;
+    const { container } = render(<RunTabs />);
+    const tabs = Array.from(container.querySelectorAll('.run-tab'));
+    expect(tabs[0].className).not.toContain('active');
+    expect(tabs[1].className).toContain('active');
+    expect(tabs[1].getAttribute('data-status')).toBe('in_progress');
+  });
+
+  it('shows run number and step progress', () => {
+    const run1 = makeRun({ id: 'run-1', status: 'complete' });
+    allRuns.value = [run1];
+    currentRun.value = run1;
+    const { container } = render(<RunTabs />);
+    // makeRun has 2 steps, 1 complete
+    expect(container.querySelector('.run-tab-num')!.textContent).toBe('#1');
+    expect(container.querySelector('.run-tab-progress')!.textContent).toBe('1/2');
+  });
+
+  it('calls selectRun when an inactive tab is clicked', () => {
     const run1 = makeRun({ id: 'run-1', status: 'complete' });
     const run2 = makeRun({ id: 'run-2', status: 'in_progress' });
     allRuns.value = [run1, run2];
     currentRun.value = run1;
-    const { container } = render(<RunSelector />);
-    const options = Array.from(container.querySelectorAll('option'));
-    // First option: run1 label and status
-    expect(options[0].textContent).toContain('complete');
-    // Second option: run2 label and status
-    expect(options[1].textContent).toContain('in_progress');
-  });
-
-  it('calls selectRun on change', () => {
-    const run1 = makeRun({ id: 'run-1', status: 'complete' });
-    const run2 = makeRun({ id: 'run-2', status: 'in_progress' });
-    allRuns.value = [run1, run2];
-    currentRun.value = run1;
-    const { container } = render(<RunSelector />);
-    const select = container.querySelector('select') as HTMLSelectElement;
-    expect(select).toBeTruthy();
-    fireEvent.change(select, { target: { value: 'run-2' } });
+    const { container } = render(<RunTabs />);
+    const tabs = Array.from(container.querySelectorAll('.run-tab'));
+    fireEvent.click(tabs[1]);
     expect(selectRun).toHaveBeenCalledWith(run2);
+  });
+
+  it('does not call selectRun when the active tab is clicked', () => {
+    const run1 = makeRun({ id: 'run-1', status: 'complete' });
+    const run2 = makeRun({ id: 'run-2', status: 'in_progress' });
+    allRuns.value = [run1, run2];
+    currentRun.value = run1;
+    const { container } = render(<RunTabs />);
+    const tabs = Array.from(container.querySelectorAll('.run-tab'));
+    fireEvent.click(tabs[0]);
+    expect(selectRun).not.toHaveBeenCalled();
   });
 });

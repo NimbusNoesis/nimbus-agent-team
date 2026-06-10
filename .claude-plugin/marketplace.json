@@ -7,7 +7,7 @@
         "name": "software-development-team",                                                                                                     
         "source": "./plugins/software-development-team",
         "description": "Software Development Team plugin for Claude, providing tools for code generation, code review, and project management.",
-        "version": "1.0.0"
+        "version": "1.1.0"
       }
     ]                                                                                                                               
   }  

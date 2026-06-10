@@ -83,7 +83,7 @@ Rules:
 - Target 5-6 steps for most features. Keep each step focused.
 - Do NOT call team_start — this is plan-only mode.
 
-After outputting the plan, write a reflection to memory: team_memory_write(namespace: "reflections", key: "plan-<task-slug>-reflection", value: <what was complex, key decisions, tradeoffs, gotchas>).
+After outputting the plan, write a reflection to memory: team_memory_write(namespace: "reflections", key: "planonly-<task-slug>-reflection", value: <what was complex, key decisions, tradeoffs, gotchas>). Use the `planonly-` prefix and a descriptive task slug: plan-only mode runs outside any team run, so there is no run-ID to scope the key with. This durable key keeps standalone-plan reflections distinct from run-scoped (`<run-prefix>-step-N-reflection`) entries; re-planning the same task intentionally overwrites its prior plan-only reflection.
 ```
 
 Wait for the planner agent to return with the draft JSON plan.

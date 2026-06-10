@@ -22,6 +22,7 @@ A [Claude Code](https://claude.ai/claude-code) plugin that orchestrates a multi-
 
 The dashboard provides real-time awareness of what the team is doing:
 
+- **Run tab bar** for switching between every run — a scrollable row of tabs across the top, each showing the run number, task, live status, and step progress (the active run's tab auto-scrolls into view)
 - **Step list** with expandable detail panels showing acceptance criteria, files, dependencies, blocking reasons, results, and timing
 - **Progress bar** showing completed steps out of total
 - **Agent status cards** for all 6 agents (coordinator, planner, coder, reviewer, researcher, documentation) with live elapsed timers

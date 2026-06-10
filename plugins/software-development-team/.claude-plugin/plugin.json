@@ -1,10 +1,14 @@
 {
   "name": "software-development-team",
   "description": "Multi-agent coding team that orchestrates a coordinator, planner, coder, and reviewer in an autonomous loop with shared memory and real-time dashboard",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": {
-    "name": "Erik Van Norstrand"
+    "name": "Erik Van Norstrand",
+    "email": "ebvanno@gmail.com"
   },
   "repository": "https://github.com/NimbusNoesis/nimbus-agent-team.git",
-  "keywords": ["agents", "orchestration", "team", "multi-agent", "claude", "code generation", "code review", "project management"]
+  "homepage": "https://github.com/NimbusNoesis/nimbus-agent-team#readme",
+  "license": "MIT",
+  "keywords": ["agents", "orchestration", "team", "multi-agent", "claude", "code generation", "code review", "project management"],
+  "hooks": "./hooks/hooks.json"
 }

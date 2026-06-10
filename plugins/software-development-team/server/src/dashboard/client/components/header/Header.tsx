@@ -2,7 +2,6 @@ import { currentRun, allRuns, completedSteps, totalSteps } from '../../state/sto
 import { VALID_STATUSES } from '../../utils/constants';
 import { getRunLabel } from '../../utils/format';
 import { ProgressBar } from './ProgressBar';
-import { RunSelector } from './RunSelector';
 
 export function Header() {
   const run = currentRun.value;
@@ -37,7 +36,6 @@ export function Header() {
       </div>
       <div class="header-right">
         <span>{runInfo}</span>
-        <RunSelector />
       </div>
     </header>
   );
