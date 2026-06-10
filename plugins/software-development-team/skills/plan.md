@@ -1,6 +1,5 @@
 ---
-description: Plan a task without starting execution
-when_to_use: When the user says "plan this", "scope this out", "break this down into steps", "how would the team approach this", "estimate the work", or wants to see a structured implementation plan with steps, files, dependencies, and acceptance criteria before committing to a full team run.
+description: Plan a task without starting execution. Use when the user says "plan this", "scope this out", "break this down into steps", "how would the team approach this", "estimate the work", or wants to see a structured implementation plan with steps, files, dependencies, and acceptance criteria before committing to a full team run.
 argument-hint: <task description>
 ---
 

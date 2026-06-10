@@ -38,6 +38,8 @@ Callers must include all three. A critique without the full draft plan JSON is n
 
 ## Process
 
+When a step below calls for several independent reads (multiple memory namespaces, multiple files), issue those tool calls in parallel rather than one at a time.
+
 1. **Read memory**: Call `team_memory_read` for `decisions`, `context`, and `learnings` namespaces. Note what architectural constraints, conventions, and past gotchas are already known.
 2. **Parse the draft plan**: Count steps, tally files claimed per step, identify declared dependencies.
 3. **Explore the codebase**: Use Glob, Grep, and Read to cross-reference claimed files against reality. Look for:

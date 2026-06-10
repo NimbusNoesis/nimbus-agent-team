@@ -1,6 +1,5 @@
 ---
-description: Resume an interrupted team run
-when_to_use: When the user says "resume the run", "continue where we left off", "pick up the team run", "restart the interrupted run", or wants to reconnect to a coding team run that was interrupted mid-execution due to a session ending or crash.
+description: Resume an interrupted team run. Use when the user says "resume the run", "continue where we left off", "pick up the team run", "restart the interrupted run", or wants to reconnect to a coding team run that was interrupted mid-execution due to a session ending or crash.
 argument-hint: <run-id>
 ---
 
@@ -110,7 +109,7 @@ Call `team_advance(request_revision)`. Dispatch coder again with reviewer feedba
 When re-dispatching a coder after `NEEDS_REVISION`:
 
 1. Include the reviewer's specific feedback (what's wrong, why, how to fix)
-2. **Require reflection**: Tell the coder "Before making changes, explain what went wrong and what specific change will fix it. Then implement."
+2. **Require a diagnosis**: Tell the coder "Before making changes, write a one-line diagnosis of each issue — what went wrong and the fix — then implement."
 3. Include the step's `retryCount` so the coder knows the urgency
 4. If `consecutiveSameError >= 2`, escalate to the user instead of re-dispatching — the coder is stuck in a loop
 
@@ -124,7 +123,7 @@ If a step is stuck in CODING state because the previous coordinator session was 
 
 ## Dispatch Context Checklist
 
-Every Agent dispatch prompt MUST include ALL of these. Subagents have NO inherited context.
+Every Agent dispatch prompt needs all of these — subagents have no inherited context.
 
 1. **Step description** — what to build
 2. **Files to touch** — exact paths from the plan

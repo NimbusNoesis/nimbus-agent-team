@@ -100,7 +100,7 @@ Call `team_advance(request_revision)`. Spawn the coder again with reviewer feedb
 When re-spawning a coder after `NEEDS_REVISION`:
 
 1. Include the reviewer's specific feedback (what's wrong, why, how to fix)
-2. **Require reflection**: Tell the coder "Before making changes, explain what went wrong and what specific change will fix it. Then implement."
+2. **Require a diagnosis**: Tell the coder "Before making changes, write a one-line diagnosis of each issue — what went wrong and the fix — then implement."
 3. Include the step's `retryCount` so the coder knows the urgency
 4. If `consecutiveSameError >= 2`, escalate to the user instead of re-spawning — the coder is stuck in a loop
 
@@ -114,7 +114,7 @@ If a step is stuck in CODING state because the previous coordinator session was 
 
 ## Spawn Context Checklist
 
-Every subagent spawn request MUST include ALL of these. Subagents have NO inherited context.
+Every subagent spawn request needs all of these — subagents have no inherited context.
 
 1. **Step description** — what to build
 2. **Files to touch** — exact paths from the plan

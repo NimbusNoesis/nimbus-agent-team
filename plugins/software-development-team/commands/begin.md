@@ -40,7 +40,7 @@ You have TWO different tool systems. Do not confuse them:
 Assess the task scope:
 
 - **Planning tasks** (new features, refactors, >3 files): Dispatch the **planner** agent for interactive brainstorming. After the planner produces a draft, dispatch the **plan-critic** for an adversarial review pass. Finally dispatch the **planner** agent to generate the final plan, taking into account the adversarial review pass, before presenting the plan to the user.
-- **Coding tasks**: Display the **coder agent** to complete all coding tasks. 
+- **Coding tasks**: Dispatch the **coder agent** to complete all coding tasks.
 - **Research tasks** (investigating APIs, libraries, codebase patterns, or unknowns): Dispatch the **researcher** agent to gather information before coding begins.
 - **Documentation tasks** (writing or updating docs, README, CLAUDE.md, API references): Dispatch the **documentation** agent.
 
@@ -177,7 +177,7 @@ Call `team_advance(request_revision)`. Dispatch coder again with reviewer feedba
 When re-dispatching a coder after `NEEDS_REVISION`:
 
 1. Include the reviewer's specific feedback (what's wrong, why, how to fix)
-2. **Require reflection**: Tell the coder "Before making changes, explain what went wrong and what specific change will fix it. Then implement."
+2. **Require a diagnosis**: Tell the coder "Before making changes, write a one-line diagnosis of each issue — what went wrong and the fix — then implement."
 3. Include the step's `retryCount` so the coder knows the urgency
 4. If `consecutiveSameError >= 2`, escalate to the user instead of re-dispatching — the coder is stuck in a loop
 
@@ -187,7 +187,7 @@ Print the issue. Wait for user guidance. When received, `team_advance(resolve_es
 
 ## Dispatch Context Checklist
 
-Every Agent dispatch prompt MUST include ALL of these. Subagents have NO inherited context.
+Every Agent dispatch prompt needs all of these — subagents have no inherited context.
 
 1. **Step description** — what to build
 2. **Files to touch** — exact paths from the plan
@@ -382,7 +382,7 @@ When an agent's result mentions information that belongs in a namespace it canno
 
 The coordinator MUST relay messages on behalf of agents at every lifecycle point so the dashboard shows activity from all agents, not just the coordinator. Agents can call MCP tools directly (they inherit the MCP connection), but the coordinator relays messages for dashboard observability — agents focus on their work, the coordinator keeps the feed populated.
 
-### When to relay (mandatory at each point)
+### When to relay (at each lifecycle point)
 
 **When dispatching a coder:**
 

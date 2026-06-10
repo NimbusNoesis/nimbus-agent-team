@@ -1,6 +1,5 @@
 ---
-description: Browse and search team memory across all namespaces
-when_to_use: When the user asks "what did the team learn", "show me team memory", "what decisions were made", "search memory for X", or wants to see decisions, context, learnings, reviews, or reflections stored by the coding team across runs.
+description: Browse and search team memory across all namespaces. Use when the user asks "what did the team learn", "show me team memory", "what decisions were made", "search memory for X", or wants to see decisions, context, learnings, reviews, or reflections stored by the coding team across runs.
 argument-hint: <search query (optional)>
 ---
 

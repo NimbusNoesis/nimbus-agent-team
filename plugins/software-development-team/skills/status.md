@@ -1,6 +1,5 @@
 ---
-description: Check the current team run status and progress
-when_to_use: When the user asks "what's the team doing", "how's the run going", "show me progress", "check status", "which steps are done", or wants to see step-by-step progress of a coding team run. Also when investigating stuck, escalated, or failed steps.
+description: Check the current team run status and progress. Use when the user asks "what's the team doing", "how's the run going", "show me progress", "check status", "which steps are done", wants to see step-by-step progress of a coding team run, or is investigating stuck, escalated, or failed steps.
 argument-hint: <run-id (optional)>
 ---
 

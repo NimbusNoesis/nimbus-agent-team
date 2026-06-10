@@ -1,6 +1,5 @@
 ---
-description: Research a topic, API, or codebase pattern
-when_to_use: When the user says "research this", "look into", "investigate", "find out how X works", "what are the best practices for", or wants a dedicated researcher agent to search the web, read documentation, and synthesize findings on a technical topic, library, API, or codebase pattern.
+description: Research a topic, API, or codebase pattern. Use when the user says "research this", "look into", "investigate", "find out how X works", "what are the best practices for", or wants a dedicated researcher agent to search the web, read documentation, and synthesize findings on a technical topic, library, API, or codebase pattern.
 argument-hint: <research query>
 ---
 

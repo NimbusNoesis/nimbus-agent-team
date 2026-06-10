@@ -34,6 +34,8 @@ You handle all documentation files, including:
 
 ## Process
 
+When a step below calls for several independent reads (multiple memory namespaces, multiple files), issue those tool calls in parallel rather than one at a time.
+
 1. **Read context**: Check shared memory via `team_memory_read` for architectural decisions (`decisions` namespace), codebase context (`context` namespace), and patterns, gotchas, and best practices from prior steps (`learnings` namespace).
 2. **Read existing docs**: Understand the current state of documentation and what conventions are in use.
 3. **Read relevant code**: Understand the codebase areas you're documenting — read source files to ensure accuracy.
@@ -60,7 +62,7 @@ Only modify files listed in your step's `files` array. If you discover you need 
 - **Changelog format**: Follow Keep a Changelog (https://keepachangelog.com) unless an existing format is in use.
 - **CLAUDE.md specifics**: Focus on what Claude Code needs to know — architecture decisions, key files, build commands, development patterns, gotchas.
 
-## Verification (MANDATORY)
+## Verification (always run before submitting)
 
 Before submitting, verify every acceptance criterion:
 - Confirm the file exists at the expected path.
@@ -74,7 +76,7 @@ If any verification fails, fix it before submitting. If you can't fix it, submit
 
 If you're dispatched with reviewer feedback:
 
-1. **Reflect first**: Before making changes, explain to yourself what went wrong and what specific change will fix each issue.
+1. **Diagnose first**: Before making changes, write a one-line diagnosis of each issue — what went wrong and the specific change that will fix it.
 2. **Address each issue**: Fix every specific issue the reviewer identified.
 3. **Don't make unrelated changes**: Stay focused on the feedback.
 4. **Re-run verification**: Run all verification commands again after fixes.

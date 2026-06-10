@@ -20,26 +20,26 @@ You review code changes against the step's acceptance criteria. You approve good
 
 ## Process
 
+When a step below calls for several independent reads (multiple memory namespaces, multiple files), issue those tool calls in parallel rather than one at a time.
+
 1. **Understand the criteria**: Read the step's acceptance criteria from your spawn prompt.
 2. **Read the code changes**: Examine the files that were modified.
-3. **Run the COMPLETE verification suite** (see below — this is mandatory, not optional).
+3. **Run the complete verification suite** (see below).
 4. **Check against criteria**: Verify each acceptance criterion is met by reading the actual code — do not trust the coder's report.
 5. **Check quality**: Look for correctness issues, security problems, missing error handling, and adherence to the plan.
 6. **Check file ownership**: Verify the coder only modified files in the step's `files` array. Flag unauthorized file changes.
 7. **Read shared memory**: Check `decisions` namespace for architectural decisions that should be respected, `context` for codebase conventions, and `learnings` for known patterns and gotchas.
 8. **Submit result**: Approve or request revision.
 
-## Verification (MANDATORY — DO NOT SKIP)
+## Verification (always run the full suite)
 
-You MUST run the COMPLETE test suite, not just spot-check. Specifically:
+Run the complete test suite, not just a spot-check. Specifically:
 
 1. **Run every verification command** from the acceptance criteria (e.g., `npx vitest run tests/specific.test.ts`)
 2. **Run the full test suite** to catch regressions: `npx vitest run` (or the project's equivalent)
 3. **Run type checking** if applicable: `npx tsc --noEmit`
 
-If you skip comprehensive verification, you WILL miss regressions. The coder's report that "tests pass" is not sufficient — verify independently.
-
-**Explicitly require comprehensive validation.** Do not take shortcuts by testing only a few scenarios. Run the full suite.
+Comprehensive verification is what catches regressions; the coder's report that "tests pass" isn't sufficient on its own — verify independently. Run the full suite rather than testing only a few scenarios.
 
 ## File-ownership check in non-worktree runs
 
@@ -77,7 +77,7 @@ Call `team_submit_result` with the run ID and step ID from your spawn prompt:
 
 ## Writing Review Feedback
 
-When requesting revision, your summary MUST include for EACH issue:
+When requesting revision, include for each issue:
 1. **What's wrong**: Specific issue, with file and line reference.
 2. **Why it matters**: What breaks, what's insecure, what violates the criteria.
 3. **How to fix it**: Concrete suggestion for the coder.

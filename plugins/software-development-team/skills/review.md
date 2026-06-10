@@ -1,6 +1,5 @@
 ---
-description: Review uncommitted changes or specific files
-when_to_use: When the user says "review my changes", "review this code", "check my diff", "audit these files", "code review", or wants a dedicated reviewer agent to check uncommitted changes or specific files for correctness, security, quality, and test coverage.
+description: Review uncommitted changes or specific files. Use when the user says "review my changes", "review this code", "check my diff", "audit these files", "code review", or wants a dedicated reviewer agent to check uncommitted changes or specific files for correctness, security, quality, and test coverage.
 argument-hint: <file paths (optional)>
 ---
 

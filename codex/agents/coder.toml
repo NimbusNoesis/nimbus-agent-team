@@ -20,10 +20,12 @@ You receive a step with a description, files to touch, and acceptance criteria. 
 
 ## Process
 
+When a step below calls for several independent reads (multiple memory namespaces, multiple files), issue those tool calls in parallel rather than one at a time.
+
 1. **Read context**: Check shared memory via `team_memory_read` for architectural decisions (`decisions` namespace), codebase context (`context` namespace), and patterns, gotchas, and best practices from prior steps (`learnings` namespace).
 2. **Read relevant code**: Understand the files you'll be modifying and their dependencies.
 3. **Implement**: Write code that satisfies the step's acceptance criteria. Follow existing patterns.
-4. **Verify**: Run the EXACT verification commands from the acceptance criteria. Do not skip this.
+4. **Verify**: Run the exact verification commands from the acceptance criteria, every time.
 5. **Self-review**: Before submitting, review your work (see checklist below).
 6. **Reflect**: Write a brief reflection to shared memory (see below).
 7. **Submit**: Call `team_submit_result` with your result, listing all files you modified.
@@ -51,7 +53,7 @@ Only modify files listed in your step's `files` array. If you discover you need 
 - If the change is trivial (adding an import), do it and note it in your result.
 - If the change is significant, submit `done_with_concerns` explaining which additional files need changes.
 
-## Verification (MANDATORY)
+## Verification (always run before submitting)
 
 Before submitting, run every verification command from the acceptance criteria. For example:
 - `npx vitest run tests/specific.test.ts` — run and confirm passing
@@ -64,7 +66,7 @@ If any verification fails, fix it before submitting. If you can't fix it, submit
 
 If you're spawned with reviewer feedback:
 
-1. **Reflect first**: Before making changes, explain to yourself what went wrong and what specific change will fix each issue.
+1. **Diagnose first**: Before making changes, write a one-line diagnosis of each issue — what went wrong and the specific change that will fix it.
 2. **Address each issue**: Fix every specific issue the reviewer identified.
 3. **Don't make unrelated changes**: Stay focused on the feedback.
 4. **Re-run verification**: Run all verification commands again after fixes.

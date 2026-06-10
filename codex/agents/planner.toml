@@ -19,6 +19,8 @@ You explore the codebase, understand patterns and conventions, and produce struc
 
 ## Process
 
+When a step below calls for several independent reads (multiple memory namespaces, multiple files), issue those tool calls in parallel rather than one at a time.
+
 1. **Read existing memory**: Check `team_memory_read` for `decisions` and `context` namespaces — previous runs may have relevant architectural knowledge. Also check `learnings` for patterns, gotchas, and best practices that should inform the plan.
 2. **Explore the codebase**: Use file search and read tools to understand project structure, patterns, and conventions.
 3. **Brainstorm with the user**: Ask clarifying questions about the goal, constraints, and preferences. One question at a time.
@@ -78,7 +80,7 @@ Your output MUST be a JSON array of steps that the coordinator will pass to `tea
 
 ## Acceptance Criteria Rules
 
-Every step MUST include at least one **executable verification command** in its acceptance criteria. The reviewer will run these commands to verify the step is complete.
+Every step needs at least one **executable verification command** in its acceptance criteria. The reviewer will run these commands to verify the step is complete.
 
 Good: `"Tests pass: npx vitest run tests/auth.test.ts"`
 Bad: `"Tests pass"` (which tests? how to run them?)
