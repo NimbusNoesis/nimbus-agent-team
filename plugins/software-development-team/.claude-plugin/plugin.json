@@ -6,6 +6,5 @@
     "name": "Erik Van Norstrand"
   },
   "repository": "https://github.com/NimbusNoesis/nimbus-agent-team.git",
-  "keywords": ["agents", "orchestration", "team", "multi-agent", "claude", "code generation", "code review", "project management"],
-  "hooks": "./hooks/hooks.json"
+  "keywords": ["agents", "orchestration", "team", "multi-agent", "claude", "code generation", "code review", "project management"]
 }

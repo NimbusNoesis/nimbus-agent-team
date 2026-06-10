@@ -1,5 +1,5 @@
 {                                                                                                                                 
-    "name": "Erik Agents",
+    "name": "Erik-Agents",
     "owner": { "name": "Erik Van Norstrand" },                                                                                      
     "metadata": { "description": "Plugins for claude code and other internal tools" },
     "plugins": [                                                                                                                    
