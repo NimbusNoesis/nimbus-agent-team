@@ -3,9 +3,9 @@
 
 // --- Step States ---
 
-export type StepStatus = 'pending' | 'coding' | 'reviewing' | 'complete' | 'escalated';
+type StepStatus = 'pending' | 'coding' | 'reviewing' | 'complete' | 'escalated';
 
-export type RunStatus = 'ready' | 'in_progress' | 'escalated' | 'complete';
+type RunStatus = 'ready' | 'in_progress' | 'escalated' | 'complete';
 
 export interface PlanStep {
   id: number;

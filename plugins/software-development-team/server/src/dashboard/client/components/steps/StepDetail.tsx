@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'preact/hooks';
 import { currentRun } from '../../state/store';
 import type { StepState } from '../../state/store';
+import { WIP_LIMIT } from '../../../../constants';
 
 interface Props { stepState: StepState; }
 
@@ -30,7 +31,7 @@ export function StepDetail({ stepState: s }: Props) {
       });
     }
     const wipCount = run.steps.filter(ds => ds.status === 'coding' || ds.status === 'reviewing').length;
-    if (wipCount >= 2) blockingReasons.push('WIP limit reached (max 2 concurrent steps)');
+    if (wipCount >= WIP_LIMIT) blockingReasons.push(`WIP limit reached (max ${WIP_LIMIT} concurrent steps)`);
   }
 
   // Compute file conflicts for active steps

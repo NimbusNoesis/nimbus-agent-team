@@ -1,7 +1,7 @@
 import { signal, computed } from '@preact/signals';
 
 // TypeScript types (inline — these mirror server/src/types.ts but for the client)
-export interface PlanStep {
+interface PlanStep {
   id: number;
   description: string;
   files: string[];
@@ -9,7 +9,7 @@ export interface PlanStep {
   dependsOn: number[];
 }
 
-export interface StepResult {
+interface StepResult {
   status: 'done' | 'done_with_concerns' | 'needs_revision' | 'blocked';
   summary: string;
   details?: string;

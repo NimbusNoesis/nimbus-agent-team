@@ -8,7 +8,7 @@ A Claude Code plugin that orchestrates a multi-agent coding team (coordinator, p
 
 - **MCP Server** (`server/src/index.ts`) — entry point, registers tools, starts dashboard, manages persistence
 - **Database** (`server/src/db/database.ts`) — in-memory SQLite database via sql.js (pure JS/WASM). Single backing store for runs, messages, and memory entries. Pure storage — no EventEmitter.
-- **State Machine** (`server/src/state/machine.ts`) — manages step lifecycle: `pending` -> `coding` -> `reviewing` -> `complete` / `escalated`. Enforces WIP limits (max 2 concurrent), dependency ordering, file conflict detection, stuck detection. Backed by Database.
+- **State Machine** (`server/src/state/machine.ts`) — manages step lifecycle: `pending` -> `coding` -> `reviewing` -> `complete` / `escalated`. Enforces WIP limits (`WIP_LIMIT` in `server/src/constants.ts`, currently 8), dependency ordering, file conflict detection, stuck detection. Backed by Database.
 - **Message Bus** (`server/src/bus/message-bus.ts`) — append-only message log with EventEmitter, 10K cap per run. Backed by Database.
 - **Memory Store** (`server/src/memory/store.ts`) — key-value store in 5 namespaces (decisions, context, learnings, reviews, reflections). Extends EventEmitter, emits `entry_change` on writes. Backed by Database.
 - **Tool Registry** (`server/src/tools/registry.ts`) — dispatches MCP tool calls to handlers
@@ -41,8 +41,9 @@ cd server
 npm install          # install dependencies
 npx tsc --noEmit     # type check
 npx tsup             # build (ESM output to dist/)
-npx vitest run       # run tests (306 tests across 17 files)
+npx vitest run       # run tests (309 tests across 17 files)
 npx vitest           # watch mode
+npm run knip         # find unused files, exports, and dependencies
 ```
 
 The commands above are for local development. When installed as a plugin, the server **builds itself on launch** — see "Self-building MCP server" below.

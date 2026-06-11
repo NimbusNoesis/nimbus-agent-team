@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import type { PlanStep, RunState, StepState, StepResult } from '../types.js';
 import { logger } from '../logger.js';
 import { Database } from '../db/database.js';
+import { WIP_LIMIT } from '../constants.js';
 
 const MAX_RETRIES = 3;
 
@@ -108,8 +109,8 @@ export class StateMachine extends EventEmitter {
     const activeSteps = run.steps.filter(
       (s) => s.step.id !== stepId && (s.status === 'coding' || s.status === 'reviewing')
     );
-    if (activeSteps.length >= 2) {
-      reasons.push(`WIP limit reached (max 2 concurrent steps)`);
+    if (activeSteps.length >= WIP_LIMIT) {
+      reasons.push(`WIP limit reached (max ${WIP_LIMIT} concurrent steps)`);
     }
 
     // Check file conflicts
@@ -248,7 +249,7 @@ export class StateMachine extends EventEmitter {
     const activeSteps = run.steps.filter(
       (s) => s.step.id !== stepId && (s.status === 'coding' || s.status === 'reviewing')
     );
-    if (activeSteps.length >= 2) {
+    if (activeSteps.length >= WIP_LIMIT) {
       throw new Error(
         `WIP limit reached: ${activeSteps.length} steps already active (${activeSteps.map((s) => `step ${s.step.id}: ${s.status}`).join(', ')}). Wait for a step to complete before starting another.`
       );

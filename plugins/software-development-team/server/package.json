@@ -7,7 +7,8 @@
     "build": "tsup",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "knip": "knip"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
@@ -23,7 +24,9 @@
     "@types/node": "^22.0.0",
     "@types/sql.js": "^1.4.11",
     "@types/ws": "^8.5.0",
+    "esbuild": "^0.28.0",
     "jsdom": "^26.0.0",
+    "knip": "^6.16.1",
     "preact": "^10.26.4",
     "tsup": "^8.0.0",
     "tsx": "^4.0.0",

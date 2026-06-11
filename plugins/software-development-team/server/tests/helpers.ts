@@ -3,16 +3,7 @@ import { StateMachine } from '../src/state/machine.js';
 import { MessageBus } from '../src/bus/message-bus.js';
 import { MemoryStore } from '../src/memory/store.js';
 import { ToolRegistry } from '../src/tools/registry.js';
-import type { PlanStep, RunState, Message, MemoryEntry } from '../src/types.js';
-
-export const makeStep = (id: number, overrides: Partial<PlanStep> = {}): PlanStep => ({
-  id,
-  description: `Step ${id}`,
-  files: [`file${id}.ts`],
-  acceptanceCriteria: [`criterion ${id}`],
-  dependsOn: [],
-  ...overrides,
-});
+import type { RunState, Message, MemoryEntry } from '../src/types.js';
 
 export const makeRun = (id: string, overrides: Partial<RunState> = {}): RunState => ({
   id,

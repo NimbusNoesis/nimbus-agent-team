@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { StateMachine } from '../src/state/machine.js';
 import { Database } from '../src/db/database.js';
+import { WIP_LIMIT } from '../src/constants.js';
 import type { PlanStep, RunState, StepState } from '../src/types.js';
 
 const makeStep = (id: number, dependsOn: number[] = [], files?: string[]): PlanStep => ({
@@ -194,26 +195,28 @@ describe('StateMachine', () => {
   });
 
   describe('WIP limits', () => {
-    it('enforces maximum 2 active steps', () => {
-      const run = sm.createRun([makeStep(1), makeStep(2), makeStep(3)]);
-      sm.startStep(run.id, 1, 'coder');
-      sm.submitResult(run.id, 1, { status: 'done', summary: 'done' });
-      // Step 1 is reviewing, step 2 starts coding — 2 active
-      sm.startStep(run.id, 2, 'coder');
-      // Step 3 cannot start — WIP limit reached
-      expect(() => sm.startStep(run.id, 3, 'coder')).toThrow('WIP limit');
+    it(`enforces maximum ${WIP_LIMIT} active steps`, () => {
+      const steps = Array.from({ length: WIP_LIMIT + 1 }, (_, i) => makeStep(i + 1));
+      const run = sm.createRun(steps);
+      for (let id = 1; id <= WIP_LIMIT; id++) {
+        sm.startStep(run.id, id, 'coder');
+      }
+      // The next step cannot start — WIP limit reached
+      expect(() => sm.startStep(run.id, WIP_LIMIT + 1, 'coder')).toThrow('WIP limit');
     });
 
     it('allows starting a new step after one completes', () => {
-      const run = sm.createRun([makeStep(1), makeStep(2), makeStep(3)]);
-      sm.startStep(run.id, 1, 'coder');
-      sm.submitResult(run.id, 1, { status: 'done', summary: 'done' });
-      sm.startStep(run.id, 2, 'coder');
+      const steps = Array.from({ length: WIP_LIMIT + 1 }, (_, i) => makeStep(i + 1));
+      const run = sm.createRun(steps);
+      for (let id = 1; id <= WIP_LIMIT; id++) {
+        sm.startStep(run.id, id, 'coder');
+      }
       // Complete step 1, freeing a WIP slot
+      sm.submitResult(run.id, 1, { status: 'done', summary: 'done' });
       sm.advanceStep(run.id, 1);
-      // Now step 3 can start
-      sm.startStep(run.id, 3, 'coder');
-      expect(sm.getRun(run.id)!.steps[2].status).toBe('coding');
+      // Now the next step can start
+      sm.startStep(run.id, WIP_LIMIT + 1, 'coder');
+      expect(sm.getRun(run.id)!.steps[WIP_LIMIT].status).toBe('coding');
     });
   });
 
@@ -344,13 +347,13 @@ describe('StateMachine', () => {
       expect(reasons[0]).toContain('Waiting on step 1');
     });
 
-    it('returns WIP limit reason when 2 steps are active', () => {
-      const run = sm.createRun([makeStep(1), makeStep(2), makeStep(3)]);
-      sm.startStep(run.id, 1, 'coder');
-      sm.submitResult(run.id, 1, { status: 'done', summary: 'done' });
-      sm.startStep(run.id, 2, 'coder');
-      // 1 reviewing + 2 coding = 2 active
-      const reasons = sm.getBlockingReasons(run.id, 3);
+    it(`returns WIP limit reason when ${WIP_LIMIT} steps are active`, () => {
+      const steps = Array.from({ length: WIP_LIMIT + 1 }, (_, i) => makeStep(i + 1));
+      const run = sm.createRun(steps);
+      for (let id = 1; id <= WIP_LIMIT; id++) {
+        sm.startStep(run.id, id, 'coder');
+      }
+      const reasons = sm.getBlockingReasons(run.id, WIP_LIMIT + 1);
       expect(reasons.some(r => r.includes('WIP limit'))).toBe(true);
     });
 

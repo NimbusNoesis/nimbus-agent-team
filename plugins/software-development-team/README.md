@@ -13,7 +13,7 @@ A [Claude Code](https://claude.ai/claude-code) plugin that orchestrates a multi-
 - **Shared memory** -- agents share decisions, context, learnings, and reflections via a persistent key-value store
 - **Message bus** -- typed messages (info, review, escalation, guidance, result) between agents and the user
 - **Real-time dashboard** -- web UI showing live progress, step details, agent activity, and shared memory
-- **Pipeline parallelism** -- independent steps can run concurrently (one coding, one reviewing)
+- **Pipeline parallelism** -- independent steps can run concurrently (up to 8 active at once)
 - **Stuck detection** -- automatic escalation when agents repeat the same error or exhaust retries
 - **File conflict detection** -- prevents two steps from editing the same file concurrently
 - **Git worktree isolation** -- optional per-step git worktrees for safe parallel work and clean merge-back
@@ -174,6 +174,9 @@ npx vitest run
 
 # Watch mode
 npx vitest
+
+# Find unused files, exports, and dependencies
+npm run knip
 ```
 
 ## Project Structure

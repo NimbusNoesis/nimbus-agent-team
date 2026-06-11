@@ -201,7 +201,7 @@ If all three are true, spawn the coder for the next step in parallel.
 **Safety rules:**
 
 - If step N's review returns `needs_revision`, pause step N+1 until N is resolved.
-- At most 2 steps active simultaneously (one CODING, one REVIEWING).
+- At most 8 steps active simultaneously (the server enforces this WIP limit).
 - Never let two steps edit the same file concurrently.
 
 ## Stuck Detection
