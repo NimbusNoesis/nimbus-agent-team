@@ -41,8 +41,57 @@ Assess the task scope:
 
 - **Planning tasks** (new features, refactors, >3 files): Dispatch the **planner** agent for interactive brainstorming. After the planner produces a draft, dispatch the **plan-critic** for an adversarial review pass. Finally dispatch the **planner** agent to generate the final plan, taking into account the adversarial review pass, before presenting the plan to the user.
 - **Coding tasks**: Dispatch the **coder agent** to complete all coding tasks.
+- **Review tasks** (auditing existing code, "code review", "deep code review", security review, "review my changes" — any request to evaluate code that already exists rather than write new code): Dispatch the **reviewer** agent directly. This is a read-only task that produces findings, not code edits — see "Standalone Review Task" below. Do NOT route review requests to the coder or to a generic/general-purpose agent.
 - **Research tasks** (investigating APIs, libraries, codebase patterns, or unknowns): Dispatch the **researcher** agent to gather information before coding begins.
 - **Documentation tasks** (writing or updating docs, README, CLAUDE.md, API references): Dispatch the **documentation** agent.
+
+## Standalone Review Task
+
+When the user's task is to **review existing code** (not build something), the reviewer is the primary agent — not a downstream step in a coder → reviewer cycle. Do not create a coding step and do not dispatch a generic agent.
+
+1. Determine the review targets:
+   - If the user named specific files, use those.
+   - Otherwise, gather the working diff with `git diff` and `git diff --cached`. If neither returns output, ask the user which files or commit range to review.
+2. Create a single read-only step describing the review (e.g., "Deep code review of `<targets>`"), then call `team_start` with it (no plan-approval gate needed for a one-step read-only review — just confirm scope with the user).
+3. Mark the step coding and dispatch the reviewer using the **Agent tool** with an explicit `subagent_type`:
+
+   ```text
+   team_advance(runId, stepId, action: "start_coding", agent: "reviewer")
+
+   Agent(
+     subagent_type: "software-development-team:reviewer",
+     description: "Deep code review of <targets>",
+     prompt: """
+   You are being dispatched for a STANDALONE code review (no coder result to verify — review the code as it currently exists).
+
+   ## Run context
+   - runId: {runId}
+   - stepId: {stepId}
+   - Run ID prefix (for reflection/review memory keys): {runId-short}
+   - Tool name mapping: team_X means mcp__plugin_software-development-team_software-development-team__team_X
+
+   ## Review targets
+   {file list or diff scope}
+
+   ## Diff (if applicable)
+   {paste git diff output, or "Diff too large — read the files directly."}
+
+   ## Instructions
+   Review for correctness, security, code quality, error handling, and test coverage.
+   Run the project's verification suite (tests, type check, lint) to catch regressions.
+   This is a read-only review: do NOT submit a code result via team_submit_result. Return your findings as structured text (overall verdict, issues with file/line + why + fix, positives, verification results, optional suggestions).
+   You MAY write a review reflection to the reflections namespace and review notes to the reviews namespace.
+   """
+   )
+   ```
+
+4. Because this step has no code result to approve, close it after the reviewer returns with `mark_reviewed` (see "Read-only review step" in The Loop):
+
+   ```text
+   team_advance(runId, stepId, action: "mark_reviewed", summary: "<one-line summary of the review verdict>")
+   ```
+
+5. Present the reviewer's findings to the user.
 
 ## Cost Awareness
 
