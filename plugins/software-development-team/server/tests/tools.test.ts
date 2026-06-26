@@ -93,6 +93,20 @@ describe('ToolRegistry', () => {
     expect(result.stepStatus).toBe('coding');
   });
 
+  it('team_advance with mark_reviewed closes a read-only review step', async () => {
+    const { runId } = await registry.handle('team_start', {
+      steps: [{ id: 1, description: 'S1', files: [], acceptanceCriteria: [], dependsOn: [] }],
+    });
+    await registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'reviewer' });
+    const result = await registry.handle('team_advance', {
+      runId, stepId: 1, action: 'mark_reviewed', summary: 'Findings delivered; no code changes.',
+    });
+    expect(result.stepStatus).toBe('complete');
+    const status = await registry.handle('team_status', { runId });
+    expect(status.steps[0].status).toBe('complete');
+    expect(status.steps[0].result.summary).toBe('Findings delivered; no code changes.');
+  });
+
   it('team_memory_delete removes an entry', async () => {
     await registry.handle('team_memory_write', {
       key: 'to-delete', namespace: 'decisions', value: 'temporary',

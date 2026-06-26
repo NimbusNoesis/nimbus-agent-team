@@ -232,6 +232,48 @@ describe('StateMachine', () => {
     });
   });
 
+  describe('markReviewed', () => {
+    it('closes a coding step directly to complete with a synthetic result', () => {
+      const run = sm.createRun([makeStep(1)]);
+      sm.startStep(run.id, 1, 'reviewer');
+      sm.markReviewed(run.id, 1);
+      const updated = sm.getRun(run.id)!;
+      expect(updated.steps[0].status).toBe('complete');
+      expect(updated.steps[0].result?.status).toBe('done');
+      expect(updated.steps[0].result?.summary).toMatch(/review/i);
+      expect(updated.steps[0].completedAt).toBeDefined();
+      expect(updated.steps[0].claimedFiles).toEqual([]);
+      expect(updated.status).toBe('complete');
+    });
+
+    it('uses a provided summary when given', () => {
+      const run = sm.createRun([makeStep(1)]);
+      sm.startStep(run.id, 1, 'reviewer');
+      sm.markReviewed(run.id, 1, 'Security findings delivered.');
+      expect(sm.getRun(run.id)!.steps[0].result?.summary).toBe('Security findings delivered.');
+    });
+
+    it('closes a reviewing step as well', () => {
+      const run = sm.createRun([makeStep(1)]);
+      sm.startStep(run.id, 1, 'coder');
+      sm.submitResult(run.id, 1, { status: 'done', summary: 'implemented' });
+      sm.markReviewed(run.id, 1, 'reviewed');
+      expect(sm.getRun(run.id)!.steps[0].status).toBe('complete');
+    });
+
+    it('rejects marking a pending step as reviewed', () => {
+      const run = sm.createRun([makeStep(1)]);
+      expect(() => sm.markReviewed(run.id, 1)).toThrow("cannot be marked reviewed from status 'pending'");
+    });
+
+    it('rejects marking a complete step as reviewed', () => {
+      const run = sm.createRun([makeStep(1)]);
+      sm.startStep(run.id, 1, 'reviewer');
+      sm.markReviewed(run.id, 1);
+      expect(() => sm.markReviewed(run.id, 1)).toThrow("cannot be marked reviewed from status 'complete'");
+    });
+  });
+
   describe('updateRunStatus', () => {
     it('returns to ready when all steps are pending', () => {
       const run = sm.createRun([makeStep(1), makeStep(2)]);
