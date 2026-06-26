@@ -1,7 +1,7 @@
 {
   "name": "software-development-team",
   "description": "Multi-agent coding team that orchestrates a coordinator, planner, coder, and reviewer in an autonomous loop with shared memory and real-time dashboard",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": {
     "name": "Erik Van Norstrand",
     "email": "ebvanno@gmail.com"

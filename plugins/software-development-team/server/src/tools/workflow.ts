@@ -23,8 +23,9 @@ const TeamStatusSchema = z.object({
 const TeamAdvanceSchema = z.object({
   runId: z.string().min(1),
   stepId: positiveInt,
-  action: z.enum(['start_coding', 'approve', 'request_revision', 'resolve_escalation']),
+  action: z.enum(['start_coding', 'approve', 'request_revision', 'resolve_escalation', 'mark_reviewed']),
   agent: z.string().min(1).optional(),
+  summary: z.string().min(1).optional(),
 });
 
 export function handleTeamStart(sm: StateMachine, args: unknown) {
@@ -78,6 +79,9 @@ export function handleTeamAdvance(sm: StateMachine, args: unknown) {
       break;
     case 'resolve_escalation':
       sm.resolveEscalation(parsed.runId, parsed.stepId);
+      break;
+    case 'mark_reviewed':
+      sm.markReviewed(parsed.runId, parsed.stepId, parsed.summary);
       break;
   }
   const updatedRun = sm.getRun(parsed.runId);

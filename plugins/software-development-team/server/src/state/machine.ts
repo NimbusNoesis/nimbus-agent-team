@@ -190,6 +190,29 @@ export class StateMachine extends EventEmitter {
     this.updateRunStatus(run);
   }
 
+  markReviewed(runId: string, stepId: number, summary?: string): void {
+    const run = this.requireRun(runId);
+    const stepState = this.requireStep(run, stepId);
+
+    if (stepState.status !== 'coding' && stepState.status !== 'reviewing') {
+      throw new Error(`Step ${stepId} cannot be marked reviewed from status '${stepState.status}'`);
+    }
+
+    // Read-only review steps never submit a coder result. Record a synthetic
+    // 'done' result so the dashboard reflects the outcome, then close the step.
+    stepState.result = {
+      status: 'done',
+      summary: summary ?? 'Read-only review completed — no code changes to submit.',
+    };
+    stepState.status = 'complete';
+    stepState.claimedFiles = [];
+    stepState.completedAt = new Date().toISOString();
+    stepState.consecutiveSameError = 0;
+    stepState.lastErrorSignature = undefined;
+    logger.info('StateMachine', `Step ${stepId} MARKED REVIEWED → complete`, { runId });
+    this.updateRunStatus(run);
+  }
+
   requestRevision(runId: string, stepId: number): void {
     const run = this.requireRun(runId);
     const stepState = this.requireStep(run, stepId);

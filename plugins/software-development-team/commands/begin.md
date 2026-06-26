@@ -185,6 +185,16 @@ When re-dispatching a coder after `NEEDS_REVISION`:
 
 Print the issue. Wait for user guidance. When received, `team_advance(resolve_escalation)` and re-dispatch coder.
 
+### Read-only review step (no code result) → mark_reviewed
+
+Some steps are dispatched to **read-only agents** that only deliver findings and never call `team_submit_result` (e.g., a security/code review or an investigation that produces no edits). Such a step stays in `coding` forever and shows as "stuck" on the dashboard, even though its work is done. After the read-only Agent returns with its findings, close the step with:
+
+```
+team_advance(runId, stepId, action: "mark_reviewed", summary: "<one-line summary of what the review delivered>")
+```
+
+`mark_reviewed` moves a `coding` (or `reviewing`) step straight to `complete` with a synthetic `done` result — no fabricated coder submission needed. Use it **only** for steps with no code changes to verify; steps that produce edits must still go through the normal coder → reviewer → `approve` flow.
+
 ## Dispatch Context Checklist
 
 Every Agent dispatch prompt needs all of these — subagents have no inherited context.

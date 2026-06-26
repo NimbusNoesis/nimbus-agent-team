@@ -68,12 +68,13 @@ async function main() {
 
   server.tool(
     'team_advance',
-    'Advance a step: start_coding, approve, request_revision, or resolve_escalation.',
+    'Advance a step: start_coding, approve, request_revision, resolve_escalation, or mark_reviewed (close a read-only review step that has no code result to submit). Pass an optional summary with mark_reviewed.',
     {
       runId: z.string().min(1),
       stepId: positiveInt,
-      action: z.enum(['start_coding', 'approve', 'request_revision', 'resolve_escalation']),
+      action: z.enum(['start_coding', 'approve', 'request_revision', 'resolve_escalation', 'mark_reviewed']),
       agent: z.string().optional(),
+      summary: z.string().optional(),
     },
     async (args) => {
       const result = await registry.handle('team_advance', args);
