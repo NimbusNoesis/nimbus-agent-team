@@ -222,7 +222,7 @@ If all three are true, dispatch the coder for the next step in parallel.
 **Safety rules:**
 
 - If step N's review returns `needs_revision`, pause step N+1 until N is resolved.
-- At most 8 steps active simultaneously (the server enforces this WIP limit).
+- There is no hard cap on concurrent steps — concurrency is bounded only by dependency order, file conflicts, and your token budget. Each active step roughly doubles token consumption, so scale concurrency to the work, not to a fixed number.
 - Never let two steps edit the same file concurrently.
 
 ## Stuck Detection

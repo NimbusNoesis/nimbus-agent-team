@@ -9,7 +9,6 @@ import type { RunState, StepState } from '../src/dashboard/client/state/store';
 import { StepsPanel } from '../src/dashboard/client/components/steps/StepsPanel';
 import { StepCard } from '../src/dashboard/client/components/steps/StepCard';
 import { StepDetail } from '../src/dashboard/client/components/steps/StepDetail';
-import { WIP_LIMIT } from '../src/constants';
 
 function makeStep(overrides: Partial<StepState> & { step?: Partial<StepState['step']> } = {}): StepState {
   const { step: stepOverrides, ...rest } = overrides;
@@ -195,15 +194,6 @@ describe('StepDetail', () => {
     expect(screen.getByText(/Waiting on step 1/)).toBeTruthy();
   });
 
-  it('shows WIP limit blocking reason when WIP_LIMIT+ steps active', () => {
-    const active = Array.from({ length: WIP_LIMIT }, (_, i) =>
-      makeStep({ step: { id: i + 1, description: `Active ${i + 1}`, files: [], acceptanceCriteria: [], dependsOn: [] }, status: i === 0 ? 'reviewing' : 'coding' })
-    );
-    const pending = makeStep({ step: { id: WIP_LIMIT + 1, description: 'Pending', files: [], acceptanceCriteria: [], dependsOn: [] }, status: 'pending' });
-    currentRun.value = makeRun({ steps: [...active, pending] });
-    render(<StepDetail stepState={pending} />);
-    expect(screen.getByText(/WIP limit reached/)).toBeTruthy();
-  });
 
   it('does NOT show blocking section for non-pending steps', () => {
     const s = makeStep({ step: { id: 1, description: 'Coding step', files: [], acceptanceCriteria: [], dependsOn: [99] }, status: 'coding' });

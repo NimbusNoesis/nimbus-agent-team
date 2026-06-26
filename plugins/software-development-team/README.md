@@ -13,7 +13,7 @@ A [Claude Code](https://claude.ai/claude-code) plugin that orchestrates a multi-
 - **Shared memory** -- agents share decisions, context, learnings, and reflections via a persistent key-value store
 - **Message bus** -- typed messages (info, review, escalation, guidance, result) between agents and the user
 - **Real-time dashboard** -- web UI showing live progress, step details, agent activity, and shared memory
-- **Pipeline parallelism** -- independent steps can run concurrently (up to 8 active at once)
+- **Pipeline parallelism** -- independent steps can run concurrently (no fixed cap; bounded by dependencies, file conflicts, and token budget)
 - **Stuck detection** -- automatic escalation when agents repeat the same error or exhaust retries
 - **File conflict detection** -- prevents two steps from editing the same file concurrently
 - **Git worktree isolation** -- optional per-step git worktrees for safe parallel work and clean merge-back
@@ -212,7 +212,7 @@ software-development-team/
       db/
         database.ts          In-memory SQLite database (sql.js)
       state/
-        machine.ts           State machine (step lifecycle, WIP, conflicts)
+        machine.ts           State machine (step lifecycle, conflicts)
         persistence.ts       File-based persistence (disk I/O)
       bus/
         message-bus.ts       Message bus with EventEmitter
