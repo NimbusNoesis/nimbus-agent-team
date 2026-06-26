@@ -3,7 +3,6 @@ import { EventEmitter } from 'node:events';
 import type { PlanStep, RunState, StepState, StepResult } from '../types.js';
 import { logger } from '../logger.js';
 import { Database } from '../db/database.js';
-import { WIP_LIMIT } from '../constants.js';
 
 const MAX_RETRIES = 3;
 
@@ -65,7 +64,6 @@ export class StateMachine extends EventEmitter {
     }
 
     this.checkDependencies(run, stepState);
-    this.checkWipLimit(run, stepId);
 
     // Claim files and warn about overlaps with other active steps
     stepState.claimedFiles = [...stepState.step.files];
@@ -103,14 +101,6 @@ export class StateMachine extends EventEmitter {
       if (dep && dep.status !== 'complete') {
         reasons.push(`Waiting on step ${depId}: ${dep.step.description}`);
       }
-    }
-
-    // Check WIP limit
-    const activeSteps = run.steps.filter(
-      (s) => s.step.id !== stepId && (s.status === 'coding' || s.status === 'reviewing')
-    );
-    if (activeSteps.length >= WIP_LIMIT) {
-      reasons.push(`WIP limit reached (max ${WIP_LIMIT} concurrent steps)`);
     }
 
     // Check file conflicts
@@ -266,17 +256,6 @@ export class StateMachine extends EventEmitter {
     const stepState = run.steps.find((s) => s.step.id === stepId);
     if (!stepState) throw new Error(`Step ${stepId} not found in run ${run.id}`);
     return stepState;
-  }
-
-  private checkWipLimit(run: RunState, stepId: number): void {
-    const activeSteps = run.steps.filter(
-      (s) => s.step.id !== stepId && (s.status === 'coding' || s.status === 'reviewing')
-    );
-    if (activeSteps.length >= WIP_LIMIT) {
-      throw new Error(
-        `WIP limit reached: ${activeSteps.length} steps already active (${activeSteps.map((s) => `step ${s.step.id}: ${s.status}`).join(', ')}). Wait for a step to complete before starting another.`
-      );
-    }
   }
 
   private checkDependencies(run: RunState, stepState: StepState): void {
