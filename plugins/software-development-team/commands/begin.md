@@ -50,13 +50,30 @@ Assess the task scope:
 When the user's task is to **review existing code** (not build something), the reviewer is the primary agent — not a downstream step in a coder → reviewer cycle. Do not create a coding step and do not dispatch a generic agent.
 
 1. Determine the review targets:
-   - If the user named specific files, use those.
-   - Otherwise, gather the working diff with `git diff` and `git diff --cached`. If neither returns output, ask the user which files or commit range to review.
-2. Create a single read-only step describing the review (e.g., "Deep code review of `<targets>`"), then call `team_start` with it (no plan-approval gate needed for a one-step read-only review — just confirm scope with the user).
-3. Mark the step coding and dispatch the reviewer using the **Agent tool** with an explicit `subagent_type`:
+   - If the user named specific files, use those (diff them with `git diff HEAD -- <files>`).
+   - Otherwise, review the branch's changes. Gather the diff in this order so committed and brand-new work is not silently missed:
+     - **Committed branch delta** (the normal PR-review case): `git diff main...HEAD` (prefer `git diff @{upstream}...HEAD` when an upstream is set; fall back to `git diff HEAD~1`).
+     - **Uncommitted work**: also include `git diff` (unstaged) and `git diff --cached` (staged).
+     - **Untracked new files**: list them with `git ls-files --others --exclude-standard` — they appear in no diff, so the reviewer must read them directly.
+     - Only if *all* of these are empty, ask the user which files or commit range to review.
+2. Create a single read-only step describing the review (e.g., "Deep code review of `<targets>`"), then call `team_start` with a fully-formed step — every step requires `id`, `description`, `files`, `acceptanceCriteria`, and `dependsOn` (the schema rejects a description-only step):
+
+   ```text
+   team_start(steps: [{
+     id: 1,
+     description: "Deep code review of <targets>",
+     files: [<review target paths>],
+     acceptanceCriteria: ["Findings reported with file/line, severity, and a concrete fix for each issue"],
+     dependsOn: []
+   }])
+   ```
+
+   No plan-approval gate is needed for a one-step read-only review — just confirm scope with the user.
+3. Mark the step coding, relay the dispatch on the dashboard, then dispatch the reviewer using the **Agent tool** with an explicit `subagent_type`:
 
    ```text
    team_advance(runId, stepId, action: "start_coding", agent: "reviewer")
+   team_send_message(from: "reviewer", to: "coordinator", type: "info", body: "Reviewing <targets> (standalone review)")
 
    Agent(
      subagent_type: "software-development-team:reviewer",
@@ -78,20 +95,20 @@ When the user's task is to **review existing code** (not build something), the r
 
    ## Instructions
    Review for correctness, security, code quality, error handling, and test coverage.
-   Run the project's verification suite (tests, type check, lint) to catch regressions.
-   This is a read-only review: do NOT submit a code result via team_submit_result. Return your findings as structured text (overall verdict, issues with file/line + why + fix, positives, verification results, optional suggestions).
+   If the review targets include executable code, run the project's verification suite (tests, type check, lint) to catch regressions. Skip verification for doc-only or config-only targets — there is nothing to regress.
+   Submit your verdict via team_submit_result as usual — `done` if the code is clean, `needs_revision` if you found issues worth fixing — and return your full findings as structured text (overall verdict, issues with file/line + why + fix, positives, verification results, optional suggestions). This is a dedicated review: the coordinator closes the step with `mark_reviewed` and presents your findings to the user; it does not dispatch a coder to act on a `needs_revision` verdict here.
    You MAY write a review reflection to the reflections namespace and review notes to the reviews namespace.
    """
    )
    ```
 
-4. Because this step has no code result to approve, close it after the reviewer returns with `mark_reviewed` (see "Read-only review step" in The Loop):
+4. A dedicated review delivers findings, not code to fix — so close the step with `mark_reviewed` after the reviewer returns, **regardless of whether its verdict was `done` or `needs_revision`** (see "Read-only review step" in The Loop). `mark_reviewed` moves a `coding` or `reviewing` step straight to `complete`. Do NOT follow the normal `needs_revision → request_revision → dispatch coder` loop here; a dedicated review has no coder. The reviewer keeps its usual two verdicts — only the coordinator's close-out differs.
 
    ```text
-   team_advance(runId, stepId, action: "mark_reviewed", summary: "<one-line summary of the review verdict>")
+   team_advance(runId, stepId, action: "mark_reviewed", summary: "<one-line summary of what the review delivered>")
    ```
 
-5. Present the reviewer's findings to the user.
+5. Relay the outcome on the dashboard (`team_send_message(from: "reviewer", to: "coordinator", type: "review", body: "Standalone review complete: <one-line verdict>")`) and present the reviewer's findings to the user.
 
 ## Cost Awareness
 
