@@ -1,1 +1,7 @@
 .team/
+node_modules/
+package-lock.json
+package.json
+screenshots.mjs
+stgregory-redesign/site/.hugo_build.lock
+stgregory-redesign/site/public/
