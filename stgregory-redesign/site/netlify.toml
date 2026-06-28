@@ -1,0 +1,109 @@
+[build]
+  publish = "public"
+  command = "hugo --minify"
+
+[build.environment]
+  HUGO_VERSION = "0.147.0"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+
+[[headers]]
+  for = "/css/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/images/*"
+  [headers.values]
+    Cache-Control = "public, max-age=2592000"
+
+[[redirects]]
+  from = "/about-us/welcome-visitors/"
+  to = "/about/welcome/"
+  status = 301
+
+[[redirects]]
+  from = "/about-us/who-was-st-gregory-the-great/"
+  to = "/about/st-gregory/"
+  status = 301
+
+[[redirects]]
+  from = "/about-us/117-2/"
+  to = "/about/western-rite/"
+  status = 301
+
+[[redirects]]
+  from = "/liturgy/"
+  to = "/worship/liturgy/"
+  status = 301
+
+[[redirects]]
+  from = "/ordo/"
+  to = "/worship/ordo/"
+  status = 301
+
+[[redirects]]
+  from = "/calendar/"
+  to = "/worship/schedule/"
+  status = 301
+
+[[redirects]]
+  from = "/journal/"
+  to = "/learn/"
+  status = 301
+
+[[redirects]]
+  from = "/contact/"
+  to = "/connect/contact/"
+  status = 301
+
+[[redirects]]
+  from = "/directions/"
+  to = "/connect/directions/"
+  status = 301
+
+[[redirects]]
+  from = "/publications/"
+  to = "/worship/liturgy/"
+  status = 301
+
+[[redirects]]
+  from = "/article/the-daily-office/"
+  to = "/worship/daily-office/"
+  status = 301
+
+[[redirects]]
+  from = "/article/the-divine-liturgy-according-to-the-rite-of-saint-gregory/"
+  to = "/worship/liturgy/"
+  status = 301
+
+[[redirects]]
+  from = "/st-augustine-of-hippo/"
+  to = "/learn/saints/st-augustine-of-hippo/"
+  status = 301
+
+[[redirects]]
+  from = "/st-thekla/"
+  to = "/learn/saints/"
+  status = 301
+
+[[redirects]]
+  from = "/st-lioba-abbess/"
+  to = "/learn/saints/"
+  status = 301
+
+[[redirects]]
+  from = "/st-gregory-bishop-of-tours/"
+  to = "/learn/saints/"
+  status = 301
+
+[[redirects]]
+  from = "/st-gregory-ii-of-rome/"
+  to = "/learn/saints/"
+  status = 301

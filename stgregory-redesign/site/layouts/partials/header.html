@@ -1,0 +1,42 @@
+<header class="site-header" role="banner">
+  <div class="container header-inner">
+    <a href="/" class="site-logo" aria-label="St. Gregory the Great Orthodox Church — Home">
+      <span class="logo-cross" aria-hidden="true">&#x2720;</span>
+      <span class="logo-text">
+        <span class="logo-name">St. Gregory the Great</span>
+        <span class="logo-subtitle">Orthodox Church</span>
+      </span>
+    </a>
+
+    <button class="nav-toggle" aria-expanded="false" aria-controls="primary-nav" aria-label="Toggle navigation menu">
+      <span class="nav-toggle-bar"></span>
+      <span class="nav-toggle-bar"></span>
+      <span class="nav-toggle-bar"></span>
+    </button>
+
+    <nav id="primary-nav" class="primary-nav" aria-label="Primary navigation">
+      <ul class="nav-list">
+        {{ range .Site.Menus.main }}
+        <li class="nav-item">
+          <a href="{{ .URL }}" class="nav-link{{ if $.IsMenuCurrent "main" . }} is-active{{ end }}">{{ .Name }}</a>
+        </li>
+        {{ end }}
+      </ul>
+      <a href="/connect/directions/" class="btn btn-primary nav-cta">Visit Us</a>
+    </nav>
+  </div>
+</header>
+
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    const toggle = document.querySelector('.nav-toggle');
+    const nav = document.getElementById('primary-nav');
+    if (toggle && nav) {
+      toggle.addEventListener('click', function() {
+        const expanded = this.getAttribute('aria-expanded') === 'true';
+        this.setAttribute('aria-expanded', !expanded);
+        nav.classList.toggle('is-open');
+      });
+    }
+  });
+</script>

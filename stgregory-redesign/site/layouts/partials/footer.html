@@ -1,0 +1,45 @@
+<footer class="site-footer" role="contentinfo">
+  <div class="container footer-grid">
+
+    <div class="footer-col">
+      <h3>Service Times</h3>
+      <dl class="service-times">
+        <dt>Vespers</dt>
+        <dd>{{ .Site.Params.services.vespers.day }} {{ .Site.Params.services.vespers.time }}</dd>
+        <dt>Matins</dt>
+        <dd>{{ .Site.Params.services.matins.day }} {{ .Site.Params.services.matins.time }}</dd>
+        <dt>{{ .Site.Params.services.liturgy.name }}</dt>
+        <dd>{{ .Site.Params.services.liturgy.day }} {{ .Site.Params.services.liturgy.time }}</dd>
+      </dl>
+    </div>
+
+    <div class="footer-col">
+      <h3>Location</h3>
+      <address>
+        {{ .Site.Params.address }}<br>
+        <a href="tel:{{ .Site.Params.phone }}">{{ .Site.Params.phone }}</a><br>
+        <a href="mailto:{{ .Site.Params.email }}">{{ .Site.Params.email }}</a>
+      </address>
+      <a href="/connect/directions/" class="footer-link">Get Directions &rarr;</a>
+    </div>
+
+    <div class="footer-col">
+      <h3>Connect</h3>
+      <ul class="social-links">
+        {{ with .Site.Params.facebook }}
+        <li><a href="{{ . }}" rel="noopener noreferrer" target="_blank" aria-label="Facebook">Facebook</a></li>
+        {{ end }}
+        {{ with .Site.Params.youtube }}
+        <li><a href="{{ . }}" rel="noopener noreferrer" target="_blank" aria-label="YouTube">YouTube</a></li>
+        {{ end }}
+      </ul>
+      <p class="footer-affiliation">A Western Rite Congregation of the<br>
+        <strong>Antiochian Orthodox Christian Archdiocese</strong></p>
+    </div>
+
+  </div>
+
+  <div class="container footer-bottom">
+    <p>&copy; {{ now.Year }} St. Gregory the Great Orthodox Church. All rights reserved.</p>
+  </div>
+</footer>

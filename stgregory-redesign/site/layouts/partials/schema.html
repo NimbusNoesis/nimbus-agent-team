@@ -1,0 +1,100 @@
+{{/* Church structured data — appears on every page */}}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Church",
+  "name": "{{ .Site.Title }}",
+  "description": "{{ .Site.Params.description }}",
+  "url": "{{ .Site.BaseURL }}",
+  "telephone": "{{ .Site.Params.phone }}",
+  "email": "{{ .Site.Params.email }}",
+  "address": {
+    "@type": "PostalAddress",
+    "streetAddress": "13407 Roxbury Rd",
+    "addressLocality": "Silver Spring",
+    "addressRegion": "MD",
+    "postalCode": "20904",
+    "addressCountry": "US"
+  },
+  "geo": {
+    "@type": "GeoCoordinates",
+    "latitude": 39.065,
+    "longitude": -76.975
+  },
+  "sameAs": [
+    {{ with .Site.Params.facebook }}"{{ . }}"{{ end }}{{ with .Site.Params.youtube }},
+    "{{ . }}"{{ end }}
+  ],
+  "openingHoursSpecification": [
+    {
+      "@type": "OpeningHoursSpecification",
+      "dayOfWeek": "Saturday",
+      "opens": "18:00",
+      "closes": "19:00",
+      "description": "Vespers"
+    },
+    {
+      "@type": "OpeningHoursSpecification",
+      "dayOfWeek": "Sunday",
+      "opens": "09:00",
+      "closes": "11:00",
+      "description": "Matins & Divine Liturgy"
+    }
+  ],
+  "parentOrganization": {
+    "@type": "Organization",
+    "name": "Antiochian Orthodox Christian Archdiocese of North America"
+  }
+}
+</script>
+
+{{/* Page-level structured data */}}
+{{ if .IsPage }}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebPage",
+  "name": "{{ .Title }}",
+  "description": "{{ with .Params.description }}{{ . }}{{ else }}{{ .Site.Params.description }}{{ end }}",
+  "url": "{{ .Permalink }}",
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "{{ .Site.Title }}",
+    "url": "{{ .Site.BaseURL }}"
+  }
+  {{ if .Params.datePublished }},
+  "datePublished": "{{ .Params.datePublished }}"
+  {{ end }}
+}
+</script>
+{{ end }}
+
+{{/* BreadcrumbList for non-home pages */}}
+{{ if not .IsHome }}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Home",
+      "item": "{{ .Site.BaseURL }}"
+    }
+    {{ $url := "" }}
+    {{ range $i, $crumb := split (strings.TrimPrefix "/" .RelPermalink) "/" }}
+      {{ if $crumb }}
+      {{ $url = printf "%s/%s" $url $crumb }}
+      ,{
+        "@type": "ListItem",
+        "position": {{ add $i 2 }},
+        "name": "{{ $crumb | humanize | title }}",
+        "item": "{{ printf "%s%s/" $.Site.BaseURL $url }}"
+      }
+      {{ end }}
+    {{ end }}
+  ]
+}
+</script>
+{{ end }}

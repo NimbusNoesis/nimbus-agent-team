@@ -1,0 +1,90 @@
+{{ define "main" }}
+
+{{/* Hero */}}
+<section class="hero">
+  <div class="hero-bg" style="background-image: url('/images/church-exterior.jpg');"></div>
+  <div class="hero-content">
+    <h1>St. Gregory the Great Orthodox Church</h1>
+    <p>A Western Rite Orthodox parish in the Antiochian tradition, welcoming all to the ancient faith near Washington, DC.</p>
+    <div class="hero-actions">
+      <a href="/connect/directions/" class="btn btn-primary">Plan Your Visit</a>
+      <a href="/about/welcome/" class="btn btn-outline">What to Expect</a>
+    </div>
+  </div>
+</section>
+
+{{/* Service Times Banner */}}
+<section class="service-banner" aria-label="Service times">
+  <div class="container service-banner-grid">
+    <div class="service-card">
+      <h3>Vespers</h3>
+      <div class="time">{{ .Site.Params.services.vespers.time }}</div>
+      <div class="day">{{ .Site.Params.services.vespers.day }}</div>
+    </div>
+    <div class="service-card">
+      <h3>Matins</h3>
+      <div class="time">{{ .Site.Params.services.matins.time }}</div>
+      <div class="day">{{ .Site.Params.services.matins.day }}</div>
+    </div>
+    <div class="service-card">
+      <h3>Divine Liturgy</h3>
+      <div class="time">{{ .Site.Params.services.liturgy.time }}</div>
+      <div class="day">{{ .Site.Params.services.liturgy.day }}</div>
+    </div>
+  </div>
+</section>
+
+{{/* Welcome Section */}}
+<section class="section">
+  <div class="container">
+    <div class="section-header">
+      <h2>Welcome to St. Gregory's</h2>
+      <hr class="gold-rule">
+      <p>We are a parish of the Antiochian Orthodox Christian Archdiocese using the ancient Western liturgical forms restored to Orthodox use.</p>
+    </div>
+    <div class="card-grid">
+      <div class="card">
+        <h3>Western Rite Orthodoxy</h3>
+        <p>Experience the fullness of Orthodox Christianity through the ancient liturgical heritage of the Christian West &mdash; the Mass of St. Gregory the Great.</p>
+        <a href="/about/western-rite/" class="card-link">Learn more &rarr;</a>
+      </div>
+      <div class="card">
+        <h3>Visiting?</h3>
+        <p>Everyone is welcome at all our services. Whether you're Orthodox, from another tradition, or just curious &mdash; come as you are.</p>
+        <a href="/about/welcome/" class="card-link">Plan your visit &rarr;</a>
+      </div>
+      <div class="card">
+        <h3>Liturgical Resources</h3>
+        <p>Texts for the Daily Office, the Ordo, and resources for prayer at home throughout the liturgical year.</p>
+        <a href="/worship/liturgy/" class="card-link">Explore &rarr;</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+{{/* Location Section */}}
+<section class="section section-alt">
+  <div class="container">
+    <div class="section-header">
+      <h2>Find Us</h2>
+      <hr class="gold-rule">
+    </div>
+    <div class="card-grid" style="grid-template-columns: 1fr 1fr;">
+      <div>
+        <h3>Address</h3>
+        <p>{{ .Site.Params.address }}</p>
+        <p><strong>Phone:</strong> <a href="tel:{{ .Site.Params.phone }}">{{ .Site.Params.phone }}</a></p>
+        <p><strong>Email:</strong> <a href="mailto:{{ .Site.Params.email }}">{{ .Site.Params.email }}</a></p>
+        <a href="/connect/directions/" class="btn btn-primary mt-2">Get Directions</a>
+      </div>
+      <div>
+        {{/* Placeholder for Google Maps embed */}}
+        <div style="background: var(--border); height: 300px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--text-light);">
+          Google Maps embed goes here
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+{{ end }}

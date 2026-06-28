@@ -1,0 +1,66 @@
+baseURL = "https://www.stgregoryoc.org"
+languageCode = "en-us"
+title = "St. Gregory the Great Orthodox Church"
+enableRobotsTXT = true
+
+[params]
+  description = "A Western Rite Orthodox congregation of the Antiochian Archdiocese in Silver Spring, Maryland, near Washington, DC."
+  tagline = "Western Rite Orthodox Christianity in the Nation's Capital"
+  address = "13407 Roxbury Rd, Silver Spring, MD 20904"
+  mailingAddress = "804 E Randolph Rd, Silver Spring, MD 20904"
+  phone = "301-288-4798"
+  email = "frnicholas@aol.com"
+  facebook = "https://www.facebook.com/p/St-Gregory-The-Great-Orthodox-Church-100064364662292/"
+  youtube = "https://www.youtube.com/@stgregoryorthodox"
+  ogImage = "/images/og-default.jpg"
+
+[params.services]
+  [params.services.vespers]
+    day = "Saturday"
+    time = "6:00 PM"
+  [params.services.matins]
+    day = "Sunday"
+    time = "9:00 AM"
+  [params.services.liturgy]
+    day = "Sunday"
+    time = "9:30 AM"
+    name = "Divine Liturgy (Mass)"
+
+[menu]
+  [[menu.main]]
+    name = "About"
+    url = "/about/"
+    weight = 1
+  [[menu.main]]
+    name = "Worship"
+    url = "/worship/"
+    weight = 2
+  [[menu.main]]
+    name = "Learn"
+    url = "/learn/"
+    weight = 3
+  [[menu.main]]
+    name = "Connect"
+    url = "/connect/"
+    weight = 4
+
+[markup]
+  [markup.goldmark]
+    [markup.goldmark.renderer]
+      unsafe = true
+
+[outputFormats]
+  [outputFormats.sitemap]
+    mediaType = "application/xml"
+    baseName = "sitemap"
+    isPlainText = true
+    notAlternative = true
+
+[sitemap]
+  changeFreq = "weekly"
+  priority = 0.5
+  filename = "sitemap.xml"
+
+[imaging]
+  quality = 80
+  resampleFilter = "Lanczos"
