@@ -96,6 +96,23 @@ Agents that do not touch code and do not submit step results (e.g., `plan-critic
 ### Different agents use different MCP tool subsets
 Not all agents get all 4 MCP tools. Planner gets 3 (no `submit_result`). All other agents get all 4 tools. Match the tool set to the agent's actual responsibilities.
 
+### Optional GitNexus code-intelligence integration
+
+Each agent is also granted a role-scoped subset of the [GitNexus](https://github.com/abhigyanpatwari/GitNexus) code knowledge-graph MCP tools (`mcp__gitnexus__*`) and carries a `## Code Intelligence (GitNexus — optional)` prompt section telling it when to use them:
+
+| Agent          | GitNexus tools                                  |
+| -------------- | ----------------------------------------------- |
+| planner        | `query`, `context`, `route_map`, `impact`, `explain` |
+| plan-critic    | `impact`, `context`                             |
+| coder          | `context`, `impact`, `trace`, `explain`         |
+| reviewer       | `detect_changes`, `impact`, `api_impact`, `context` |
+| researcher     | `query`, `explain`, `context`                   |
+| documentation  | `query`, `route_map`                            |
+
+GitNexus is a separate, session-level MCP server (installed via its own `gitnexus setup`), so its tools use the `mcp__gitnexus__` prefix in **both** hosts — there is no `plugin_…` prefix even in the Claude Code plugin. In the Claude `.md` agents the tools are added to the `tools:` allowlist; in the Codex `.toml` agents no allowlist change is needed (Codex agents inherit all session MCP tools).
+
+**The integration is optional and must stay that way.** Every GitNexus prompt section uses conditional-fallback wording ("if these tools are available, prefer them; otherwise fall back to Glob/Grep/Read; never block on GitNexus"). A listed-but-absent MCP tool is simply unavailable rather than an error, so the team behaves identically when GitNexus is not installed. Do not add a `gitnexus analyze` step to the SessionStart hook or otherwise couple plugin startup to GitNexus being present — indexing is GitNexus's own responsibility. When adding the GitNexus section to a new agent, place it right after the Tool Names section and mirror it into the agent's `codex/` counterpart.
+
 ### Memory namespace write authority
 Each memory namespace has designated writer agents to prevent authority conflicts and keep signal quality high. All agents read all namespaces (`decisions`, `context`, `learnings`, `reviews`, `reflections`), but writes are scoped:
 
