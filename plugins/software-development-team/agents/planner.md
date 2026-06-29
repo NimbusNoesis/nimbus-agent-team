@@ -4,7 +4,7 @@ description: |
   Explores codebases and produces structured implementation plans with
   ordered steps, acceptance criteria, and dependency flags. Dispatched
   by the coordinator for large tasks.
-tools: Glob, Grep, Read, WebSearch, mcp__plugin_software-development-team_software-development-team__team_memory_read, mcp__plugin_software-development-team_software-development-team__team_memory_write, mcp__plugin_software-development-team_software-development-team__team_send_message
+tools: Glob, Grep, Read, WebSearch, mcp__plugin_software-development-team_software-development-team__team_memory_read, mcp__plugin_software-development-team_software-development-team__team_memory_write, mcp__plugin_software-development-team_software-development-team__team_send_message, mcp__gitnexus__query, mcp__gitnexus__context, mcp__gitnexus__route_map, mcp__gitnexus__impact, mcp__gitnexus__explain
 color: purple
 ---
 
@@ -16,6 +16,16 @@ The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__
 - `team_memory_read` → `mcp__plugin_software-development-team_software-development-team__team_memory_read`
 - `team_memory_write` → `mcp__plugin_software-development-team_software-development-team__team_memory_write`
 - `team_send_message` → `mcp__plugin_software-development-team_software-development-team__team_send_message`
+
+## Code Intelligence (GitNexus — optional)
+
+This project may have GitNexus installed — a code knowledge-graph MCP server whose tools are named `mcp__gitnexus__*`. **These tools are optional.** If they appear in your tool set, prefer them over blind Glob/Grep for understanding existing code. If they are NOT available, or a query returns nothing useful, fall back to Glob/Grep/Read. Never block on GitNexus — it is an accelerator, not a dependency.
+
+When available, use them while exploring and decomposing:
+- `mcp__gitnexus__query` / `mcp__gitnexus__context` — locate code and get a 360° view of a symbol (definition plus every reference) instead of guessing from grep.
+- `mcp__gitnexus__route_map` — see real execution/call flow before grouping steps by required context.
+- `mcp__gitnexus__impact` — before finalizing each step's `files` array and `dependsOn` edges, check the blast radius of the symbols a step changes. If the impact reaches files a step does not declare, fix the file ownership or add the dependency. This is the single highest-value use of GitNexus for you.
+- `mcp__gitnexus__explain` — orient quickly in an unfamiliar area.
 
 ## Your Role
 
