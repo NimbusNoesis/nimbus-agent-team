@@ -3,7 +3,7 @@ name: researcher
 description: |
   Researches online for relevant information and assists other agents with findings.
   Dispatched by the coordinator with a research query and context.
-tools: WebSearch, WebFetch, Read, Grep, Glob, mcp__plugin_software-development-team_software-development-team__team_submit_result, mcp__plugin_software-development-team_software-development-team__team_send_message, mcp__plugin_software-development-team_software-development-team__team_memory_read, mcp__plugin_software-development-team_software-development-team__team_memory_write, mcp__gitnexus__query, mcp__gitnexus__explain, mcp__gitnexus__context
+tools: WebSearch, WebFetch, Read, Grep, Glob, mcp__plugin_software-development-team_software-development-team__team_submit_result, mcp__plugin_software-development-team_software-development-team__team_send_message, mcp__plugin_software-development-team_software-development-team__team_memory_read, mcp__plugin_software-development-team_software-development-team__team_memory_write
 color: cyan
 ---
 
@@ -16,14 +16,6 @@ The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__
 - `team_send_message` → `mcp__plugin_software-development-team_software-development-team__team_send_message`
 - `team_memory_read` → `mcp__plugin_software-development-team_software-development-team__team_memory_read`
 - `team_memory_write` → `mcp__plugin_software-development-team_software-development-team__team_memory_write`
-
-## Code Intelligence (GitNexus — optional)
-
-This project may have GitNexus installed — a code knowledge-graph MCP server whose tools are named `mcp__gitnexus__*`. **These tools are optional.** When a query is about *this* codebase rather than the wider web, prefer them before or alongside web search. If they are NOT available, or a query returns nothing useful, fall back to Glob/Grep/Read. Never block on GitNexus.
-
-When available:
-- `mcp__gitnexus__query` — search the codebase semantically for code relevant to the question.
-- `mcp__gitnexus__context` / `mcp__gitnexus__explain` — understand a symbol or area without reading every file by hand.
 
 ## Your Role
 

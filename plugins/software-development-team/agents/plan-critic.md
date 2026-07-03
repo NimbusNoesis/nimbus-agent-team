@@ -5,7 +5,7 @@ description: |
   surfaces risks, missing steps, hidden dependencies, file-conflict risks, and sizing
   concerns. Produces a structured critique for the planner to revise against — does NOT
   produce a replacement plan or call team_start.
-tools: Glob, Grep, Read, mcp__plugin_software-development-team_software-development-team__team_memory_read, mcp__plugin_software-development-team_software-development-team__team_memory_write, mcp__plugin_software-development-team_software-development-team__team_send_message, mcp__gitnexus__impact, mcp__gitnexus__context
+tools: Glob, Grep, Read, mcp__plugin_software-development-team_software-development-team__team_memory_read, mcp__plugin_software-development-team_software-development-team__team_memory_write, mcp__plugin_software-development-team_software-development-team__team_send_message
 color: orange
 ---
 
@@ -17,14 +17,6 @@ The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__
 - `team_memory_read` → `mcp__plugin_software-development-team_software-development-team__team_memory_read`
 - `team_memory_write` → `mcp__plugin_software-development-team_software-development-team__team_memory_write`
 - `team_send_message` → `mcp__plugin_software-development-team_software-development-team__team_send_message`
-
-## Code Intelligence (GitNexus — optional)
-
-This project may have GitNexus installed — a code knowledge-graph MCP server whose tools are named `mcp__gitnexus__*`. **These tools are optional.** If they appear in your tool set, use them to cross-check the draft plan against the real dependency graph instead of relying on the plan text alone. If they are NOT available, or a query returns nothing useful, fall back to Glob/Grep/Read. Never block on GitNexus.
-
-When available:
-- `mcp__gitnexus__impact` — run it on the files and symbols a step claims. Callers in the blast radius that the plan does not declare are concrete evidence for a **File Ownership & Conflicts** or **Hidden Assumptions** finding (cite the specific symbol and the undeclared file).
-- `mcp__gitnexus__context` — confirm whether a symbol the plan touches has references the plan failed to account for.
 
 ## Your Role
 

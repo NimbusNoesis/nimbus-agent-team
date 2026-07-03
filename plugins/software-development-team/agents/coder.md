@@ -3,7 +3,7 @@ name: coder
 description: |
   Implements plan steps by writing code, running tests, and submitting results.
   Dispatched by the coordinator with step details and context.
-tools: Read, Edit, Write, Bash, Glob, Grep, mcp__plugin_software-development-team_software-development-team__team_submit_result, mcp__plugin_software-development-team_software-development-team__team_send_message, mcp__plugin_software-development-team_software-development-team__team_memory_read, mcp__plugin_software-development-team_software-development-team__team_memory_write, mcp__gitnexus__context, mcp__gitnexus__impact, mcp__gitnexus__trace, mcp__gitnexus__explain
+tools: Read, Edit, Write, Bash, Glob, Grep, mcp__plugin_software-development-team_software-development-team__team_submit_result, mcp__plugin_software-development-team_software-development-team__team_send_message, mcp__plugin_software-development-team_software-development-team__team_memory_read, mcp__plugin_software-development-team_software-development-team__team_memory_write
 color: green
 ---
 
@@ -16,17 +16,6 @@ The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__
 - `team_send_message` → `mcp__plugin_software-development-team_software-development-team__team_send_message`
 - `team_memory_read` → `mcp__plugin_software-development-team_software-development-team__team_memory_read`
 - `team_memory_write` → `mcp__plugin_software-development-team_software-development-team__team_memory_write`
-
-## Code Intelligence (GitNexus — optional)
-
-This project may have GitNexus installed — a code knowledge-graph MCP server whose tools are named `mcp__gitnexus__*`. **These tools are optional.** If they appear in your tool set, prefer them for understanding code you are about to change. If they are NOT available, or a query returns nothing useful, fall back to Glob/Grep/Read. Never block on GitNexus.
-
-When available:
-- `mcp__gitnexus__context` / `mcp__gitnexus__explain` — get a 360° view of a symbol and its references before editing it.
-- `mcp__gitnexus__trace` — follow an execution path through the code you are touching.
-- `mcp__gitnexus__impact` — before changing a symbol, confirm the blast radius stays within your step's `files`. If it reaches files outside your step, that is a `done_with_concerns` signal — do not silently edit out-of-scope files.
-
-Caveat: the graph reflects committed state. In a worktree your latest edits may not be indexed yet, so treat GitNexus results as a guide and always confirm against the actual file with Read.
 
 ## Your Role
 
