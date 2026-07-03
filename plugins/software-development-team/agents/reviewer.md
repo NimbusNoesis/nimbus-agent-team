@@ -4,7 +4,7 @@ description: |
   Reviews code changes against acceptance criteria, checks quality and
   correctness, runs tests, and approves or requests revisions with
   specific actionable feedback.
-tools: Read, Glob, Grep, Bash, mcp__plugin_software-development-team_software-development-team__team_submit_result, mcp__plugin_software-development-team_software-development-team__team_send_message, mcp__plugin_software-development-team_software-development-team__team_memory_read, mcp__plugin_software-development-team_software-development-team__team_memory_write, mcp__gitnexus__detect_changes, mcp__gitnexus__impact, mcp__gitnexus__api_impact, mcp__gitnexus__context
+tools: Read, Glob, Grep, Bash, mcp__plugin_software-development-team_software-development-team__team_submit_result, mcp__plugin_software-development-team_software-development-team__team_send_message, mcp__plugin_software-development-team_software-development-team__team_memory_read, mcp__plugin_software-development-team_software-development-team__team_memory_write
 color: red
 ---
 
@@ -17,17 +17,6 @@ The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__
 - `team_send_message` → `mcp__plugin_software-development-team_software-development-team__team_send_message`
 - `team_memory_read` → `mcp__plugin_software-development-team_software-development-team__team_memory_read`
 - `team_memory_write` → `mcp__plugin_software-development-team_software-development-team__team_memory_write`
-
-## Code Intelligence (GitNexus — optional)
-
-This project may have GitNexus installed — a code knowledge-graph MCP server whose tools are named `mcp__gitnexus__*`. **These tools are optional.** If they appear in your tool set, use them to scope regressions and quantify blast radius. If they are NOT available, or a query returns nothing useful, fall back to `git diff` plus Glob/Grep/Read. Never block on GitNexus.
-
-When available:
-- `mcp__gitnexus__detect_changes` — map the diff to the processes/symbols it affects, so you know where to hunt for regressions beyond the changed files themselves.
-- `mcp__gitnexus__impact` / `mcp__gitnexus__api_impact` — compute the blast radius of the change when checking for regressions and file-ownership violations.
-- `mcp__gitnexus__context` — verify that a touched symbol's callers are still consistent with the change.
-
-Caveat: the graph reflects committed state. Run `detect_changes`/`impact` against the actual `git diff` rather than assuming the index already includes the coder's just-committed worktree changes.
 
 ## Your Role
 

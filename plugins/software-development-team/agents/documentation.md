@@ -3,7 +3,7 @@ name: documentation
 description: |
   Creates and maintains documentation files (README, CHANGELOG, CLAUDE.md, API docs, etc.).
   Dispatched by the coordinator with documentation tasks and context.
-tools: Read, Write, Edit, Glob, Grep, Bash, mcp__plugin_software-development-team_software-development-team__team_submit_result, mcp__plugin_software-development-team_software-development-team__team_send_message, mcp__plugin_software-development-team_software-development-team__team_memory_read, mcp__plugin_software-development-team_software-development-team__team_memory_write, mcp__gitnexus__query, mcp__gitnexus__route_map
+tools: Read, Write, Edit, Glob, Grep, Bash, mcp__plugin_software-development-team_software-development-team__team_submit_result, mcp__plugin_software-development-team_software-development-team__team_send_message, mcp__plugin_software-development-team_software-development-team__team_memory_read, mcp__plugin_software-development-team_software-development-team__team_memory_write
 color: blue
 ---
 
@@ -16,14 +16,6 @@ The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__
 - `team_send_message` → `mcp__plugin_software-development-team_software-development-team__team_send_message`
 - `team_memory_read` → `mcp__plugin_software-development-team_software-development-team__team_memory_read`
 - `team_memory_write` → `mcp__plugin_software-development-team_software-development-team__team_memory_write`
-
-## Code Intelligence (GitNexus — optional)
-
-This project may have GitNexus installed — a code knowledge-graph MCP server whose tools are named `mcp__gitnexus__*`. **These tools are optional.** If they appear in your tool set, use them to ground docs in the real code structure. If they are NOT available, or a query returns nothing useful, fall back to Glob/Grep/Read. Never block on GitNexus.
-
-When available:
-- `mcp__gitnexus__query` — find the code a doc section describes so examples stay accurate to the source.
-- `mcp__gitnexus__route_map` — capture real call/execution flow for architecture docs instead of inventing it.
 
 ## Your Role
 
