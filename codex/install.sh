@@ -5,7 +5,7 @@
 #   1. Resolves the absolute path to the shared MCP server (plugins/software-development-team/server).
 #   2. Wires an [mcp_servers.software-development-team] block into ~/.codex/config.toml
 #      (skips with a warning if a block of that name already exists).
-#   3. Copies the Codex agent definitions (agents/*.toml) into ~/.codex/agents/.
+#   3. Copies the Codex role templates (agents/*.toml) into ~/.codex/agents/.
 #   4. Copies the Codex skills (skills/<name>/SKILL.md) into ~/.codex/skills/.
 #
 # The MCP server is the SAME host-agnostic server the Claude Code plugin uses;
@@ -31,6 +31,42 @@ SERVER_NAME="software-development-team"
 log() { printf '[install] %s\n' "$1"; }
 err() { printf '[install] ERROR: %s\n' "$1" >&2; }
 
+# Serialize a path as the contents of a TOML basic string. TOML requires UTF-8
+# and forbids literal control characters in basic strings; paths with invalid
+# UTF-8 therefore cannot be represented without changing their bytes.
+toml_basic_string() {
+  value=$1
+  label=$2
+
+  if ! printf '%s' "$value" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+    err "Cannot encode $label in config.toml: its path is not valid UTF-8."
+    return 1
+  fi
+
+  bytes=$(printf '%s' "$value" | LC_ALL=C od -An -v -t x1) || return 1
+  for byte in $bytes; do
+    case $byte in
+      22) printf '\\"' ;; # double quote
+      5c) printf '\\\\' ;; # backslash
+      08) printf '\\b' ;;
+      09) printf '\\t' ;;
+      0a) printf '\\n' ;;
+      0c) printf '\\f' ;;
+      0d) printf '\\r' ;;
+      *)
+        decimal=$(printf '%d' "0x$byte") || return 1
+        if [ "$decimal" -lt 32 ] || [ "$decimal" -eq 127 ]; then
+          # All other TOML-forbidden control characters use a Unicode escape.
+          printf '\\u00%s' "$byte"
+        else
+          octal=$(printf '%03o' "$decimal") || return 1
+          printf '%b' "\\0$octal"
+        fi
+        ;;
+    esac
+  done
+}
+
 # --- Sanity checks ---------------------------------------------------------
 if [ ! -f "$SERVER_DIR/launch.sh" ]; then
   err "MCP server not found at $SERVER_DIR (expected launch.sh). Run this script from the repo checkout."
@@ -38,6 +74,18 @@ if [ ! -f "$SERVER_DIR/launch.sh" ]; then
 fi
 if ! command -v node >/dev/null 2>&1; then
   err "node not found on PATH. The MCP server needs Node.js 18+."
+  exit 1
+fi
+if ! command -v npm >/dev/null 2>&1; then
+  err "npm not found on PATH. The MCP server uses it for the first-launch build."
+  exit 1
+fi
+if ! command -v iconv >/dev/null 2>&1; then
+  err "iconv not found on PATH. It is required to safely write TOML paths."
+  exit 1
+fi
+if ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)' >/dev/null 2>&1; then
+  err "Node.js 18+ is required. Found: $(node --version 2>/dev/null || printf 'unknown')."
   exit 1
 fi
 
@@ -48,23 +96,27 @@ if [ -f "$CONFIG_FILE" ] && grep -q "^\[mcp_servers\.$SERVER_NAME\]" "$CONFIG_FI
   log "config.toml already has [mcp_servers.$SERVER_NAME] — leaving it untouched."
   log "  If paths changed, edit the block in $CONFIG_FILE by hand."
 else
+  SERVER_LAUNCH_ARG=$(toml_basic_string "$SERVER_DIR/launch.sh" "MCP launch script") || exit 1
+  SERVER_DIR_ARG=$(toml_basic_string "$SERVER_DIR" "MCP server directory") || exit 1
+  DATA_DIR_ARG=$(toml_basic_string "$DATA_DIR" "MCP data directory") || exit 1
+
   log "Adding [mcp_servers.$SERVER_NAME] to $CONFIG_FILE"
   {
     printf '\n'
     printf '# Added by software-development-team codex/install.sh\n'
     printf '[mcp_servers.%s]\n' "$SERVER_NAME"
     printf 'command = "sh"\n'
-    printf 'args = ["%s/launch.sh", "%s", "%s"]\n' "$SERVER_DIR" "$SERVER_DIR" "$DATA_DIR"
+    printf 'args = ["%s", "%s", "%s"]\n' "$SERVER_LAUNCH_ARG" "$SERVER_DIR_ARG" "$DATA_DIR_ARG"
     printf 'startup_timeout_sec = 120\n'
   } >> "$CONFIG_FILE"
 fi
 
-# --- 2. Install agents -----------------------------------------------------
-log "Installing agent definitions into $AGENTS_DIR"
+# --- 2. Install role templates --------------------------------------------
+log "Installing role templates into $AGENTS_DIR"
 for f in "$SCRIPT_DIR"/agents/*.toml; do
   [ -e "$f" ] || continue
   cp "$f" "$AGENTS_DIR/"
-  log "  agent: $(basename "$f")"
+  log "  role template: $(basename "$f")"
 done
 
 # --- 3. Install skills -----------------------------------------------------
@@ -90,12 +142,14 @@ cat <<EOF
   Skills:  $SKILLS_DIR
 
 Next:
-  1. Start Codex:    codex
-  2. Kick off a run: /begin <task description>   (or type \$begin, or run /skills)
-     (the dashboard URL prints at the start of the run)
+  1. Start a fresh Codex session:  codex
+  2. Confirm MCP registration:     codex mcp get software-development-team
+  3. Kick off a run:               \$begin <task description>
 
 First launch compiles the server; the startup_timeout_sec = 120 setting gives it
-room. If the MCP client still times out, relaunch — the build will have finished.
+room. If the team tools do not appear, inspect $CONFIG_FILE, run the MCP check
+above, and start a fresh Codex session. A server log URL alone does not register
+MCP tools into an already-running Codex session.
 
 To uninstall: remove the [mcp_servers.$SERVER_NAME] block from $CONFIG_FILE and
 delete the copied agent files from $AGENTS_DIR and the skill directories

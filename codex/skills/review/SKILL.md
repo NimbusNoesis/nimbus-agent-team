@@ -31,7 +31,7 @@ If the diff is very large (>500 lines), summarize which files changed and note t
 
 ### 3. Spawn the reviewer agent
 
-Request that Codex spawn the `reviewer` agent with the context below. (The reviewer definition lives in `~/.codex/agents/reviewer.toml`.)
+Read `${CODEX_HOME:-$HOME/.codex}/agents/reviewer.toml`, then call Codex's native `spawn_agent` tool with `task_name: "reviewer"`. Include that template's `developer_instructions` and the context below in the spawn message.
 
 **Spawn context to include:**
 

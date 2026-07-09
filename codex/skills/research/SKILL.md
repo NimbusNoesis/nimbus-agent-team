@@ -27,7 +27,7 @@ Note any relevant entries that relate to the query.
 
 ### 2. Spawn the researcher agent
 
-Request that Codex spawn the `researcher` agent with the context below. (The researcher definition lives in `~/.codex/agents/researcher.toml`.)
+Read `${CODEX_HOME:-$HOME/.codex}/agents/researcher.toml`, then call Codex's native `spawn_agent` tool with `task_name: "researcher"`. Include that template's `developer_instructions` and the context below in the spawn message.
 
 **Spawn context to include:**
 

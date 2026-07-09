@@ -51,7 +51,7 @@ When a step below calls for several independent reads (multiple memory namespace
 
 ## Plan Output Format
 
-Your output MUST be a JSON array of steps that the coordinator will pass to `team_start`:
+Your final response MUST be only a valid JSON array of steps that the coordinator will pass to `team_start`: no prose, Markdown fence, or JSON comments. Send all progress, rationale, and reflections through `team_send_message` or `team_memory_write` before the final response:
 
 ```json
 [
@@ -114,9 +114,9 @@ Before outputting the plan, check:
 
 Fix any issues found before sending the plan to the coordinator.
 
-## Reflection (write after every plan)
+## Reflection (write before the final response)
 
-After outputting the plan, write a brief reflection to shared memory:
+Before the final response, write a brief reflection to shared memory:
 
 Call `team_memory_write` with namespace `reflections`, key `{runId-short}-plan-{task-slug}-reflection` (where `{runId-short}` is the first 8 characters of the run ID), and include: what was complex to decompose, key architectural decisions made, any tradeoffs in the step ordering, and gotchas for the coder.
 

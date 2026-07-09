@@ -16,18 +16,36 @@ The team's MCP tools are namespaced. When this skill says `team_X`, call `mcp__s
 - `team_status` → `mcp__software-development-team__team_status`
 - `team_dashboard_url` → `mcp__software-development-team__team_dashboard_url`
 
+## MCP Availability Preflight
+
+Before calling a team tool, inspect the tools exposed in the current session; do
+not invent an availability API or attempt an unavailable call.
+
+- **All team MCP tools are absent:** Stop before looking up status. Tell the user
+  to inspect the installed `${CODEX_HOME:-$HOME/.codex}/config.toml`, run
+  `codex mcp get software-development-team`, and start a fresh Codex
+  session before retrying. A localhost dashboard URL in `.team/logs/server.log`
+  only shows that the server is listening; it cannot register tools in an
+  already-running session.
+- **Only `team_dashboard_url` is unavailable:** Continue the available team-state
+  status lookup, but say that no dashboard link is available and report this
+  diagnostic to the user. Do not guess a URL from server logs: a usable URL comes
+  only from the registered `team_dashboard_url` tool.
+
 ## Steps
 
-1. Call `team_dashboard_url` and show the user the dashboard link.
+1. If `team_dashboard_url` is available, call it and show the user the returned
+   dashboard link. Otherwise continue the status lookup without a dashboard link
+   as required by the MCP Availability Preflight diagnostic.
 
-2. Call `team_status` with the run ID. If the user did not give one, look for the most recent run by listing the `.team/runs/` directory (e.g., `ls -t .team/runs/`), pick the first directory name (that's the run ID), and call `team_status` with it. If the `.team/runs/` directory doesn't exist or is empty, tell the user "No runs found. Start one with the begin skill (`/begin` or `$begin`)."
+2. Call `team_status` with the run ID. If the user did not give one, look for the most recent run by listing the `.team/runs/` directory (e.g., `ls -t .team/runs/`), pick the first directory name (that's the run ID), and call `team_status` with it. If the `.team/runs/` directory doesn't exist or is empty, tell the user "No runs found. Start one with the begin skill (`$begin`)."
 
 3. Display a formatted summary:
 
 ```
 Run: <task name> (<run ID>)
 Status: <overall run status>
-Dashboard: <url>
+Dashboard: <url, when `team_dashboard_url` is registered; otherwise unavailable (team_dashboard_url is not registered)>
 
 Steps (<N complete> / <total>):
   Step 1 [complete]   <step description>

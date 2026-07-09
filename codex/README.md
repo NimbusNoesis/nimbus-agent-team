@@ -24,7 +24,7 @@ default `~/.codex`):
 
 1. Adds an `[mcp_servers.software-development-team]` block to `~/.codex/config.toml`
    (skips with a warning if a block of that name already exists).
-2. Copies the agent definitions into `~/.codex/agents/`.
+2. Copies the role templates into `~/.codex/agents/`.
 3. Copies the skills into `~/.codex/skills/`.
 
 It points the MCP server at this checkout and builds into
@@ -37,12 +37,12 @@ Start Codex and invoke the `begin` skill with your task:
 
 ```bash
 codex
-> /begin Implement a REST API for user management with CRUD endpoints
+> $begin Implement a REST API for user management with CRUD endpoints
 ```
 
-Skills can be invoked three ways in Codex:
+Skills can be invoked two ways in Codex:
 
-- **Explicitly** — `/begin <task>`, or type `$` to open the skill menu, or run `/skills`.
+- **Explicitly** — `$begin <task>`, or type `$` to open the skill menu.
 - **Implicitly** — Codex selects a skill when your request matches its `description`
   (e.g. "review my changes" can trigger the `review` skill).
 
@@ -51,7 +51,8 @@ The coordinator will:
 1. Assess scope and spawn the planner (or plan directly for small tasks).
 2. Run the plan → plan-critic → final-plan loop, then present the plan for approval.
 3. Execute steps: spawn coders, spawn reviewers, handle retries and escalations.
-4. Show real-time progress on the dashboard (URL printed at the start of the run).
+4. Show a dashboard link when the `team_dashboard_url` MCP tool is registered in
+   the current Codex session.
 
 ### Skills
 
@@ -67,11 +68,12 @@ The coordinator will:
 
 ### Agents
 
-The skills spawn six subagents, defined in `~/.codex/agents/*.toml`:
-`planner`, `plan-critic`, `coder`, `reviewer`, `researcher`, `documentation`. Codex
-does not auto-spawn them — the coordinator requests each spawn explicitly and passes
-the full per-step context (subagents inherit no conversation context). The agents
-inherit the team's MCP server from the session, so they call
+The skills spawn six role-specific subagents: `planner`, `plan-critic`, `coder`,
+`reviewer`, `researcher`, and `documentation`. The TOML files in
+`~/.codex/agents/` are role templates: before each spawn, the coordinator reads the
+appropriate template and includes its instructions plus the full per-step context in
+the native `spawn_agent` request. Subagents inherit no conversation context, but do
+inherit the team's MCP server, so they call
 `mcp__software-development-team__team_*` tools directly.
 
 ## How it works
@@ -96,7 +98,7 @@ inherit the team's MCP server from the session, so they call
   namespaces (`decisions`, `context`, `learnings`, `reviews`, `reflections`). They do
   not perform work.
 - **Subagent spawning** performs the work. The two systems are separate: the `agent`
-  argument to `team_advance` is just a label; spawning the `coder` subagent is what
+  argument to `team_advance` is just a label; a native `spawn_agent` request is what
   makes a coder actually run.
 - Run state and memory persist to a `.team/` directory in your project (gitignored).
 
@@ -112,6 +114,21 @@ args = ["<abs>/server/launch.sh", "<abs>/server", "<CODEX_HOME>/data/software-de
 startup_timeout_sec = 120
 ```
 
+### MCP registration and dashboard recovery
+
+Codex registers MCP tools when it starts a session. After installing or changing
+the config, inspect `~/.codex/config.toml`, run:
+
+```bash
+codex mcp get software-development-team
+```
+
+then start a fresh `codex` session. If the team tools are missing in an existing
+session, do not infer registration from `.team/logs/server.log`: a server log
+line showing a localhost dashboard URL only means the server is listening. It
+cannot add MCP tools to an already-running Codex session. The dashboard URL is
+authoritative only when the registered `team_dashboard_url` tool returns it.
+
 ## First-launch build
 
 The MCP server compiles itself on first launch (~30–60s: `npm ci` + `tsup`) into
@@ -120,13 +137,27 @@ gives Codex room to wait. If the MCP client still times out, relaunch `codex` �
 build will have finished and subsequent starts are instant. `dist/` and
 `node_modules/` are never committed.
 
+## Verify the distribution
+
+Run the smoke test from the repository checkout:
+
+```bash
+sh codex/test-install.sh
+```
+
+The smoke test requires Python 3.11+ (for `tomllib`) and a local, runnable Codex
+CLI. It installs into a temporary Codex home, validates the generated TOML and
+every installed skill and role template, then asks the local Codex CLI to load
+the MCP configuration. It validates configuration only: it does not download
+dependencies or start the MCP server.
+
 ## Layout
 
 ```text
 codex/
 ├── install.sh             Wires everything into ~/.codex (idempotent)
 ├── config.snippet.toml    MCP server config block (template)
-├── agents/                Subagent definitions (TOML)
+├── agents/                Role templates used in spawn prompts (TOML)
 │   ├── planner.toml
 │   ├── plan-critic.toml
 │   ├── coder.toml
@@ -158,8 +189,8 @@ not duplicated here.
 
 3. Optionally delete the build dir: `rm -rf ~/.codex/data/software-development-team`.
 
-## Updating skills and agents
+## Updating skills and role templates
 
-Codex picks up skill/agent changes on a new session. After editing files here,
+Codex picks up skill and role-template changes on a new session. After editing files here,
 re-run `sh codex/install.sh` to re-copy them, then start a fresh `codex` session (if
 a change doesn't appear, restart Codex).

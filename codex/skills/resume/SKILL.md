@@ -21,19 +21,37 @@ The team's MCP tools are namespaced. When this skill says `team_X`, call `mcp__s
 - `team_memory_write` → `mcp__software-development-team__team_memory_write`
 - `team_dashboard_url` → `mcp__software-development-team__team_dashboard_url`
 
+## MCP Availability Preflight
+
+Before calling a team tool, inspect the tools exposed in the current session; do
+not invent an availability API or attempt an unavailable call.
+
+- **All team MCP tools are absent:** Stop before resuming. Tell the user to
+  inspect the installed `${CODEX_HOME:-$HOME/.codex}/config.toml`, run
+  `codex mcp get software-development-team`, and start a fresh Codex
+  session before retrying. A localhost dashboard URL in `.team/logs/server.log`
+  only shows that the server is listening; it cannot register tools in an
+  already-running session.
+- **Only `team_dashboard_url` is unavailable:** Continue the available team-state
+  work, but say that no dashboard link is available and report this diagnostic to
+  the user. Do not guess a URL from server logs: a usable URL comes only from the
+  registered `team_dashboard_url` tool.
+
 ## Two Separate Systems
 
 You have TWO different mechanisms. Do not confuse them:
 
 1. **MCP tools** (`mcp__software-development-team__team_*`) — These update STATE in the MCP server. They track which step is coding/reviewing/complete. They do NOT execute any work.
 
-2. **Subagent spawning** — Codex spawns specialized subagents (coder, reviewer, etc.) on your request, each running in its own context. The subagent definitions live in `~/.codex/agents/*.toml`; you invoke them by requesting Codex spawn the named agent with the full step context.
+2. **Subagent spawning** — Codex spawns specialized subagents (coder, reviewer, etc.) on your request, each running in its own context. The role templates live in `${CODEX_HOME:-$HOME/.codex}/agents/*.toml`; read the relevant template and include its `developer_instructions` with the full step context in a native `spawn_agent` call. `task_name` is only a label and does not load the TOML automatically.
 
-**The MCP tools and subagent spawning are completely separate.** The `agent` parameter in `team_advance` is just a label string (e.g., `"coder"`), NOT a spawn request. To actually make a coder do work, you must spawn the `coder` subagent.
+**The MCP tools and subagent spawning are completely separate.** The `agent` parameter in `team_advance` is just a label string (e.g., `"coder"`), NOT a spawn request. To actually make a coder do work, you must call Codex's native `spawn_agent` tool.
 
 ## Re-entry Steps
 
-1. Call `team_dashboard_url` and show the user the dashboard link.
+1. If `team_dashboard_url` is available, call it and show the user the returned
+   dashboard link. Otherwise continue without a dashboard link as required by
+   the MCP Availability Preflight diagnostic.
 
 2. Call `team_status` with the provided run ID to load current state. If the run is not found, tell the user and stop.
 

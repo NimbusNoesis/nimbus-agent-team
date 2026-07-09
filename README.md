@@ -23,9 +23,10 @@ only the host-specific glue differs. They can be installed side by side.
 │       ├── hooks/                    SessionStart pre-warm hook
 │       └── server/                   Host-agnostic MCP server (SQLite + bus + memory + dashboard)
 └── codex/                            The OpenAI Codex CLI distribution
-    ├── agents/                       Agent definitions (.toml)
+    ├── agents/                       Role templates used in spawn prompts (.toml)
     ├── skills/                       Skills (begin, status, memory, resume, plan, research, review)
     ├── install.sh                    Wires the above into ~/.codex
+    ├── test-install.sh               Codex installer/configuration smoke test
     └── config.snippet.toml           MCP server config block
 ```
 
@@ -52,18 +53,24 @@ From a checkout of this repo:
 ```bash
 sh codex/install.sh
 codex
-> /begin Implement a REST API for user management with CRUD endpoints
+> $begin Implement a REST API for user management with CRUD endpoints
 ```
 
-See [`codex/README.md`](codex/README.md) for install details, the slash-command
-list, and how the Codex port maps to the Claude Code plugin.
+See [`codex/README.md`](codex/README.md) for install details, the skill list,
+and how the Codex port maps to the Claude Code plugin.
+
+To validate the Codex distribution without changing your normal configuration:
+
+```bash
+sh codex/test-install.sh
+```
 
 ## How it works
 
 ```
                      User
                       |
-                  /begin
+                  $begin
                       |
                  Coordinator
         /      |       |        |        \

@@ -23,19 +23,35 @@ The team's MCP tools are namespaced. When this skill says `team_X`, call `mcp__s
 - `team_memory_delete` → `mcp__software-development-team__team_memory_delete`
 - `team_dashboard_url` → `mcp__software-development-team__team_dashboard_url`
 
+## MCP Availability Preflight
+
+Before calling a team tool, inspect the tools exposed in the current session; do
+not invent an availability API or attempt an unavailable call.
+
+- **All team MCP tools are absent:** Stop before calling `team_start` or starting
+  work. Tell the user to inspect the installed `${CODEX_HOME:-$HOME/.codex}/config.toml`, run
+  `codex mcp get software-development-team`, and start a fresh Codex
+  session before retrying. A localhost dashboard URL in `.team/logs/server.log`
+  only shows that the server is listening; it cannot register tools in an
+  already-running session.
+- **Only `team_dashboard_url` is unavailable:** Continue the available team-state
+  work, but say that no dashboard link is available and report this diagnostic to
+  the user. Do not guess a URL from server logs: a usable URL comes only from the
+  registered `team_dashboard_url` tool.
+
 ## Two Separate Systems
 
 You have TWO different mechanisms. Do not confuse them:
 
 1. **MCP tools** (`mcp__software-development-team__team_*`) — These update STATE in the MCP server. They track which step is coding/reviewing/complete. They do NOT execute any work.
 
-2. **Subagent spawning** — Codex spawns specialized subagents (planner, plan-critic, coder, reviewer, researcher, documentation) on your request. A subagent runs in its own context with its own model/tool work, then returns its result to you. The subagent definitions live in `~/.codex/agents/*.toml`; you invoke them by **requesting that Codex spawn the named agent** and handing it the full context for the step.
+2. **Subagent spawning** — Codex spawns specialized subagents (planner, plan-critic, coder, reviewer, researcher, documentation) on your request. A subagent runs in its own context with its own model/tool work, then returns its result to you. The role templates live in `${CODEX_HOME:-$HOME/.codex}/agents/*.toml`.
 
-**The MCP tools and subagent spawning are completely separate.** The `agent` parameter in `team_advance` is just a label string (e.g., `"coder"`), NOT a spawn request. To actually make a coder do work, you must spawn the `coder` subagent.
+**The MCP tools and subagent spawning are completely separate.** The `agent` parameter in `team_advance` is just a label string (e.g., `"coder"`), NOT a spawn request. To actually make a coder do work, you must call Codex's native `spawn_agent` tool.
 
 ### How to spawn a subagent
 
-When this skill says "spawn the `<name>` agent", ask Codex to spawn that agent and include the **full per-step context** in the spawn request (see the Spawn Context Checklist below). The subagent has NO inherited conversation context — everything it needs must be in the spawn request. Spawn one agent at a time unless pipeline parallelism (below) explicitly allows two. Wait for a spawned agent to return before acting on its result.
+When this skill says "spawn the `<name>` agent", use the native `spawn_agent` tool with `task_name: "<name>"`. Before calling it, read `${CODEX_HOME:-$HOME/.codex}/agents/<name>.toml` and put its `developer_instructions`, together with the **full per-step context**, in the spawn message (see the Spawn Context Checklist below). `task_name` labels the work; it does not load the TOML file automatically. The subagent has NO inherited conversation context — everything it needs must be in the spawn request. Spawn one agent at a time unless pipeline parallelism (below) explicitly allows two. Wait for a spawned agent to return before acting on its result.
 
 ## Scope Assessment
 
@@ -98,17 +114,24 @@ When the user's task is to **review existing code** (not build something), the r
    ## Instructions
    Review for correctness, security, code quality, error handling, and test coverage.
    If the review targets include executable code, run the project's verification suite (tests, type check, lint) to catch regressions. Skip verification for doc-only or config-only targets — there is nothing to regress.
-   Submit your verdict via team_submit_result as usual — `done` if the code is clean, `needs_revision` if you found issues worth fixing — and return your full findings as structured text (overall verdict, issues with file/line + why + fix, positives, verification results, optional suggestions). This is a dedicated review: the coordinator closes the step with `mark_reviewed` and presents your findings to the user; it does not spawn a coder to act on a `needs_revision` verdict here.
-   You MAY write a review reflection to the reflections namespace and review notes to the reviews namespace.
+   This STANDALONE-review prompt overrides the reviewer role's normal result-submission rule: **do NOT call `team_submit_result`**. Return your full findings as structured text to the coordinator, including an explicit verdict (`done` if the code is clean, `needs_revision` if you found issues worth fixing), issues with file/line + why + fix, positives, verification results, and optional suggestions. This is a dedicated review: the coordinator does not spawn a coder to act on a `needs_revision` verdict here.
+   Before returning, write review notes (including the verdict and findings) to the `reviews` namespace and, if useful, a reflection to the `reflections` namespace.
    ```
 
-4. A dedicated review delivers findings, not code to fix — so close the step with `mark_reviewed` after the reviewer returns, **regardless of whether its verdict was `done` or `needs_revision`** (see "Read-only review step" in The Loop). `mark_reviewed` moves a `coding` or `reviewing` step straight to `complete`. Do NOT follow the normal `needs_revision → request_revision → spawn coder` loop here; a dedicated review has no coder. The reviewer keeps its usual two verdicts — only the coordinator's close-out differs.
+4. A dedicated review delivers findings, not code to fix. After the reviewer returns, first preserve its returned verdict and findings outside workflow state by relaying them on the dashboard:
+
+   ```text
+   team_send_message(from: "reviewer", to: "coordinator", type: "review",
+     body: "Standalone review verdict: <done|needs_revision>. Findings: <concise findings summary>")
+   ```
+
+   Then close the read-only step with `mark_reviewed`, **regardless of whether the returned verdict was `done` or `needs_revision`** (see "Read-only review step" in The Loop). `mark_reviewed` is only neutral read-only completion; its synthetic `done` result is not the review verdict. Do NOT follow the normal `needs_revision → request_revision → spawn coder` loop here; a dedicated review has no coder.
 
    ```text
    team_advance(runId, stepId, action: "mark_reviewed", summary: "<one-line summary of what the review delivered>")
    ```
 
-5. Relay the outcome on the dashboard (`team_send_message(from: "reviewer", to: "coordinator", type: "review", body: "Standalone review complete: <one-line verdict>")`) and present the reviewer's findings to the user.
+5. Present the reviewer's actual verdict and findings to the user.
 
 ## Cost Awareness
 
@@ -120,9 +143,11 @@ Each subagent spawn consumes tokens independently. Token costs scale linearly wi
 
 ## Starting a Run
 
-1. Call `team_dashboard_url` and tell the user the dashboard URL.
+1. If `team_dashboard_url` is available, call it and tell the user the returned
+   dashboard URL. Otherwise continue without a dashboard link as required by the
+   MCP Availability Preflight diagnostic.
 2. Read shared memory (`team_memory_read` for all namespaces: `decisions`, `context`, `learnings`, `reviews`, `reflections`) for prior context.
-3. Create plan steps (yourself for quick tasks, or from planner output). **For planner-produced plans, run the adversarial review sub-phase (3a–3b) below before proceeding to step 4. For quick tasks you drafted yourself, skip directly to step 4.**
+3. Create plan steps (yourself for quick tasks, or from planner output). **For planner-produced plans, run the adversarial review sub-phase (3a–3b) below before proceeding to step 4. For quick tasks you drafted yourself, skip directly to step 4.** When spawning the initial planner, include this final-output contract: all progress, rationale, and reflections must be sent with `team_send_message` or written with `team_memory_write` before the final response; the final response must be only a valid JSON array of plan steps, with no prose, Markdown fence, or JSON comments.
 
    **3a. Spawn the plan-critic** (planner-produced plans only).
 
@@ -170,7 +195,7 @@ Each subagent spawn consumes tokens independently. Token costs scale linearly wi
      body: "planner revising: incorporating plan-critic feedback")
    ```
 
-   Spawn the planner agent again, passing the original task, the draft plan, and the full critique. Instruct the planner to produce a **final plan** that either addresses each concern or explicitly rejects it with rationale. The planner's output from this pass replaces the draft — use it as the plan for the approval gate.
+   Spawn the planner agent again, passing the original task, the draft plan, and the full critique. Instruct the planner to produce a **final plan** that either addresses each concern or explicitly rejects it with rationale. Any rationale, progress update, or reflection must be sent with `team_send_message` or written with `team_memory_write` before the final response. The final response must be only a valid JSON array of plan steps, with no prose, Markdown fence, or JSON comments. The planner's output from this pass replaces the draft — use it as the plan for the approval gate.
 
    Relay after the planner returns with the final plan:
 

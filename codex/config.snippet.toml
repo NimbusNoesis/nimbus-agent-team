@@ -12,6 +12,12 @@
 # The server is the SAME host-agnostic MCP server the Claude Code plugin uses.
 # launch.sh builds it on first launch (~30-60s) into <DATA_DIR>, then runs it
 # over stdio. dist/ and node_modules/ are never committed.
+#
+# After adding or changing this block, start a fresh Codex session and verify it
+# with: codex mcp get software-development-team. A localhost dashboard URL in
+# .team/logs/server.log means the server is listening; it cannot register MCP
+# tools into an already-running Codex session. Get the usable dashboard URL only
+# from the registered team_dashboard_url tool.
 
 [mcp_servers.software-development-team]
 command = "sh"

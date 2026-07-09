@@ -28,7 +28,7 @@ Call `team_memory_read` for these namespaces and note any relevant entries:
 
 ### 2. Spawn the planner agent
 
-Request that Codex spawn the `planner` agent with the context below. (The planner definition lives in `~/.codex/agents/planner.toml`.)
+Read `${CODEX_HOME:-$HOME/.codex}/agents/planner.toml`, then call Codex's native `spawn_agent` tool with `task_name: "planner"`. Include that template's `developer_instructions` and the context below in the spawn message.
 
 **Spawn context to include:**
 
@@ -52,7 +52,7 @@ The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__
 
 1. Explore the codebase (use file search and read tools) to understand project structure and patterns.
 2. Brainstorm the approach based on the task and prior context.
-3. Produce a structured JSON plan as your final output — an array of step objects.
+3. Send any progress, rationale, or reflection through `team_send_message` or `team_memory_write` before your final response. Your final response MUST be only a valid JSON array of step objects: no prose, Markdown fence, or JSON comments.
 
 Each step object must follow this schema:
 {
@@ -72,14 +72,14 @@ Rules:
 - Target 5-6 steps for most features. Keep each step focused.
 - Do NOT call team_start — this is plan-only mode.
 
-After outputting the plan, write a reflection to memory: team_memory_write(namespace: "reflections", key: "planonly-<task-slug>-reflection", value: <what was complex, key decisions, tradeoffs, gotchas>). Use the `planonly-` prefix and a descriptive task slug: plan-only mode runs outside any team run, so there is no run-ID to scope the key with. This durable key keeps standalone-plan reflections distinct from run-scoped (`<run-prefix>-step-N-reflection`) entries; re-planning the same task intentionally overwrites its prior plan-only reflection.
+Before your final response, write a reflection to memory: team_memory_write(namespace: "reflections", key: "planonly-<task-slug>-reflection", value: <what was complex, key decisions, tradeoffs, gotchas>). Use the `planonly-` prefix and a descriptive task slug: plan-only mode runs outside any team run, so there is no run-ID to scope the key with. This durable key keeps standalone-plan reflections distinct from run-scoped (`<run-prefix>-step-N-reflection`) entries; re-planning the same task intentionally overwrites its prior plan-only reflection.
 ```
 
 Wait for the planner agent to return with the draft JSON plan.
 
 ### 2a. Spawn the plan-critic
 
-Request that Codex spawn the `plan-critic` agent for an adversarial review of the draft. (Definition lives in `~/.codex/agents/plan-critic.toml`.)
+Read `${CODEX_HOME:-$HOME/.codex}/agents/plan-critic.toml`, then call Codex's native `spawn_agent` tool with `task_name: "plan-critic"`. Include that template's `developer_instructions` and the context below in the spawn message.
 
 **Spawn context to include:**
 
@@ -109,7 +109,7 @@ Wait for the plan-critic to return with its structured critique.
 
 ### 2b. Re-spawn the planner with the critique
 
-Request that Codex spawn the `planner` agent again, passing the original task, the draft plan, and the full critique:
+Read `${CODEX_HOME:-$HOME/.codex}/agents/planner.toml` again, then call the native `spawn_agent` tool with `task_name: "planner"`, passing the template's `developer_instructions`, the original task, the draft plan, and the full critique:
 
 **Spawn context to include:**
 
@@ -137,7 +137,7 @@ The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__
 
 ## Instructions
 
-Produce the FINAL plan as a JSON array. Address each priority concern from the critique. If you disagree with a concern, state your rationale briefly inline as a comment before the final JSON. Do NOT call team_start — this is plan-only mode.
+Address each priority concern from the critique. If you disagree with a concern, send the rationale through `team_send_message` or write it with `team_memory_write` before your final response. Your final response MUST be only a valid JSON array: no prose, Markdown fence, or JSON comments. Do NOT call team_start — this is plan-only mode.
 
 Each step object must follow this schema:
 {
@@ -177,6 +177,6 @@ After displaying the plan, say:
 
 > This is a plan-only preview. No work has been started.
 >
-> To execute this plan, run the begin skill (`/begin <task description>` or `$begin`).
+> To execute this plan, run the begin skill (`$begin <task description>`).
 >
 > The coordinator will re-run the planner (or you can paste the steps above) and will ask for your approval before any coding begins.
