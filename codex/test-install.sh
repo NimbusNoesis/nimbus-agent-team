@@ -44,6 +44,7 @@ CODEX_HOME="$TEST_HOME" sh "$SCRIPT_DIR/install.sh" >/dev/null
 
 python3 - "$TEST_HOME/config.toml" "$TEST_HOME" <<'PY'
 import pathlib
+import re
 import sys
 import tomllib
 
@@ -64,23 +65,67 @@ expected_roles = {
     "coder.toml", "documentation.toml", "plan-critic.toml", "planner.toml",
     "researcher.toml", "reviewer.toml",
 }
-assert {path.name for path in (codex_home / "agents").glob("*.toml")} == expected_roles
-for role_path in (codex_home / "agents").glob("*.toml"):
-    role = tomllib.loads(role_path.read_text())
+installed_agents = sorted((codex_home / "agents").glob("*.toml"))
+assert {path.name for path in installed_agents} == expected_roles
+agent_texts = {}
+for role_path in installed_agents:
+    role_text = role_path.read_text()
+    agent_texts[role_path.name] = role_text
+    role = tomllib.loads(role_text)
     assert role["name"] == role_path.stem
     assert role["developer_instructions"].strip()
 
 expected_skills = {"begin", "memory", "plan", "research", "resume", "review", "status"}
 assert {path.name for path in (codex_home / "skills").iterdir() if path.is_dir()} == expected_skills
-for name in expected_skills:
-    assert (codex_home / "skills" / name / "SKILL.md").is_file()
+skill_paths = [codex_home / "skills" / name / "SKILL.md" for name in sorted(expected_skills)]
+assert all(path.is_file() for path in skill_paths)
+skill_texts = {path.parent.name: path.read_text() for path in skill_paths}
 
-begin_skill = (codex_home / "skills" / "begin" / "SKILL.md").read_text()
-plan_skill = (codex_home / "skills" / "plan" / "SKILL.md").read_text()
-resume_skill = (codex_home / "skills" / "resume" / "SKILL.md").read_text()
-status_skill = (codex_home / "skills" / "status" / "SKILL.md").read_text()
-research_skill = (codex_home / "skills" / "research" / "SKILL.md").read_text()
-review_skill = (codex_home / "skills" / "review" / "SKILL.md").read_text()
+# Native task labels are constrained more tightly than role/template names. Check
+# every literal in the installed copies so future skills and agent comments cannot
+# accidentally introduce a label that native spawn_agent rejects.
+task_name_pattern = re.compile(r'task_name\s*:\s*"([^"]+)"')
+task_names = [
+    match.group(1)
+    for text in (*skill_texts.values(), *agent_texts.values())
+    for match in task_name_pattern.finditer(text)
+]
+assert task_names
+assert all(re.fullmatch(r"[a-z0-9_]+", name) for name in task_names), task_names
+
+begin_skill = skill_texts["begin"]
+plan_skill = skill_texts["plan"]
+resume_skill = skill_texts["resume"]
+status_skill = skill_texts["status"]
+research_skill = skill_texts["research"]
+review_skill = skill_texts["review"]
+
+plan_critic = tomllib.loads(agent_texts["plan-critic.toml"])
+assert plan_critic["name"] == "plan-critic"
+assert 'task_name: "plan_critic"' in agent_texts["plan-critic.toml"]
+assert 'task_name: "plan_critic"' in begin_skill
+assert 'task_name: "plan_critic"' in plan_skill
+assert "template filename remain `plan-critic`" in plan_skill
+
+assert "pre-approval, read-only role" in agent_texts["planner.toml"]
+assert "pre-approval, read-only role" in agent_texts["plan-critic.toml"]
+assert "explicitly override its reflection contract" in begin_skill
+assert "Reflection key override" in begin_skill
+assert "explicit pre-run reflection override" in plan_skill
+assert "Reflection override: this is pre-run plan-only mode" in plan_skill
+
+assert "## Full step context" in begin_skill
+assert "## Persisted worktree lifecycle context" in begin_skill
+assert "perform every repository read, verification command, and Git inspection inside this worktree" in begin_skill
+assert "standalone reviewer is read-only" in begin_skill
+assert "## Diff Output" in review_skill
+assert "developer_instructions" in review_skill
+
+assert "Every subagent spawn request needs all of these" in resume_skill
+assert "Relevant memory" in resume_skill
+assert "Prior context" in resume_skill
+assert "Persisted worktree lifecycle" in resume_skill
+assert "reuse this exact persisted context" in resume_skill
 
 assert "STANDALONE-review prompt overrides the reviewer role's normal result-submission rule" in begin_skill
 assert "do NOT call `team_submit_result`" in begin_skill
