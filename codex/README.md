@@ -68,7 +68,7 @@ The coordinator will:
 
 ### Agents
 
-The skills spawn six role-specific subagents. Role identities and TOML template filenames are `planner`, `plan-critic`, `coder`, `reviewer`, `researcher`, and `documentation`; native `spawn_agent.task_name` labels are `planner`, `plan_critic`, `coder`, `reviewer`, `researcher`, and `documentation` respectively. The TOML files in
+The skills spawn six role-specific subagents. Role identities and TOML template filenames are `planner`, `plan-critic`, `coder`, `reviewer`, `researcher`, and `documentation`. Native `spawn_agent.task_name` is instead a unique invocation label; it never loads a template, must match `^[a-z0-9_]+$`, and must not reuse any live or previously created agent path in the coordinator session. Before each pre-run planning workflow, the coordinator allocates the smallest fresh positive integer `<W>` for which all three phase labels are unused, then reuses it in `planner_draft_<W>`, `plan_critic_<W>`, and `planner_final_<W>`. This coordinator-session sequence does not depend on a run ID and advances for every later plan or begin invocation. Execution uses `<role>_step_<N>_attempt_<A>` (for example, `coder_step_2_attempt_1` and `reviewer_step_2_attempt_1`), incrementing the per-role/phase attempt for revisions, recovery, interrupted re-dispatches, and repeated reviews. The step number keeps parallel same-role dispatches distinct. The TOML files in
 `~/.codex/agents/` are role templates: before each spawn, the coordinator reads the
 appropriate template and includes its instructions plus the full per-step context in
 the native `spawn_agent` request. Subagents inherit no conversation context. When the

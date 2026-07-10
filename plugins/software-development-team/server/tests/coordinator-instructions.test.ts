@@ -76,11 +76,24 @@ describe('coordinator instruction contract', () => {
 
     const begin = codexSkills.find(({ file }) => file.endsWith('/begin/SKILL.md'))!.content;
     const plan = codexSkills.find(({ file }) => file.endsWith('/plan/SKILL.md'))!.content;
-    expect(begin).toMatch(/plan-critic[^\n]*task_name:\s*["'`]plan_critic["'`]/i);
-    expect(plan).toMatch(/template filename remain[s]?\s*["'`]?plan-critic["'`]?[^\n]*plan_critic[^\n]*valid native task label/i);
-    expect(codexAgents.find(({ role }) => role === 'plan-critic')!.content).toMatch(
-      /Role\/template identity is [`']plan-critic[`']; native spawn_agent dispatch MUST use task_name:\s*["'`]plan_critic["'`]/,
+    const resume = codexSkills.find(({ file }) => file.endsWith('/resume/SKILL.md'))!.content;
+    expect(begin).toMatch(/plan-critic[^\n]*task_name:\s*["'`]plan_critic_1["'`]/i);
+    expect(plan).toMatch(/template filename remain[s]?\s*["'`]?plan-critic["'`]?[^\n]*plan_critic_<W>[^\n]*grammar-valid native task label/i);
+    expect(plan).toMatch(/task_name:\s*["'`]planner_draft_1["'`][\s\S]*task_name:\s*["'`]plan_critic_1["'`][\s\S]*task_name:\s*["'`]planner_final_1["'`]/);
+    for (const content of [begin, plan]) {
+      expect(content).toMatch(/fresh positive integer[\s\S]*planner_draft_<W>[\s\S]*plan_critic_<W>[\s\S]*planner_final_<W>/i);
+      expect(content).toMatch(/(?:pre-[^\n]*team_start|before any run exists)[^\n]*does not depend on a run ID/i);
+      expect(content).toMatch(/later (?:plan(?: or begin)? )?invocation[^\n]*(?:new|allocate)/i);
+    }
+    expect(begin).toMatch(/task_name[^\n]*unique invocation label[^\n]*never loads or selects a template/i);
+    expect(begin).toMatch(/<role>_step_<N>_attempt_<A>[\s\S]*parallel same-role workers[^\n]*colliding/i);
+    expect(resume).toMatch(/coder_step_2_attempt_1[\s\S]*reviewer_step_2_attempt_1/);
+    expect(resume).toMatch(/revision, recovery, interrupted re-dispatch, or repeated review[\s\S]*never reused/i);
+    const planCriticTemplate = codexAgents.find(({ role }) => role === 'plan-critic')!.content;
+    expect(planCriticTemplate).toMatch(
+      /Role\/template identity is [`']plan-critic[`']; native spawn_agent dispatch MUST use the current planning workflow's unique grammar-safe [`']plan_critic_<W>[`'] invocation label/,
     );
+    expect(planCriticTemplate).not.toMatch(/MUST use task_name:\s*["'`]plan_critic["'`]/);
 
     const spawningSkills = codexSkills.filter(({ content }) => /spawn_agent/.test(content));
     for (const { file, content } of spawningSkills) {

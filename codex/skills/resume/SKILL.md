@@ -44,7 +44,9 @@ You have TWO different mechanisms. Do not confuse them:
 
 1. **MCP tools** (`mcp__software-development-team__team_*`) — These update STATE in the MCP server. They track which step is coding/reviewing/complete. They do NOT execute any work.
 
-2. **Subagent spawning** — Codex spawns specialized subagents (coder, reviewer, etc.) on your request, each running in its own context. The role templates live in `${CODEX_HOME:-$HOME/.codex}/agents/*.toml`; read the relevant template and include its `developer_instructions` with the full step context in a native `spawn_agent` call. `task_name` is only a label and does not load the TOML automatically.
+2. **Subagent spawning** — Codex spawns specialized subagents (coder, reviewer, etc.) on your request, each running in its own context. The role templates live in `${CODEX_HOME:-$HOME/.codex}/agents/*.toml`; read the relevant template and include its `developer_instructions` with the full step context in a native `spawn_agent` call. `task_name` is a unique invocation label and never loads or selects a TOML template. It MUST match `^[a-z0-9_]+$` and remain unique among all paths from the resumed session, including completed agents.
+
+For every execution or resumed dispatch use `<role>_step_<N>_attempt_<A>`: for example `coder_step_2_attempt_1` and `reviewer_step_2_attempt_1`. The attempt is one-based per role/phase and step. Increment it for every revision, recovery, interrupted re-dispatch, or repeated review, consulting persisted state and known prior dispatches so an existing agent path is never reused. The step component prevents parallel same-role workers from colliding. Role/template identities remain unchanged (including template `plan-critic`); the invocation label does not determine which template is loaded.
 
 **The MCP tools and subagent spawning are completely separate.** The `agent` parameter in `team_advance` is just a label string (e.g., `"coder"`), NOT a spawn request. To actually make a coder do work, you must call Codex's native `spawn_agent` tool.
 

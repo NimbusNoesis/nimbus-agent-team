@@ -28,7 +28,9 @@ Call `team_memory_read` for these namespaces and note any relevant entries:
 
 ### 2. Spawn the planner agent
 
-Read `${CODEX_HOME:-$HOME/.codex}/agents/planner.toml`, then call Codex's native `spawn_agent` tool with `task_name: "planner"`. Include that template's `developer_instructions` and the context below in the spawn message.
+Before spawning, allocate a fresh positive integer planning-workflow discriminator `<W>` by choosing the smallest integer for which `planner_draft_<W>`, `plan_critic_<W>`, and `planner_final_<W>` are all unused agent paths in this coordinator session. This sequence is created before any run exists and does not depend on a run ID. Reuse the same `<W>` for all three passes of this workflow; a later plan invocation MUST allocate a new value.
+
+Read `${CODEX_HOME:-$HOME/.codex}/agents/planner.toml`, then call Codex's native `spawn_agent` tool with the resolved draft label (for example `task_name: "planner_draft_1"`). This unique invocation label does not load the template. Include that template's `developer_instructions` and the context below in the spawn message.
 
 **Spawn context to include:**
 
@@ -81,7 +83,7 @@ Wait for the planner agent to return with the draft JSON plan.
 
 ### 2a. Spawn the plan-critic
 
-Read `${CODEX_HOME:-$HOME/.codex}/agents/plan-critic.toml`, then call Codex's native `spawn_agent` tool with `task_name: "plan_critic"`. The role name and template filename remain `plan-critic`; `plan_critic` is the valid native task label. Include that template's `developer_instructions` and the context below in the spawn message.
+Read `${CODEX_HOME:-$HOME/.codex}/agents/plan-critic.toml`, then call Codex's native `spawn_agent` tool with the critic label using the workflow's same `<W>` (for example `task_name: "plan_critic_1"`). The role name and template filename remain `plan-critic`; the resolved `plan_critic_<W>` is the distinct, grammar-valid native task label for this pass. Include that template's `developer_instructions` and the context below in the spawn message.
 
 **Spawn context to include:**
 
@@ -113,7 +115,7 @@ Wait for the plan-critic to return with its structured critique.
 
 ### 2b. Re-spawn the planner with the critique
 
-Read `${CODEX_HOME:-$HOME/.codex}/agents/planner.toml` again, then call the native `spawn_agent` tool with `task_name: "planner"`, passing the template's `developer_instructions`, the original task, the draft plan, and the full critique:
+Read `${CODEX_HOME:-$HOME/.codex}/agents/planner.toml` again, then call the native `spawn_agent` tool with the final label using the workflow's same `<W>` (for example `task_name: "planner_final_1"`), passing the template's `developer_instructions`, the original task, the draft plan, and the full critique. Do not reuse `planner_draft_<W>`: native task names identify invocation paths, not templates, and every resolved planning-pass label must remain unique and match `^[a-z0-9_]+$`.
 
 **Spawn context to include:**
 
