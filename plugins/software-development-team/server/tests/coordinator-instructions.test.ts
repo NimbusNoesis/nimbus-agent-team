@@ -89,9 +89,11 @@ describe('coordinator instruction contract', () => {
     expect(begin).toMatch(/<role>_step_<N>_attempt_<A>[\s\S]*parallel same-role workers[^\n]*colliding/i);
     expect(resume).toMatch(/coder_step_2_attempt_1[\s\S]*reviewer_step_2_attempt_1/);
     expect(resume).toMatch(/revision, recovery, interrupted re-dispatch, or repeated review[\s\S]*never reused/i);
-    expect(codexAgents.find(({ role }) => role === 'plan-critic')!.content).toMatch(
-      /Role\/template identity is [`']plan-critic[`']; native spawn_agent dispatch MUST use task_name:\s*["'`]plan_critic["'`]/,
+    const planCriticTemplate = codexAgents.find(({ role }) => role === 'plan-critic')!.content;
+    expect(planCriticTemplate).toMatch(
+      /Role\/template identity is [`']plan-critic[`']; native spawn_agent dispatch MUST use the current planning workflow's unique grammar-safe [`']plan_critic_<W>[`'] invocation label/,
     );
+    expect(planCriticTemplate).not.toMatch(/MUST use task_name:\s*["'`]plan_critic["'`]/);
 
     const spawningSkills = codexSkills.filter(({ content }) => /spawn_agent/.test(content));
     for (const { file, content } of spawningSkills) {

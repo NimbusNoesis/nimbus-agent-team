@@ -102,7 +102,9 @@ review_skill = skill_texts["review"]
 
 plan_critic = tomllib.loads(agent_texts["plan-critic.toml"])
 assert plan_critic["name"] == "plan-critic"
-assert 'task_name: "plan_critic"' in agent_texts["plan-critic.toml"]
+assert "current planning workflow's unique grammar-safe `plan_critic_<W>`" in agent_texts["plan-critic.toml"]
+assert 'task_name: "plan_critic_1"' in agent_texts["plan-critic.toml"]
+assert 'MUST use task_name: "plan_critic"' not in agent_texts["plan-critic.toml"]
 assert 'task_name: "plan_critic_1"' in begin_skill
 assert 'task_name: "plan_critic_1"' in plan_skill
 assert "template filename remain `plan-critic`" in plan_skill

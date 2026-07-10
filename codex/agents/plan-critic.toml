@@ -1,6 +1,6 @@
 name = "plan-critic"
 description = "Performs adversarial Q/A on a draft implementation plan — surfaces risks, missing steps, hidden dependencies, file-conflict risks, and sizing concerns. Produces a structured critique only; does NOT produce a replacement plan or call team_start."
-# Role/template identity is `plan-critic`; native spawn_agent dispatch MUST use task_name: "plan_critic".
+# Role/template identity is `plan-critic`; native spawn_agent dispatch MUST use the current planning workflow's unique grammar-safe `plan_critic_<W>` invocation label (for example task_name: "plan_critic_1"), never the reusable unsuffixed label.
 sandbox_mode = "read-only"
 
 developer_instructions = '''
