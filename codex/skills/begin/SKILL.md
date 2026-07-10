@@ -55,7 +55,7 @@ When this skill says "spawn the `<name>` agent", read `${CODEX_HOME:-$HOME/.code
 
 Use these deterministic labels:
 
-- Planning passes: planner draft uses `task_name: "planner_draft"`; role/template `plan-critic` uses `task_name: "plan_critic"`; final planner uses `task_name: "planner_final"`.
+- Planning passes: before the first spawn of each planning workflow, allocate a fresh positive integer `<W>` by choosing the smallest integer whose three labels do not match any agent path already created in this coordinator session. This pre-`team_start` coordinator-session sequence does not depend on a run ID. Reuse that one discriminator across the workflow: planner draft uses `planner_draft_<W>`, role/template `plan-critic` uses `plan_critic_<W>`, and final planner uses `planner_final_<W>` (for example `task_name: "planner_draft_1"`, `task_name: "plan_critic_1"`, and `task_name: "planner_final_1"`). A later plan or begin invocation in the same session MUST allocate a new `<W>` and never reuse the prior trio.
 - Run workers: `<role>_step_<N>_attempt_<A>`, for example `coder_step_2_attempt_1`, `researcher_step_3_attempt_1`, or `documentation_step_4_attempt_1`.
 - Reviews: `reviewer_step_<N>_attempt_<A>`, where `<A>` is the one-based review attempt for that step.
 - A standalone review uses `reviewer_step_1_attempt_1`.

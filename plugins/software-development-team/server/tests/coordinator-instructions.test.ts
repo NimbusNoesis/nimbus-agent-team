@@ -77,9 +77,14 @@ describe('coordinator instruction contract', () => {
     const begin = codexSkills.find(({ file }) => file.endsWith('/begin/SKILL.md'))!.content;
     const plan = codexSkills.find(({ file }) => file.endsWith('/plan/SKILL.md'))!.content;
     const resume = codexSkills.find(({ file }) => file.endsWith('/resume/SKILL.md'))!.content;
-    expect(begin).toMatch(/plan-critic[^\n]*task_name:\s*["'`]plan_critic["'`]/i);
-    expect(plan).toMatch(/template filename remain[s]?\s*["'`]?plan-critic["'`]?[^\n]*plan_critic[^\n]*grammar-valid native task label/i);
-    expect(plan).toMatch(/task_name:\s*["'`]planner_draft["'`][\s\S]*task_name:\s*["'`]plan_critic["'`][\s\S]*task_name:\s*["'`]planner_final["'`]/);
+    expect(begin).toMatch(/plan-critic[^\n]*task_name:\s*["'`]plan_critic_1["'`]/i);
+    expect(plan).toMatch(/template filename remain[s]?\s*["'`]?plan-critic["'`]?[^\n]*plan_critic_<W>[^\n]*grammar-valid native task label/i);
+    expect(plan).toMatch(/task_name:\s*["'`]planner_draft_1["'`][\s\S]*task_name:\s*["'`]plan_critic_1["'`][\s\S]*task_name:\s*["'`]planner_final_1["'`]/);
+    for (const content of [begin, plan]) {
+      expect(content).toMatch(/fresh positive integer[\s\S]*planner_draft_<W>[\s\S]*plan_critic_<W>[\s\S]*planner_final_<W>/i);
+      expect(content).toMatch(/(?:pre-[^\n]*team_start|before any run exists)[^\n]*does not depend on a run ID/i);
+      expect(content).toMatch(/later (?:plan(?: or begin)? )?invocation[^\n]*(?:new|allocate)/i);
+    }
     expect(begin).toMatch(/task_name[^\n]*unique invocation label[^\n]*never loads or selects a template/i);
     expect(begin).toMatch(/<role>_step_<N>_attempt_<A>[\s\S]*parallel same-role workers[^\n]*colliding/i);
     expect(resume).toMatch(/coder_step_2_attempt_1[\s\S]*reviewer_step_2_attempt_1/);

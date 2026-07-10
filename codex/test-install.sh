@@ -103,11 +103,17 @@ review_skill = skill_texts["review"]
 plan_critic = tomllib.loads(agent_texts["plan-critic.toml"])
 assert plan_critic["name"] == "plan-critic"
 assert 'task_name: "plan_critic"' in agent_texts["plan-critic.toml"]
-assert 'task_name: "plan_critic"' in begin_skill
-assert 'task_name: "plan_critic"' in plan_skill
+assert 'task_name: "plan_critic_1"' in begin_skill
+assert 'task_name: "plan_critic_1"' in plan_skill
 assert "template filename remain `plan-critic`" in plan_skill
-assert 'task_name: "planner_draft"' in plan_skill
-assert 'task_name: "planner_final"' in plan_skill
+assert 'task_name: "planner_draft_1"' in plan_skill
+assert 'task_name: "planner_final_1"' in plan_skill
+assert "fresh positive integer" in begin_skill
+assert "planner_draft_<W>" in begin_skill
+assert "plan_critic_<W>" in begin_skill
+assert "planner_final_<W>" in begin_skill
+assert "does not depend on a run ID" in begin_skill
+assert "later plan or begin invocation" in begin_skill
 assert "unique invocation label" in begin_skill
 assert "never loads or selects a template" in begin_skill
 assert "<role>_step_<N>_attempt_<A>" in begin_skill
