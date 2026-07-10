@@ -56,6 +56,80 @@ describe('StateMachine', () => {
       // A second agent trying to start the same step should be rejected
       expect(() => sm.startStep(run.id, 1, 'coder-2')).toThrow('already being worked on');
     });
+
+    it('allows independent pairwise-disjoint steps to start immediately', () => {
+      const run = sm.createRun([
+        makeStep(1, [], ['a.ts']),
+        makeStep(2, [], ['b.ts']),
+        makeStep(3, [], ['c.ts']),
+      ]);
+
+      sm.startStep(run.id, 1, 'coder-1');
+      sm.startStep(run.id, 2, 'coder-2');
+      sm.startStep(run.id, 3, 'coder-3');
+
+      expect(sm.getRun(run.id)!.steps.map((step) => step.status)).toEqual([
+        'coding',
+        'coding',
+        'coding',
+      ]);
+    });
+
+    it('rejects every overlapping coding claim with deterministic conflict details', () => {
+      const run = sm.createRun([
+        makeStep(1, [], ['shared-a.ts', 'shared-b.ts']),
+        makeStep(2, [], ['shared-c.ts', 'shared-d.ts']),
+        makeStep(3, [], ['shared-a.ts', 'shared-b.ts', 'shared-c.ts']),
+      ]);
+      sm.startStep(run.id, 1, 'coder-1');
+      sm.startStep(run.id, 2, 'coder-2');
+
+      expect(() => sm.startStep(run.id, 3, 'coder-3')).toThrow(
+        'Step 3 has file conflicts: shared-a.ts (also claimed by step 1), shared-b.ts (also claimed by step 1), shared-c.ts (also claimed by step 2)'
+      );
+    });
+
+    it('rejects overlaps with reviewing steps and retains their claims', () => {
+      const run = sm.createRun([
+        makeStep(1, [], ['shared.ts']),
+        makeStep(2, [], ['shared.ts']),
+      ]);
+      sm.startStep(run.id, 1, 'coder-1');
+      sm.submitResult(run.id, 1, { status: 'done', summary: 'implemented' });
+
+      expect(() => sm.startStep(run.id, 2, 'coder-2')).toThrow(
+        'Step 2 has file conflicts: shared.ts (also claimed by step 1)'
+      );
+      expect(sm.getRun(run.id)!.steps[0].claimedFiles).toEqual(['shared.ts']);
+      expect(sm.getRun(run.id)!.steps[0].status).toBe('reviewing');
+    });
+
+    it('leaves state, persistence, timestamps, and events unchanged after rejection', () => {
+      const run = sm.createRun([
+        makeStep(1, [], ['shared.ts']),
+        makeStep(2, [], ['shared.ts']),
+      ]);
+      sm.startStep(run.id, 1, 'coder-1');
+      const before = sm.getRun(run.id)!;
+      const events: RunState[] = [];
+      sm.on('state_update', (state: RunState) => events.push(state));
+
+      expect(() => sm.startStep(run.id, 2, 'coder-2')).toThrow('file conflicts');
+
+      expect(sm.getRun(run.id)).toEqual(before);
+      expect(sm.getRun(run.id)!.updatedAt).toBe(before.updatedAt);
+      expect(events).toHaveLength(0);
+    });
+
+    it('compares claimed paths as exact strings without normalization', () => {
+      const run = sm.createRun([
+        makeStep(1, [], ['src/file.ts']),
+        makeStep(2, [], ['./src/file.ts']),
+      ]);
+
+      sm.startStep(run.id, 1, 'coder-1');
+      expect(() => sm.startStep(run.id, 2, 'coder-2')).not.toThrow();
+    });
   });
 
   describe('submitResult', () => {

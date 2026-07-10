@@ -50,9 +50,7 @@ export function handleTeamStatus(sm: StateMachine, args: unknown) {
       result: s.result,
       claimedFiles: s.claimedFiles,
       consecutiveSameError: s.consecutiveSameError,
-      fileConflicts: (s.status === 'coding' || s.status === 'reviewing')
-        ? sm.getFileConflicts(parsed.runId, s.step.id)
-        : [],
+      fileConflicts: sm.getFileConflicts(parsed.runId, s.step.id),
       startedAt: s.startedAt,
       completedAt: s.completedAt,
       blockingReasons: s.status === 'pending'

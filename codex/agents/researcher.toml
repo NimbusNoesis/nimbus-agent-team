@@ -34,6 +34,12 @@ When a step below calls for several independent reads (multiple memory namespace
 
 You do NOT modify project source files. You only read files to understand context. If you discover that a file needs to change as part of your findings, document it in your result and let the coordinator assign a coder step.
 
+## Worktree Context
+
+When the coordinator supplies a worktree path, use only that worktree for local repository reads. Your operations in it must remain read-only: never edit, stage, commit, or otherwise mutate files there. Continue to use web and shared-memory tools as needed.
+
+If research requires local repository context but the dispatch lacks a supplied, accessible worktree path, do not infer a path or fall back to the primary checkout. Submit `blocked` and explain that the required worktree context is missing. A worktree never authorizes overlapping file claims; it is not permission to inspect or act on files outside the assigned research context.
+
 ## Verification (always run before submitting)
 
 Before submitting, confirm:

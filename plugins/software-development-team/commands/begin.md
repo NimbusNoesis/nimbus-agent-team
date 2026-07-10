@@ -195,18 +195,19 @@ Repeat until all steps are complete:
 1. Call `team_status` to check current state.
 2. Check `team_get_messages` for user guidance or agent messages.
 3. Check for **stuck detection**: if `consecutiveSameError >= 2` for any step, escalate immediately.
-4. Check for **file conflicts**: if any step has `fileConflicts`, pause the conflicting step.
-5. Take the appropriate action for the first actionable step:
+4. Schedule a deterministic runnable set as described in **Deterministic Runnable-Set Scheduling** below. Do not pause or cancel steps merely because another step is active: dependencies and file claims determine eligibility.
 
 ### Step is PENDING → Start it
 
 Do BOTH of these in the same response:
 
-**First**, call the MCP tool to update state:
+For every selected pending candidate, **first** call the MCP tool to update state:
 
 ```
 mcp__plugin_software-development-team_software-development-team__team_advance(runId, stepId, action: "start_coding", agent: "coder")
 ```
+
+`start_coding` is authoritative. Dispatch a worker **only after it succeeds**. If it is rejected, the scheduling snapshot is stale: call `team_status`, recompute the runnable set, and retry the scheduling decision; never dispatch from the stale snapshot.
 
 **Then**, dispatch the appropriate agent using the **Agent tool** (this is the built-in Claude Code tool, NOT an MCP tool). The agent you dispatch depends on the step type:
 
@@ -221,7 +222,7 @@ Agent(
 )
 ```
 
-Wait for the Agent to return before continuing the loop.
+Treat a failed worker spawn as a lifecycle event: do not leave a successfully started step orphaned in `coding`. Immediately call `team_submit_result` for that step with `status: "blocked"` and details containing the spawn error, then refresh `team_status`. Do not schedule dependent work from the failed step. If that submission fails, refresh status and escalate with both the spawn and submission errors. Continue to use the same claim and capacity checks while other workers run.
 
 ### Step is REVIEWING with coder's result → Dispatch reviewer
 
@@ -234,7 +235,7 @@ Check `steps[n].result`:
 
 ### Reviewer approved (result.status is `done`) → Advance
 
-Call `team_advance(approve)`. Print milestone. Move to next step.
+Call `team_advance(approve)`. Print milestone, refresh `team_status`, and rerun the deterministic scheduler.
 
 ### Reviewer rejected (result.status is `needs_revision`) → Revise
 
@@ -275,21 +276,15 @@ Every Agent dispatch prompt needs all of these — subagents have no inherited c
 8. **Tool name mapping** — remind the subagent that `team_X` means `mcp__plugin_software-development-team_software-development-team__team_X`
 9. **Run ID key prefix** — remind the subagent to use the first 8 characters of the run ID as a prefix for reflection and review memory keys (e.g., `{runId-short}-step-{N}-reflection`). Include the actual 8-char prefix value so the agent doesn't have to compute it.
 
-## Pipeline Parallelism
+## Deterministic Runnable-Set Scheduling
 
-When a step enters REVIEWING, check if the NEXT step:
+At every loop iteration and whenever a worker returns, refresh `team_status` and refill available capacity. `maxParallel` is the coordinator's or user's requested number of simultaneously spawned **workers**; only the coordinator is excluded. Count coder, reviewer, researcher, documentation, planner, and plan-critic workers. Parse that requested worker budget as a positive integer and clamp invalid, absent, or non-positive values to `1`. Then, when a positive host capacity is reported, cap it at `reportedHostCapacity - 1`; a reported four-slot host therefore permits at most three workers. If host capacity is absent or unknown, use the conservative one-worker limit. There is no separate server WIP cap.
 
-- Has no dependency on the current step (`dependsOn` does not include current step ID)
-- Is still PENDING
-- Has no file conflicts with the current step (check `fileConflicts` in `team_status`)
+Prioritize existing lifecycle work before new implementation work: first dispatch eligible reviewers and coder revisions, then use remaining capacity for new pending steps. For pending steps, examine dependency-complete candidates in plan order. A candidate is runnable only when it has no `fileConflicts` or other blocking indicator in the fresh status and its claimed files are disjoint from every active claim and every earlier selected same-batch claim. File comparison is exact planned file-string matching. Select and start candidates in that order until capacity is full.
 
-If all three are true, dispatch the coder for the next step in parallel.
+Do not use pause, cancel, or cancel-successor semantics for normal scheduling. A rejected review or revision reduces capacity naturally; downstream work remains safe because unmet dependencies prevent dispatch. Refill a freed slot immediately after a worker finishes by taking a fresh status snapshot and rerunning this algorithm.
 
-**Safety rules:**
-
-- If step N's review returns `needs_revision`, pause step N+1 until N is resolved.
-- There is no hard cap on concurrent steps — concurrency is bounded only by dependency order, file conflicts, and your token budget. Each active step roughly doubles token consumption, so scale concurrency to the work, not to a fixed number.
-- Never let two steps edit the same file concurrently.
+`start_coding` remains the authoritative claim operation: if it rejects any selected candidate, treat the entire selection as stale, refresh `team_status`, and reschedule rather than dispatching it. Never allow overlapping claimed files to run concurrently, including in separate worktrees.
 
 ## Stuck Detection
 
@@ -304,105 +299,62 @@ When stuck detection triggers, do NOT re-dispatch. Post the full error context t
 
 ## File Conflict Handling
 
-Before starting any step, check `fileConflicts` in `team_status`. If a step conflicts with another currently CODING or REVIEWING step:
-
-1. **Pause** the conflicting step — do not dispatch it yet.
-2. Wait for the blocking step to complete review and be approved.
-3. Then dispatch the paused step.
-
-If conflicts cannot be resolved by sequencing (e.g., two independent steps genuinely must both write the same file), escalate to the user with a clear description of the conflict. Log: `"[COORDINATOR] Step 4 blocked — file conflict with step 3 on src/api.ts"`
+Conflicts serialize work; they do not create a paused state. Leave a conflicting pending step pending and omit it from the current runnable set. Once the active claim clears, refresh status and consider it again in plan order. If the conflict is persistent or cannot be sequenced safely, escalate with the exact overlapping planned file strings.
 
 ## Git Worktree Workflow
 
-Use git worktrees when the user requests worktree isolation, or when pipeline parallelism is active with overlapping files.
+Every dispatched execution step uses its mandatory worktree `.worktrees/{runId}/step-{N}` and branch `team/{runId}/step-{N}`. This covers coder, reviewer, researcher, and documentation dispatches. Planner and plan-critic remain pre-approval, primary-worktree, read-only agents. Worktrees never permit overlapping claimed files to run concurrently. StateMachine tracks workflow state only and never manages Git worktrees, branches, commits, switches, merges, or cleanup.
 
-### When to Use
+### Initial Pending Admission: Create and Persist Once
 
-- User explicitly requests worktree isolation
-- Pipeline parallelism is active and steps have overlapping files
-- The project has strict branch protection requirements
-- High-risk changes where isolation reduces blast radius
-
-### Worktree Creation
-
-Before dispatching a coder for step N, create the worktree:
+Only when a PENDING execution step is first selected for admission, capture the coordinator's current target branch and exact commit, then create from that captured base:
 
 ```bash
-git worktree add .worktrees/step-{N} -b team/{runId}/step-{N}
+targetBranch=$(git branch --show-current)
+targetCommit=$(git rev-parse HEAD)
+git worktree add -b team/{runId}/step-{N} .worktrees/{runId}/step-{N} "$targetCommit"
 ```
 
-**Branch naming convention**: `team/{runId}/step-{N}` — namespaced to avoid collisions across runs.
+Persist `{targetBranch, targetCommit, path, branch}` as the step worktree lifecycle context before calling `start_coding`: path is `.worktrees/{runId}/step-{N}` and branch is `team/{runId}/step-{N}`. This is the only capture and creation for the step. If initial capture or creation fails, do not call `start_coding` and do not dispatch. Record the exact failure and intended path/branch in team state/messages; block or escalate the step and await resolution.
 
-### Dispatching the Coder with Worktree Context
+### Mandatory Execution Dispatch Context
 
-Include ALL of the following in the coder's dispatch prompt:
+Every coder, reviewer, researcher, and documentation dispatch reads the persisted step worktree lifecycle context and includes:
 
-- **Worktree path**: `.worktrees/step-{N}`
+- **Worktree path**: `.worktrees/{runId}/step-{N}`
 - **Branch name**: `team/{runId}/step-{N}`
-- **Instruction**: Work entirely within the worktree directory — all reads and writes must use the worktree path
-- **Instruction**: Commit all changes before calling `team_submit_result`
+- **Captured target**: `{targetBranch}` at `{targetCommit}`
+- **Role rules**: coder and documentation edit/commit only in this worktree; reviewer and researcher are read-only and inspect/run verification only here; reviewer approval is required before merge.
+- **Location rule**: all repository reads, writes, tests, and Git commands run from this worktree; never touch the coordinator or another step's worktree.
 
-Example addition to dispatch prompt:
+Reviewer, revision-coder, and interrupted-worker re-dispatches reuse this exact persisted context; never recapture a target or create another worktree. Before a later dispatch, verify its persisted path and branch are present and consistent. If context is missing or inconsistent, do not dispatch and do not recreate it; record the exact inconsistency and persisted values, block or escalate, and preserve artifacts for recovery.
 
-```
-## Worktree Context
-You are working in a git worktree. All file operations must use this path:
-  Worktree: .worktrees/step-{N}
-  Branch: team/{runId}/step-{N}
+### Reviewer Approval, Merge, and Cleanup
 
-Work ONLY within that directory. Before submitting your result, commit all changes:
-  cd .worktrees/step-{N} && git add -A && git commit -m "Step {N}: {brief description}"
-```
-
-### Dispatching the Reviewer with Worktree Context
-
-Include ALL of the following in the reviewer's dispatch prompt:
-
-- **Worktree path**: `.worktrees/step-{N}`
-- **Instruction**: Review and run all verification commands within the worktree directory
-- **Instruction**: Verify the coder committed their changes before reviewing (run `git log --oneline -3` in the worktree)
-
-Example addition to reviewer dispatch prompt:
-
-```
-## Worktree Context
-The coder worked in a git worktree. Review and verify within:
-  Worktree: .worktrees/step-{N}
-  Branch: team/{runId}/step-{N}
-
-First confirm the coder committed: cd .worktrees/step-{N} && git log --oneline -3
-Run all verification commands from within the worktree directory.
-```
-
-### Merge-Back After Approval
-
-After the reviewer approves a step, merge the worktree branch back to the main working branch:
+Merge only after explicit reviewer approval. The coordinator must switch to the captured target branch and merge only there:
 
 ```bash
+git switch "$targetBranch"
 git merge team/{runId}/step-{N} --no-ff -m "Merge step {N}: {step description}"
 ```
 
-**If the merge has conflicts**: Do NOT auto-resolve. Escalate to the user with the list of conflicting files and the error output. Wait for their guidance before proceeding.
+On conflict, run `git merge --abort`, preserve worktree and branch artifacts, record the exact error/conflicting files, and escalate. Never auto-resolve.
 
-### Cleanup After Successful Merge
-
-After a successful merge:
+After successful merge, safely remove the persisted worktree and then delete the persisted branch. An abandoned step is never merged; clean up only after confirming abandonment. Report every cleanup failure with its exact path and branch while preserving artifacts.
 
 ```bash
-git worktree remove .worktrees/step-{N}
+git worktree remove .worktrees/{runId}/step-{N}
 git branch -d team/{runId}/step-{N}
 ```
 
-### Failure Handling
-
-If a step is abandoned (permanently escalated or skipped at user request), clean up without merging:
+For a confirmed-abandoned, unmerged step, remove the worktree first, then force-delete its branch:
 
 ```bash
-git worktree remove .worktrees/step-{N}
+git worktree remove .worktrees/{runId}/step-{N}
 git branch -D team/{runId}/step-{N}
 ```
 
-Note: Use `-D` (force delete) instead of `-d` when abandoning, since the branch was never merged.
+If either cleanup command fails, preserve artifacts and report the exact worktree path, branch name, and error.
 
 ## Dependency Failure Propagation
 

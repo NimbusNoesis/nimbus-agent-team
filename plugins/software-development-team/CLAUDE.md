@@ -8,7 +8,7 @@ A Claude Code plugin that orchestrates a multi-agent coding team (coordinator, p
 
 - **MCP Server** (`server/src/index.ts`) — entry point, registers tools, starts dashboard, manages persistence
 - **Database** (`server/src/db/database.ts`) — in-memory SQLite database via sql.js (pure JS/WASM). Single backing store for runs, messages, and memory entries. Pure storage — no EventEmitter.
-- **State Machine** (`server/src/state/machine.ts`) — manages step lifecycle: `pending` -> `coding` -> `reviewing` -> `complete` / `escalated`. A read-only review step that never submits a code result can be closed directly via `markReviewed` (`team_advance` action `mark_reviewed`), which moves `coding`/`reviewing` -> `complete` with a synthetic `done` result so it doesn't appear stuck. Enforces dependency ordering, file conflict detection, and stuck detection. There is no WIP cap — any number of independent steps may be active at once. Backed by Database.
+- **State Machine** (`server/src/state/machine.ts`) — manages step lifecycle: `pending` -> `coding` -> `reviewing` -> `complete` / `escalated`. A read-only review step that never submits a code result can be closed directly via `markReviewed` (`team_advance` action `mark_reviewed`), which moves `coding`/`reviewing` -> `complete` with a synthetic `done` result so it doesn't appear stuck. Enforces dependency ordering, file conflict detection, and stuck detection. The server has no WIP cap; coordinators instead bound simultaneous workers by the host capacity. It manages workflow state only and never manages Git worktrees, branches, commits, switches, merges, or cleanup. Backed by Database.
 - **Message Bus** (`server/src/bus/message-bus.ts`) — append-only message log with EventEmitter, 10K cap per run. Backed by Database.
 - **Memory Store** (`server/src/memory/store.ts`) — key-value store in 5 namespaces (decisions, context, learnings, reviews, reflections). Extends EventEmitter, emits `entry_change` on writes. Backed by Database.
 - **Tool Registry** (`server/src/tools/registry.ts`) — dispatches MCP tool calls to handlers
@@ -79,6 +79,8 @@ A parallel Codex distribution lives in the repo-root `codex/` directory (`codex/
 
 When changing coordinator logic or an agent's instructions, update **both** the `plugins/software-development-team/` source of truth and its `codex/` counterpart so the two hosts stay in sync. The `server/` is shared, so server changes apply to both automatically.
 
+Coordinator scheduling is deterministic: reserve capacity for eligible review/revision lifecycle work first, then choose dependency-complete pending work in plan order. File claims compare as exact planned strings and overlapping claims always serialize, including in worktrees. `start_coding` is the authoritative admission check; rejection requires a fresh status and reschedule. A native spawn failure must be submitted as a `blocked` result, and normal scheduling uses neither pause nor cancel semantics.
+
 ### Coordinator message relay for dashboard visibility
 
 The coordinator posts messages on behalf of agents (`team_send_message` with the correct `from` field) at each lifecycle point to keep the dashboard activity feed populated. This is for observability only — agents call `team_submit_result` directly to submit their work.
@@ -115,8 +117,15 @@ The Database class (`server/src/db/database.ts`) is a pure storage layer backed 
 ### Store mutation pattern: read → mutate → write back → emit clone
 All store mutations follow: `const run = this.db.getRun(id)` → mutate the local object → `this.db.updateRun(run)` → `this.emit('state_update', structuredClone(run))`. The DB returns plain objects from JSON, so mutations are on local copies that must be explicitly saved back.
 
-### Git worktree workflow
-When worktree mode is active, each step runs in `.worktrees/step-{N}` on branch `team/{runId}/step-{N}`. The coordinator creates the worktree before dispatching the coder, includes the worktree path in the dispatch prompt, and merges the branch back (`--no-ff`) after review approval. The coder must commit all changes before submitting. The reviewer reviews and runs verification in the worktree directory. Merge conflicts escalate to the user. After merge, the coordinator removes the worktree and deletes the branch.
+### Mandatory run-scoped Git worktree workflow
+
+Every execution step uses exactly one mandatory worktree, `.worktrees/{runId}/step-{N}`, on `team/{runId}/step-{N}`. Planner and plan-critic are pre-approval and read-only in the primary workspace. Coder and documentation are mutating roles: all repository reads, writes, verification, and commits occur only in the supplied worktree. Reviewer and researcher use their supplied worktree only for read-only repository inspection and verification.
+
+On a pending step's first admission, the coordinator captures the current target branch and exact commit, creates the worktree from that commit, and persists `{targetBranch, targetCommit, path, branch}` before `start_coding`. Creation and capture are one-time; reviewer, revision-coder, researcher, documentation, and interrupted-worker re-dispatches must reuse the persisted context. If it is absent or inconsistent, block or escalate and preserve any artifacts—do not recapture or create a replacement.
+
+File claims compare as exact planned strings. Every exact overlap serializes, even where worktrees are different; worktrees provide filesystem isolation and merge hygiene, never permission to overlap claims.
+
+Only explicit reviewer approval authorizes the coordinator to switch to the captured target branch and merge the step branch there with `--no-ff`. On conflict, run `git merge --abort`, preserve the worktree and branch, record the exact error and conflicting files, and escalate. Never auto-resolve. After a successful merge, remove the worktree then delete the branch. A confirmed abandoned, unmerged step is never merged; remove its worktree first and then force-delete its branch. Preserve artifacts and report the exact worktree path, branch, and error if either cleanup fails.
 
 ### Use sql.js, not better-sqlite3
 better-sqlite3 requires native C++ compilation and is incompatible with Node v24+ (needs C++20). sql.js is a pure JS/WASM SQLite that works everywhere with no native dependencies. The Database class uses a static `Database.create()` factory method for async sql.js initialization.
@@ -145,16 +154,6 @@ The `team_memory_delete` MCP tool deletes a memory entry by namespace and key, b
 ### team_memory_read search ignores namespace filter
 
 The `handleTeamMemoryRead` handler checks `namespace` before `search`. When both are provided, `search` is ignored — it returns all entries in that namespace instead. To search, call with `search` only (no `namespace`). Results include a `namespace` field for client-side grouping.
-
-### File-ownership checks in non-worktree runs
-
-In non-worktree runs, prior steps' uncommitted edits sit in the shared working tree. Reviewers must scope the file-ownership check to the current step's authorized files only:
-
-```bash
-git diff HEAD -- <authorized-file-1> <authorized-file-2>
-```
-
-Never use bare `git status` or whole-repo `git diff HEAD` — those will include prior steps' edits and produce false-positive rejections. Coders re-dispatched on a false-positive must NOT revert other steps' work; re-submit `done` with a scoped diff as confirmation.
 
 ### Inserting content into Markdown ordered lists
 

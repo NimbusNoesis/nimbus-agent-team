@@ -102,6 +102,20 @@ inherit the team's MCP server, so they call
   makes a coder actually run.
 - Run state and memory persist to a `.team/` directory in your project (gitignored).
 
+### Scheduling contract
+
+The coordinator's `maxParallel` is a simultaneous-worker limit, excluding the coordinator. It counts every role worker; a four-slot host therefore permits three workers, and unknown capacity permits one. The server itself has no WIP cap.
+
+On every fresh status snapshot, the scheduler gives eligible review/revision lifecycle work priority, then selects dependency-complete pending steps in plan order. Claimed files are compared as exact declared strings: blockers, conflicts, and overlap with active or same-batch claims serialize work even when worktrees are used. `start_coding` is authoritative, so rejection refreshes status and reschedules; a spawn failure is submitted as `blocked`; and freed capacity is refilled without pause or cancel semantics.
+
+### Mandatory run-scoped worktrees
+
+Every execution step has one mandatory worktree at `.worktrees/{runId}/step-{N}` on branch `team/{runId}/step-{N}`. Planner and plan-critic are pre-approval, read-only roles in the primary workspace. Coder and documentation are mutating roles that read, write, verify, and commit only in the supplied worktree. Reviewer and researcher use the supplied worktree only for read-only inspection and verification. Worktrees do not relax exact-claim serialization: two steps whose declared file strings overlap exactly must not run concurrently.
+
+When a pending execution step is first admitted, the coordinator captures its current target branch and exact commit, creates the worktree from that commit, and persists `{targetBranch, targetCommit, path, branch}` before `start_coding`. That capture and creation happen once; reviewer, revision-coder, researcher, documentation, and interrupted-worker dispatches reuse the same persisted context. Missing or inconsistent context blocks or escalates the step rather than creating a replacement worktree.
+
+The StateMachine manages workflow state only; it never creates, removes, switches, commits, merges, or otherwise manages Git. After explicit reviewer approval, the coordinator switches to the captured target branch and merges the step branch there with `--no-ff`. On a merge conflict it aborts, preserves the worktree and branch, records the exact conflict, and escalates—never auto-resolves. A successful merge removes the worktree and then deletes the branch. A confirmed abandoned, unmerged step is never merged; its worktree is removed first and its branch is force-deleted. Cleanup failures preserve artifacts and report their exact path, branch, and error.
+
 ### MCP server config
 
 The installer writes this to `~/.codex/config.toml` (paths resolved to your

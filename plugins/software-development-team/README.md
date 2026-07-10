@@ -13,10 +13,10 @@ A [Claude Code](https://claude.ai/claude-code) plugin that orchestrates a multi-
 - **Shared memory** -- agents share decisions, context, learnings, and reflections via a persistent key-value store
 - **Message bus** -- typed messages (info, review, escalation, guidance, result) between agents and the user
 - **Real-time dashboard** -- web UI showing live progress, step details, agent activity, and shared memory
-- **Pipeline parallelism** -- independent steps can run concurrently (no fixed cap; bounded by dependencies, file conflicts, and token budget)
+- **Pipeline parallelism** -- a deterministic scheduler runs independent work concurrently within the host worker capacity; lifecycle work is prioritized and conflicting file claims are serialized
 - **Stuck detection** -- automatic escalation when agents repeat the same error or exhaust retries
 - **File conflict detection** -- prevents two steps from editing the same file concurrently
-- **Git worktree isolation** -- optional per-step git worktrees for safe parallel work and clean merge-back
+- **Git worktree isolation** -- mandatory run-scoped worktrees for isolated execution and reviewer-gated merge-back
 
 ## Dashboard
 
@@ -142,14 +142,23 @@ pending --> coding --> reviewing --> complete
 
 ### Git Worktree Isolation
 
-When enabled (by user request or for pipeline parallelism with overlapping files), each step runs in an isolated git worktree:
+Every execution step receives one mandatory run-scoped worktree, `.worktrees/{runId}/step-{N}`, on branch `team/{runId}/step-{N}`. The coordinator creates it only when the pending step is first admitted: it captures the current target branch and exact commit, creates from that commit, and persists `{targetBranch, targetCommit, path, branch}` before `start_coding`. Re-dispatches reuse that context; missing or inconsistent context blocks or escalates the step rather than recapturing or creating another worktree.
 
-1. **Coordinator** creates a worktree: `git worktree add .worktrees/step-{N} -b team/{runId}/step-{N}`
-2. **Coder** works entirely within the worktree directory and commits all changes before submitting
-3. **Reviewer** reviews and runs verification in the worktree, checks that changes are committed
-4. **Coordinator** merges the branch back after approval: `git merge --no-ff`, then cleans up the worktree and branch
+| Role | Repository location and authority |
+| --- | --- |
+| Planner / plan-critic | Pre-approval and read-only in the primary workspace; no execution worktree. |
+| Coder / documentation | Read, write, verify, and commit only in the supplied worktree. |
+| Reviewer / researcher | Read-only inspection and verification only in the supplied worktree. |
 
-This prevents file conflicts entirely and enables safer parallel work.
+Exact declared file strings remain the scheduling contract: overlapping claims serialize even in separate worktrees. The StateMachine manages workflow state, not Git; it never creates, removes, switches, commits, or merges worktrees or branches.
+
+Only an explicit reviewer approval permits the coordinator to switch to the captured target branch and merge the step branch there with `--no-ff`. A merge conflict is aborted, recorded with its exact conflicting files, and escalated while the worktree and branch are preserved; the coordinator never auto-resolves conflicts. After a successful merge, remove the worktree and then delete the branch. A confirmed abandoned, unmerged step is never merged: remove its worktree first, then force-delete its branch. On either cleanup failure, preserve artifacts and report the exact path, branch, and error.
+
+### Coordinator scheduling
+
+The coordinator treats `maxParallel` as a worker budget, not a count that includes the coordinator. It counts every spawned role worker (planner, plan-critic, coder, reviewer, researcher, and documentation); host capacity of four therefore allows three workers, while absent or unknown capacity permits one. There is no server-side WIP cap.
+
+Each fresh scheduling pass prioritizes eligible review and revision lifecycle work, then selects dependency-complete pending steps in plan order. A step must have no reported blocker or conflict and its exact planned file strings must be disjoint from active and same-batch claims. `start_coding` is authoritative: a rejection refreshes status and restarts selection. Spawn failures are submitted as `blocked`, and every worker completion refills capacity. Normal scheduling never pauses or cancels steps.
 
 ### Data Model
 

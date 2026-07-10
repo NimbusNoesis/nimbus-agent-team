@@ -193,4 +193,97 @@ describe('Integration: Full workflow', () => {
     const status = await registry.handle('team_status', { runId });
     expect(status.steps[1].status).toBe('coding');
   });
+
+  it('admits multiple disjoint initial coding steps in parallel', async () => {
+    const { runId } = await registry.handle('team_start', {
+      steps: [
+        { id: 1, description: 'Model', files: ['model.ts'], acceptanceCriteria: [], dependsOn: [] },
+        { id: 2, description: 'API', files: ['api.ts'], acceptanceCriteria: [], dependsOn: [] },
+        { id: 3, description: 'UI', files: ['ui.ts'], acceptanceCriteria: [], dependsOn: [] },
+      ],
+    });
+
+    await Promise.all([
+      registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'coder-1' }),
+      registry.handle('team_advance', { runId, stepId: 2, action: 'start_coding', agent: 'coder-2' }),
+      registry.handle('team_advance', { runId, stepId: 3, action: 'start_coding', agent: 'coder-3' }),
+    ]);
+
+    const status = await registry.handle('team_status', { runId });
+    expect(status.steps.map((step: any) => step.status)).toEqual(['coding', 'coding', 'coding']);
+    expect(status.steps.map((step: any) => step.assignedAgent)).toEqual(['coder-1', 'coder-2', 'coder-3']);
+  });
+
+  it('rejects dependency and file-overlap starts without disturbing admitted work', async () => {
+    const { runId } = await registry.handle('team_start', {
+      steps: [
+        { id: 1, description: 'Shared base', files: ['shared.ts'], acceptanceCriteria: [], dependsOn: [] },
+        { id: 2, description: 'Dependent', files: ['dependent.ts'], acceptanceCriteria: [], dependsOn: [1] },
+        { id: 3, description: 'Overlapping', files: ['shared.ts'], acceptanceCriteria: [], dependsOn: [] },
+      ],
+    });
+
+    await registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'coder-1' });
+    await expect(registry.handle('team_advance', {
+      runId, stepId: 2, action: 'start_coding', agent: 'coder-2',
+    })).rejects.toThrow('dependencies');
+    await expect(registry.handle('team_advance', {
+      runId, stepId: 3, action: 'start_coding', agent: 'coder-3',
+    })).rejects.toThrow('file conflicts');
+
+    const status = await registry.handle('team_status', { runId });
+    expect(status.steps[0].status).toBe('coding');
+    expect(status.steps[0].assignedAgent).toBe('coder-1');
+    expect(status.steps[1].status).toBe('pending');
+    expect(status.steps[2].status).toBe('pending');
+    expect(status.steps[2].blockingReasons.join(' ')).toContain('shared.ts');
+  });
+
+  it('exposes a blocker when a stale status snapshot loses a competing claim', async () => {
+    const { runId } = await registry.handle('team_start', {
+      steps: [
+        { id: 1, description: 'First claimant', files: ['shared.ts'], acceptanceCriteria: [], dependsOn: [] },
+        { id: 2, description: 'Second claimant', files: ['shared.ts'], acceptanceCriteria: [], dependsOn: [] },
+      ],
+    });
+
+    const stale = await registry.handle('team_status', { runId });
+    expect(stale.steps[1].blockingReasons).toEqual([]);
+    await registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'winner' });
+
+    await expect(registry.handle('team_advance', {
+      runId, stepId: 2, action: 'start_coding', agent: 'loser',
+    })).rejects.toThrow('file conflicts');
+    const refreshed = await registry.handle('team_status', { runId });
+    expect(refreshed.steps[1].status).toBe('pending');
+    expect(refreshed.steps[1].blockingReasons.join(' ')).toContain('step 1');
+    expect(refreshed.steps[0].assignedAgent).toBe('winner');
+  });
+
+  it('preserves independent concurrent claims, results, and timestamps', async () => {
+    const { runId } = await registry.handle('team_start', {
+      steps: [
+        { id: 1, description: 'One', files: ['one.ts'], acceptanceCriteria: [], dependsOn: [] },
+        { id: 2, description: 'Two', files: ['two.ts'], acceptanceCriteria: [], dependsOn: [] },
+      ],
+    });
+    await Promise.all([
+      registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'agent-one' }),
+      registry.handle('team_advance', { runId, stepId: 2, action: 'start_coding', agent: 'agent-two' }),
+    ]);
+    await Promise.all([
+      registry.handle('team_submit_result', { runId, stepId: 1, result: { status: 'done', summary: 'one complete' } }),
+      registry.handle('team_submit_result', { runId, stepId: 2, result: { status: 'done', summary: 'two complete' } }),
+    ]);
+
+    const status = await registry.handle('team_status', { runId });
+    for (const [index, summary] of ['one complete', 'two complete'].entries()) {
+      expect(status.steps[index].status).toBe('reviewing');
+      expect(status.steps[index].result.summary).toBe(summary);
+      expect(status.steps[index].assignedAgent).toBe(`agent-${index === 0 ? 'one' : 'two'}`);
+      expect(status.steps[index].claimedFiles).toHaveLength(1);
+      expect(status.steps[index].startedAt).toBeTruthy();
+    }
+    expect(status.updatedAt).toBeTruthy();
+  });
 });

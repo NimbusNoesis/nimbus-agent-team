@@ -65,7 +65,12 @@ export class StateMachine extends EventEmitter {
 
     this.checkDependencies(run, stepState);
 
-    // Claim files and warn about overlaps with other active steps
+    const fileConflicts = this.collectFileConflicts(run, stepState);
+    if (fileConflicts.length > 0) {
+      throw new Error(`Step ${stepId} has file conflicts: ${fileConflicts.join(', ')}`);
+    }
+
+    // Claim files only after all admission checks have passed.
     stepState.claimedFiles = [...stepState.step.files];
     stepState.status = 'coding';
     stepState.assignedAgent = agent;
@@ -77,9 +82,13 @@ export class StateMachine extends EventEmitter {
   getFileConflicts(runId: string, stepId: number): string[] {
     const run = this.requireRun(runId);
     const stepState = this.requireStep(run, stepId);
+    return this.collectFileConflicts(run, stepState);
+  }
+
+  private collectFileConflicts(run: RunState, stepState: StepState): string[] {
     const conflicts: string[] = [];
     for (const other of run.steps) {
-      if (other.step.id === stepId) continue;
+      if (other.step.id === stepState.step.id) continue;
       if (other.status !== 'coding' && other.status !== 'reviewing') continue;
       for (const file of stepState.step.files) {
         if (other.claimedFiles.includes(file)) {

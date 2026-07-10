@@ -37,6 +37,62 @@ describe('ToolRegistry', () => {
     expect(status.steps).toHaveLength(1);
   });
 
+  it('team_status reports pending dependency and file conflict blockers', async () => {
+    const { runId } = await registry.handle('team_start', {
+      steps: [
+        { id: 1, description: 'Active work', files: ['shared.ts'], acceptanceCriteria: [], dependsOn: [] },
+        { id: 2, description: 'Blocked work', files: ['shared.ts'], acceptanceCriteria: [], dependsOn: [1] },
+      ],
+    });
+    await registry.handle('team_advance', {
+      runId, stepId: 1, action: 'start_coding', agent: 'coder',
+    });
+
+    const status = await registry.handle('team_status', { runId });
+    const active = status.steps.find((step: { id: number }) => step.id === 1);
+    const pending = status.steps.find((step: { id: number }) => step.id === 2);
+
+    expect(active.fileConflicts).toEqual([]);
+    expect(active.blockingReasons).toEqual([]);
+    expect(pending.fileConflicts).toEqual([
+      'shared.ts (also claimed by step 1)',
+    ]);
+    expect(pending.blockingReasons).toEqual([
+      'Waiting on step 1: Active work',
+      'File conflict: shared.ts is claimed by step 1',
+    ]);
+
+    await registry.handle('team_submit_result', {
+      runId, stepId: 1, result: { status: 'done', summary: 'ready for review' },
+    });
+    const reviewingStatus = await registry.handle('team_status', { runId });
+    const blockedByReview = reviewingStatus.steps.find((step: { id: number }) => step.id === 2);
+    expect(blockedByReview.fileConflicts).toEqual([
+      'shared.ts (also claimed by step 1)',
+    ]);
+    expect(blockedByReview.blockingReasons).toContain(
+      'File conflict: shared.ts is claimed by step 1',
+    );
+  });
+
+  it('team_status reports disjoint pending work as runnable', async () => {
+    const { runId } = await registry.handle('team_start', {
+      steps: [
+        { id: 1, description: 'Active work', files: ['active.ts'], acceptanceCriteria: [], dependsOn: [] },
+        { id: 2, description: 'Runnable work', files: ['other.ts'], acceptanceCriteria: [], dependsOn: [] },
+      ],
+    });
+    await registry.handle('team_advance', {
+      runId, stepId: 1, action: 'start_coding', agent: 'coder',
+    });
+
+    const status = await registry.handle('team_status', { runId });
+    const pending = status.steps.find((step: { id: number }) => step.id === 2);
+
+    expect(pending.fileConflicts).toEqual([]);
+    expect(pending.blockingReasons).toEqual([]);
+  });
+
   it('team_submit_result + team_advance complete a step', async () => {
     const { runId } = await registry.handle('team_start', {
       steps: [{ id: 1, description: 'S1', files: [], acceptanceCriteria: [], dependsOn: [] }],
