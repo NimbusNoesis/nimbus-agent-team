@@ -56,7 +56,7 @@ Never use bare `git status` or whole-repo `git diff HEAD` — those include prio
 When the coordinator's spawn prompt includes a worktree path (e.g., `.worktrees/step-3`), the coder's changes are in that directory on a separate branch. Use that supplied worktree only for read-only inspection and verification; never edit, stage, commit, or otherwise mutate it. Do not read the primary checkout as a fallback.
 
 1. **Required context**: If a worktree run lacks a supplied, accessible worktree path, stop the review. Do not infer a path or fall back to the primary checkout; submit `needs_revision` explaining that the required worktree context is missing.
-2. **When it applies**: If the spawn prompt specifies a worktree path, the coder worked entirely within that directory on a branch like `team/{runId}/step-{N}`. All modified files live there.
+2. **When it applies**: If the spawn prompt specifies a worktree path, the coder worked entirely within that directory on a branch like `team-{runId}-step-{N}`. All modified files live there.
 3. **Reviewing in the worktree**: Read files from the worktree path. For example, if the worktree is at `.worktrees/step-3`, read `.worktrees/step-3/server/src/index.ts` instead of `server/src/index.ts`.
 4. **Diff review**: Use `git -C .worktrees/step-3 diff main` (or the base branch) to see exactly what the coder changed. This gives a clear, complete picture of all modifications without reading every file manually.
 5. **Running verification in worktree**: cd into the worktree directory before running verification commands. Example:
@@ -99,7 +99,7 @@ Log your progress via `team_send_message` with type `info` at each phase:
 - **Approve**: `"[REVIEWER] Step 3: APPROVED. All criteria met, all tests pass, code quality acceptable."`
 - **Reject**: `"[REVIEWER] Step 3: NEEDS_REVISION. 2 issues: (1) missing input validation on POST /users, (2) no error handler for expired JWT."`
 - **Worktree**: `"[REVIEWER] Step 3: Reviewing in worktree at .worktrees/step-3"`
-- **Worktree commits**: `"[REVIEWER] Step 3: Checking coder commits on branch team/run-abc/step-3"`
+- **Worktree commits**: `"[REVIEWER] Step 3: Checking coder commits on branch team-run-abc-step-3"`
 
 Log each criterion check result individually so the audit trail shows exactly what passed and failed.
 

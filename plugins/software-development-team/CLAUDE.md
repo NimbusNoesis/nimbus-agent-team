@@ -119,7 +119,7 @@ All store mutations follow: `const run = this.db.getRun(id)` → mutate the loca
 
 ### Mandatory run-scoped Git worktree workflow
 
-Every execution step uses exactly one mandatory worktree, `.worktrees/{runId}/step-{N}`, on `team/{runId}/step-{N}`. Planner and plan-critic are pre-approval and read-only in the primary workspace. Coder and documentation are mutating roles: all repository reads, writes, verification, and commits occur only in the supplied worktree. Reviewer and researcher use their supplied worktree only for read-only repository inspection and verification.
+Every execution step uses exactly one mandatory worktree, `.worktrees/{runId}/step-{N}`, on `team-{runId}-step-{N}`. Planner and plan-critic are pre-approval and read-only in the primary workspace. Coder and documentation are mutating roles: all repository reads, writes, verification, and commits occur only in the supplied worktree. Reviewer and researcher use their supplied worktree only for read-only repository inspection and verification.
 
 On a pending step's first admission, the coordinator captures the current target branch and exact commit, creates the worktree from that commit, and persists `{targetBranch, targetCommit, path, branch}` before `start_coding`. Creation and capture are one-time; reviewer, revision-coder, researcher, documentation, and interrupted-worker re-dispatches must reuse the persisted context. If it is absent or inconsistent, block or escalate and preserve any artifacts—do not recapture or create a replacement.
 

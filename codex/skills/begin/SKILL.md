@@ -272,7 +272,7 @@ Do not admit a step with `fileConflicts` or `blockingReasons`. Independently, se
 
 ## Git Worktree Workflow
 
-Every dispatched execution step uses its own mandatory worktree. This protocol applies to coder, reviewer, researcher, and documentation dispatches; planner and plan-critic are pre-approval, primary-worktree, read-only agents and never receive an execution worktree. Worktrees never permit overlapping claimed files to run concurrently. The StateMachine tracks workflow state only; it does not create, remove, switch, commit, or merge Git worktrees or branches.
+Every dispatched execution step uses its own mandatory worktree. Branch names are deliberately flat (`team-{runId}-step-{N}`, not `team/…`): git cannot create a hierarchical ref like `team/x/y` while any branch named `team` exists, so a slashed prefix could block runs. This protocol applies to coder, reviewer, researcher, and documentation dispatches; planner and plan-critic are pre-approval, primary-worktree, read-only agents and never receive an execution worktree. Worktrees never permit overlapping claimed files to run concurrently. The StateMachine tracks workflow state only; it does not create, remove, switch, commit, or merge Git worktrees or branches.
 
 ### Initial Pending Admission: Create and Persist Once
 
@@ -281,17 +281,17 @@ Only when a PENDING execution step N is first selected for admission, capture th
 ```bash
 targetBranch=$(git branch --show-current)
 targetCommit=$(git rev-parse HEAD)
-git worktree add -b team/{runId}/step-{N} .worktrees/{runId}/step-{N} "$targetCommit"
+git worktree add -b team-{runId}-step-{N} .worktrees/{runId}/step-{N} "$targetCommit"
 ```
 
-Persist `{targetBranch, targetCommit, path, branch}` as the step's worktree lifecycle context before calling `start_coding`: path is `.worktrees/{runId}/step-{N}` and branch is `team/{runId}/step-{N}`. This is the only capture and creation for that step. If initial capture or creation fails, do not call `start_coding` and do not dispatch any agent. Record the exact error and intended path/branch in the team message/state, mark or escalate the step as blocked according to the workflow, and wait for resolution.
+Persist `{targetBranch, targetCommit, path, branch}` as the step's worktree lifecycle context before calling `start_coding`: path is `.worktrees/{runId}/step-{N}` and branch is `team-{runId}-step-{N}`. This is the only capture and creation for that step. If initial capture or creation fails, do not call `start_coding` and do not dispatch any agent. Record the exact error and intended path/branch in the team message/state, mark or escalate the step as blocked according to the workflow, and wait for resolution.
 
 ### Mandatory Execution Dispatch Context
 
 Every coder, reviewer, researcher, and documentation dispatch reads the persisted step worktree lifecycle context and includes all of:
 
 - **Worktree path**: `.worktrees/{runId}/step-{N}`
-- **Branch name**: `team/{runId}/step-{N}`
+- **Branch name**: `team-{runId}-step-{N}`
 - **Captured target branch and commit**: `{targetBranch}` at `{targetCommit}`
 - **Role rules**: coder edits only in this worktree and commits its changes; reviewer is read-only, reviews and verifies only in this worktree, and must approve before merge; researcher is read-only and performs all repository inspection from this worktree; documentation edits only in this worktree and commits its changes.
 - **Location rule**: all repository reads, writes, tests, and Git commands for the execution step run from this worktree. No agent changes the coordinator worktree or another step's worktree.
@@ -304,7 +304,7 @@ Merge only after an explicit reviewer approval. Before merging, the coordinator 
 
 ```bash
 git switch "$targetBranch"
-git merge team/{runId}/step-{N} --no-ff -m "Merge step {N}: {step description}"
+git merge team-{runId}-step-{N} --no-ff -m "Merge step {N}: {step description}"
 ```
 
 On conflict, abort the merge (`git merge --abort`), preserve the worktree and branch artifacts, record the exact error/conflicting files, and escalate. Never auto-resolve.
@@ -313,14 +313,14 @@ After a successful merge, safely remove the persisted worktree and then delete t
 
 ```bash
 git worktree remove .worktrees/{runId}/step-{N}
-git branch -d team/{runId}/step-{N}
+git branch -d team-{runId}-step-{N}
 ```
 
 For a confirmed-abandoned, unmerged step, remove the worktree first, then force-delete its branch:
 
 ```bash
 git worktree remove .worktrees/{runId}/step-{N}
-git branch -D team/{runId}/step-{N}
+git branch -D team-{runId}-step-{N}
 ```
 
 If either cleanup command fails, preserve the artifacts and report the exact worktree path, branch name, and error.
