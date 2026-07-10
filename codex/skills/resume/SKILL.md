@@ -19,6 +19,7 @@ The team's MCP tools are namespaced. When this skill says `team_X`, call `mcp__s
 - `team_get_messages` → `mcp__software-development-team__team_get_messages`
 - `team_memory_read` → `mcp__software-development-team__team_memory_read`
 - `team_memory_write` → `mcp__software-development-team__team_memory_write`
+- `team_submit_result` → `mcp__software-development-team__team_submit_result`
 - `team_dashboard_url` → `mcp__software-development-team__team_dashboard_url`
 
 ## MCP Availability Preflight
@@ -98,14 +99,18 @@ If a step is stuck in CODING state because the previous coordinator session was 
 
 Every subagent spawn request needs all of these — subagents have no inherited context.
 
-1. **Step description** — what to build
-2. **Files to touch** — exact paths from the plan
-3. **Acceptance criteria** — what "done" looks like
-4. **Verification commands** — exact test/lint commands to run
-5. **Relevant memory** — read `team_memory_read` for `decisions`, `context`, and `learnings` namespaces, paste relevant entries
-6. **Run ID and step ID** — so the subagent can call `team_submit_result`
-7. **Prior context** — any review feedback (for revisions) or user guidance
-8. **Tool name mapping** — remind the subagent that `team_X` means `mcp__software-development-team__team_X`
+1. **Task goal** — the complete human-readable goal from the persisted run, not only the current step
+2. **Step description** — what to build
+3. **Files to touch** — exact paths from the plan
+4. **Acceptance criteria** — what "done" looks like
+5. **Full dependencies** — the step's complete `dependsOn` list plus the current status/result of every dependency
+6. **Verification commands** — exact test/lint commands to run
+7. **Relevant memory** — read `team_memory_read` for `decisions`, `context`, and `learnings` namespaces, paste relevant entries
+8. **Run ID and step ID** — actual values so the subagent can call `team_submit_result`
+9. **Actual reflection prefix** — the first 8 characters of the real run ID, supplied as a resolved value for reflection/review keys
+10. **Prior context** — all persisted review feedback, previous worker result/error, user guidance, retry/escalation history, and relevant team messages; use "none" only after checking each source
+11. **Tool name mapping** — the complete mapping needed by the role template, with `team_X` meaning `mcp__software-development-team__team_X`
+12. **Persisted worktree lifecycle** — the actual `{targetBranch, targetCommit, path, branch}` values created at initial admission, plus the role and location rules below. Verify that path and branch are present and consistent before spawning; never recapture or recreate them during resume.
 
 ## Pipeline Parallelism
 

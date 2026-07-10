@@ -51,7 +51,7 @@ You have TWO different mechanisms. Do not confuse them:
 
 ### How to spawn a subagent
 
-When this skill says "spawn the `<name>` agent", use the native `spawn_agent` tool with `task_name: "<name>"`. Before calling it, read `${CODEX_HOME:-$HOME/.codex}/agents/<name>.toml` and put its `developer_instructions`, together with the **full per-step context**, in the spawn message (see the Spawn Context Checklist below). `task_name` labels the work; it does not load the TOML file automatically. The subagent has NO inherited conversation context — everything it needs must be in the spawn request. The deterministic runnable-set scheduler below controls concurrent spawns; do not wait for one worker before considering other admitted workers.
+When this skill says "spawn the `<name>` agent", use the native `spawn_agent` tool with this explicit role-to-label mapping: `planner` → `task_name: "planner"`; `plan-critic` → `task_name: "plan_critic"`; `coder` → `task_name: "coder"`; `reviewer` → `task_name: "reviewer"`; `researcher` → `task_name: "researcher"`; `documentation` → `task_name: "documentation"`. Before calling it, read `${CODEX_HOME:-$HOME/.codex}/agents/<name>.toml` and put its `developer_instructions`, together with the **full per-step context**, in the spawn message (see the Spawn Context Checklist below). `task_name` labels the work; it does not load the TOML file automatically. The subagent has NO inherited conversation context — everything it needs must be in the spawn request. The deterministic runnable-set scheduler below controls concurrent spawns; do not wait for one worker before considering other admitted workers.
 
 ## Scope Assessment
 
@@ -87,7 +87,7 @@ When the user's task is to **review existing code** (not build something), the r
    ```
 
    No plan-approval gate is needed for a one-step read-only review — just confirm scope with the user.
-3. Mark the step coding, relay the dispatch on the dashboard, then spawn the reviewer agent with the full per-step context:
+3. After `team_start` returns the real run ID, capture the current target branch and exact commit, create the mandatory run-scoped worktree, and persist `{targetBranch, targetCommit, path, branch}` for this review step **before** admission, exactly as specified in "Initial Pending Admission: Create and Persist Once" below. If capture, creation, or persistence fails, do not call `start_coding` and do not spawn the reviewer; report and escalate the exact failure. Then mark the step coding, relay the dispatch, and spawn the reviewer with the complete persisted worktree context:
 
    ```text
    team_advance(runId, stepId, action: "start_coding", agent: "reviewer")
@@ -104,6 +104,14 @@ When the user's task is to **review existing code** (not build something), the r
    - stepId: {stepId}
    - Run ID prefix (for reflection/review memory keys): {runId-short}
    - Tool name mapping: team_X means mcp__software-development-team__team_X
+
+   ## Persisted worktree lifecycle context
+   - Worktree path: .worktrees/{runId}/step-{stepId}
+   - Branch name: team-{runId}-step-{stepId}
+   - Captured target branch: {targetBranch}
+   - Captured target commit: {targetCommit}
+   - Lifecycle rule: this context was created once before admission and must be reused; do not recapture or recreate it.
+   - Location/role rule: perform every repository read, verification command, and Git inspection inside this worktree. The standalone reviewer is read-only and must not edit, stage, commit, merge, or clean up the worktree.
 
    ## Review targets
    {file list or diff scope}
@@ -147,7 +155,7 @@ Each subagent spawn consumes tokens independently. Token costs scale linearly wi
    dashboard URL. Otherwise continue without a dashboard link as required by the
    MCP Availability Preflight diagnostic.
 2. Read shared memory (`team_memory_read` for all namespaces: `decisions`, `context`, `learnings`, `reviews`, `reflections`) for prior context.
-3. Create plan steps (yourself for quick tasks, or from planner output). **For planner-produced plans, run the adversarial review sub-phase (3a–3b) below before proceeding to step 4. For quick tasks you drafted yourself, skip directly to step 4.** When spawning the initial planner, include this final-output contract: all progress, rationale, and reflections must be sent with `team_send_message` or written with `team_memory_write` before the final response; the final response must be only a valid JSON array of plan steps, with no prose, Markdown fence, or JSON comments.
+3. Create plan steps (yourself for quick tasks, or from planner output). **For planner-produced plans, run the adversarial review sub-phase (3a–3b) below before proceeding to step 4. For quick tasks you drafted yourself, skip directly to step 4.** These planning spawns happen before `team_start`, so no run ID exists. When spawning the initial planner, explicitly override its reflection contract with `prerun-<task-slug>-draft-plan-reflection` and instruct it not to require or fabricate a run ID. Also include this final-output contract: all progress, rationale, and reflections must be sent with `team_send_message` or written with `team_memory_write` before the final response; the final response must be only a valid JSON array of plan steps, with no prose, Markdown fence, or JSON comments.
 
    **3a. Spawn the plan-critic** (planner-produced plans only).
 
@@ -163,9 +171,9 @@ Each subagent spawn consumes tokens independently. Token costs scale linearly wi
    ```text
    You are being spawned as the plan-critic for an adversarial review pass.
 
-   ## Run context
-   - runId: {runId}
-   - Run ID prefix (for reflection key): {runId-short}
+   ## Pre-run context
+   - No run exists yet. Do not require or fabricate a run ID.
+   - Reflection key override: `prerun-<task-slug>-plan-critique-reflection` (use this exact resolved key).
 
    ## Task description
    {original task description}
@@ -195,7 +203,7 @@ Each subagent spawn consumes tokens independently. Token costs scale linearly wi
      body: "planner revising: incorporating plan-critic feedback")
    ```
 
-   Spawn the planner agent again, passing the original task, the draft plan, and the full critique. Instruct the planner to produce a **final plan** that either addresses each concern or explicitly rejects it with rationale. Any rationale, progress update, or reflection must be sent with `team_send_message` or written with `team_memory_write` before the final response. The final response must be only a valid JSON array of plan steps, with no prose, Markdown fence, or JSON comments. The planner's output from this pass replaces the draft — use it as the plan for the approval gate.
+   Spawn the planner agent again, passing the original task, the draft plan, and the full critique. Explicitly state that no run exists yet, no run ID may be required or fabricated, and its reflection key override is `prerun-<task-slug>-final-plan-reflection` (use the exact resolved key). Instruct the planner to produce a **final plan** that either addresses each concern or explicitly rejects it with rationale. Any rationale, progress update, or reflection must be sent with `team_send_message` or written with `team_memory_write` before the final response. The final response must be only a valid JSON array of plan steps, with no prose, Markdown fence, or JSON comments. The planner's output from this pass replaces the draft — use it as the plan for the approval gate.
 
    Relay after the planner returns with the final plan:
 

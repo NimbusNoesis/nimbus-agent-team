@@ -73,13 +73,15 @@ Rules:
 - Do NOT call team_start — this is plan-only mode.
 
 Before your final response, write a reflection to memory: team_memory_write(namespace: "reflections", key: "planonly-<task-slug>-reflection", value: <what was complex, key decisions, tradeoffs, gotchas>). Use the `planonly-` prefix and a descriptive task slug: plan-only mode runs outside any team run, so there is no run-ID to scope the key with. This durable key keeps standalone-plan reflections distinct from run-scoped (`<run-prefix>-step-N-reflection`) entries; re-planning the same task intentionally overwrites its prior plan-only reflection.
+
+This is an explicit pre-run reflection override of the planner template: no run exists and you MUST use the exact `planonly-<task-slug>-reflection` key. Do not require or fabricate a run ID.
 ```
 
 Wait for the planner agent to return with the draft JSON plan.
 
 ### 2a. Spawn the plan-critic
 
-Read `${CODEX_HOME:-$HOME/.codex}/agents/plan-critic.toml`, then call Codex's native `spawn_agent` tool with `task_name: "plan-critic"`. Include that template's `developer_instructions` and the context below in the spawn message.
+Read `${CODEX_HOME:-$HOME/.codex}/agents/plan-critic.toml`, then call Codex's native `spawn_agent` tool with `task_name: "plan_critic"`. The role name and template filename remain `plan-critic`; `plan_critic` is the valid native task label. Include that template's `developer_instructions` and the context below in the spawn message.
 
 **Spawn context to include:**
 
@@ -103,6 +105,8 @@ The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__
 - `team_send_message` → `mcp__software-development-team__team_send_message`
 
 Produce a structured critique following your Critique Output Format. Do NOT output a replacement plan. Do NOT call team_start.
+
+Reflection override: this is pre-run plan-only mode, so no run ID exists. Write the critique reflection with the exact key `planonly-<task-slug>-plan-critique-reflection`; do not require or fabricate a run ID.
 ```
 
 Wait for the plan-critic to return with its structured critique.
@@ -138,6 +142,8 @@ The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__
 ## Instructions
 
 Address each priority concern from the critique. If you disagree with a concern, send the rationale through `team_send_message` or write it with `team_memory_write` before your final response. Your final response MUST be only a valid JSON array: no prose, Markdown fence, or JSON comments. Do NOT call team_start — this is plan-only mode.
+
+Reflection override: this is pre-run plan-only mode, so no run ID exists. Write the final-planner reflection with the exact key `planonly-<task-slug>-final-plan-reflection`; do not require or fabricate a run ID.
 
 Each step object must follow this schema:
 {
