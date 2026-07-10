@@ -68,13 +68,14 @@ The coordinator will:
 
 ### Agents
 
-The skills spawn six role-specific subagents: `planner`, `plan-critic`, `coder`,
-`reviewer`, `researcher`, and `documentation`. The TOML files in
+The skills spawn six role-specific subagents. Role identities and TOML template filenames are `planner`, `plan-critic`, `coder`, `reviewer`, `researcher`, and `documentation`; native `spawn_agent.task_name` labels are `planner`, `plan_critic`, `coder`, `reviewer`, `researcher`, and `documentation` respectively. The TOML files in
 `~/.codex/agents/` are role templates: before each spawn, the coordinator reads the
 appropriate template and includes its instructions plus the full per-step context in
-the native `spawn_agent` request. Subagents inherit no conversation context, but do
-inherit the team's MCP server, so they call
-`mcp__software-development-team__team_*` tools directly.
+the native `spawn_agent` request. Subagents inherit no conversation context. When the
+team MCP server and a role's required tools are registered in the current Codex
+session, subagents can call the mapped `mcp__software-development-team__team_*`
+tools directly; skills must run their MCP availability preflight and must not assume
+that every MCP tool is present.
 
 ## How it works
 

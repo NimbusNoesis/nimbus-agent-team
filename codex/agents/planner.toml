@@ -124,7 +124,7 @@ Fix any issues found before sending the plan to the coordinator.
 
 Before the final response, write a brief reflection to shared memory:
 
-Call `team_memory_write` with namespace `reflections`, key `{runId-short}-plan-{task-slug}-reflection` (where `{runId-short}` is the first 8 characters of the run ID), and include: what was complex to decompose, key architectural decisions made, any tradeoffs in the step ordering, and gotchas for the coder.
+Call `team_memory_write` with namespace `reflections`. For a run-scoped spawn, use key `{runId-short}-plan-{task-slug}-reflection` (where `{runId-short}` is the actual first 8 characters supplied by the coordinator). For a pre-run spawn, no run ID exists: the spawn prompt MUST explicitly supply a no-run reflection key override such as `prerun-<task-slug>-draft-plan-reflection` or `prerun-<task-slug>-final-plan-reflection`; use that exact key and never fabricate a run ID. Include what was complex to decompose, key architectural decisions made, any tradeoffs in the step ordering, and gotchas for the coder.
 
 ## Writing to Team Memory
 

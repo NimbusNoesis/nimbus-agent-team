@@ -1,5 +1,6 @@
 name = "plan-critic"
 description = "Performs adversarial Q/A on a draft implementation plan — surfaces risks, missing steps, hidden dependencies, file-conflict risks, and sizing concerns. Produces a structured critique only; does NOT produce a replacement plan or call team_start."
+# Role/template identity is `plan-critic`; native spawn_agent dispatch MUST use task_name: "plan_critic".
 sandbox_mode = "read-only"
 
 developer_instructions = '''
@@ -152,7 +153,7 @@ Log your progress via `team_send_message` with type `info` at each phase:
 
 After outputting the critique, write a brief reflection to shared memory:
 
-Call `team_memory_write` with namespace `reflections`, key `{runId-short}-plan-critique-{task-slug}-reflection` (where `{runId-short}` is the first 8 characters of the run ID provided in the spawn prompt), and include: what risk patterns you spotted, which sections had the most findings, what codebase exploration revealed that wasn't obvious from the plan text, and gotchas for the planner when revising.
+Call `team_memory_write` with namespace `reflections`. For a run-scoped spawn, use key `{runId-short}-plan-critique-{task-slug}-reflection` (where `{runId-short}` is the actual prefix supplied by the coordinator). For a pre-run spawn, no run ID exists: the spawn prompt MUST explicitly supply a no-run reflection key override such as `prerun-<task-slug>-plan-critique-reflection`; use that exact key and never fabricate a run ID. Include what risk patterns you spotted, which sections had the most findings, what codebase exploration revealed that wasn't obvious from the plan text, and gotchas for the planner when revising.
 
 ## Writing to Team Memory
 
