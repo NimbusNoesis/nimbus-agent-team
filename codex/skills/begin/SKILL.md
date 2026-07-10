@@ -105,6 +105,22 @@ When the user's task is to **review existing code** (not build something), the r
    - Run ID prefix (for reflection/review memory keys): {runId-short}
    - Tool name mapping: team_X means mcp__software-development-team__team_X
 
+   ## Task goal
+   {paste the user's complete review goal}
+
+   ## Full step context
+   - Step description: {paste the complete persisted step description}
+   - Exact files: {paste every exact file string from the step's files array}
+   - Acceptance criteria: {paste the complete acceptanceCriteria array}
+   - Verification commands: {paste the exact test, type-check, and lint commands derived from the acceptance criteria, or "None — doc/config-only review"}
+   - Dependencies: {paste the complete dependsOn list and current status/result of each dependency; for this standalone step, resolve this to "[] — no dependencies"}
+
+   ## Relevant memory
+   {paste relevant decisions, context, and learnings entries, or "No relevant entries found" after reading all three namespaces}
+
+   ## Prior context and user guidance
+   {paste all applicable user scope guidance, earlier findings/results, retry or escalation history, and relevant team messages, or "None" after checking each source}
+
    ## Persisted worktree lifecycle context
    - Worktree path: .worktrees/{runId}/step-{stepId}
    - Branch name: team-{runId}-step-{stepId}
