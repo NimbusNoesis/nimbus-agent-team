@@ -110,7 +110,7 @@ On every fresh status snapshot, the scheduler gives eligible review/revision lif
 
 ### Mandatory run-scoped worktrees
 
-Every execution step has one mandatory worktree at `.worktrees/{runId}/step-{N}` on branch `team/{runId}/step-{N}`. Planner and plan-critic are pre-approval, read-only roles in the primary workspace. Coder and documentation are mutating roles that read, write, verify, and commit only in the supplied worktree. Reviewer and researcher use the supplied worktree only for read-only inspection and verification. Worktrees do not relax exact-claim serialization: two steps whose declared file strings overlap exactly must not run concurrently.
+Every execution step has one mandatory worktree at `.worktrees/{runId}/step-{N}` on branch `team-{runId}-step-{N}`. Planner and plan-critic are pre-approval, read-only roles in the primary workspace. Coder and documentation are mutating roles that read, write, verify, and commit only in the supplied worktree. Reviewer and researcher use the supplied worktree only for read-only inspection and verification. Worktrees do not relax exact-claim serialization: two steps whose declared file strings overlap exactly must not run concurrently.
 
 When a pending execution step is first admitted, the coordinator captures its current target branch and exact commit, creates the worktree from that commit, and persists `{targetBranch, targetCommit, path, branch}` before `start_coding`. That capture and creation happen once; reviewer, revision-coder, researcher, documentation, and interrupted-worker dispatches reuse the same persisted context. Missing or inconsistent context blocks or escalates the step rather than creating a replacement worktree.
 

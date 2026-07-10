@@ -162,7 +162,7 @@ Conflicts serialize work; they do not create a paused state. Leave a conflicting
 
 ## Git Worktree Workflow
 
-Every dispatched execution step uses a mandatory `.worktrees/{runId}/step-{N}` worktree and `team/{runId}/step-{N}` branch, including coder, reviewer, researcher, and documentation dispatches. Planner and plan-critic remain pre-approval, primary-worktree, read-only agents. Worktrees never permit overlapping claimed files to run concurrently. StateMachine does not manage Git operations; the coordinator does.
+Every dispatched execution step uses a mandatory `.worktrees/{runId}/step-{N}` worktree and `team-{runId}-step-{N}` branch, including coder, reviewer, researcher, and documentation dispatches. Branch names are deliberately flat (`team-{runId}-step-{N}`, not `team/…`): git cannot create a hierarchical ref like `team/x/y` while any branch named `team` exists, so a slashed prefix could block runs. Planner and plan-critic remain pre-approval, primary-worktree, read-only agents. Worktrees never permit overlapping claimed files to run concurrently. StateMachine does not manage Git operations; the coordinator does.
 
 ### Initial Pending Admission: Create and Persist Once
 
@@ -171,17 +171,17 @@ Only when a PENDING execution step N is first selected for admission, capture th
 ```bash
 targetBranch=$(git branch --show-current)
 targetCommit=$(git rev-parse HEAD)
-git worktree add -b team/{runId}/step-{N} .worktrees/{runId}/step-{N} "$targetCommit"
+git worktree add -b team-{runId}-step-{N} .worktrees/{runId}/step-{N} "$targetCommit"
 ```
 
-Persist `{targetBranch, targetCommit, path, branch}` as the step worktree lifecycle context before `start_coding`; path is `.worktrees/{runId}/step-{N}` and branch is `team/{runId}/step-{N}`. Never recapture or recreate it for that step. If initial capture or creation fails, do not call `start_coding` and do not dispatch. Record the exact error plus intended path/branch in team state/messages, block or escalate, and wait for resolution.
+Persist `{targetBranch, targetCommit, path, branch}` as the step worktree lifecycle context before `start_coding`; path is `.worktrees/{runId}/step-{N}` and branch is `team-{runId}-step-{N}`. Never recapture or recreate it for that step. If initial capture or creation fails, do not call `start_coding` and do not dispatch. Record the exact error plus intended path/branch in team state/messages, block or escalate, and wait for resolution.
 
 ### Mandatory Execution Dispatch Context
 
 Every coder, reviewer, researcher, and documentation dispatch reads the persisted step worktree lifecycle context and includes:
 
 - **Worktree path**: `.worktrees/{runId}/step-{N}`
-- **Branch name**: `team/{runId}/step-{N}`
+- **Branch name**: `team-{runId}-step-{N}`
 - **Captured target**: `{targetBranch}` at `{targetCommit}`
 - **Role rules**: coder and documentation edit/commit only in this worktree; reviewer and researcher are read-only and inspect/run verification only here; reviewer approval is required before merge.
 - **Location rule**: all repository reads, writes, tests, and Git commands run in this worktree; do not modify the coordinator or another step's worktree.
@@ -194,7 +194,7 @@ Only after explicit reviewer approval, switch to the captured target branch and 
 
 ```bash
 git switch "$targetBranch"
-git merge team/{runId}/step-{N} --no-ff -m "Merge step {N}: {step description}"
+git merge team-{runId}-step-{N} --no-ff -m "Merge step {N}: {step description}"
 ```
 
 On conflict, run `git merge --abort`, preserve worktree/branch artifacts, record exact error and conflicting files, and escalate. Never auto-resolve.
@@ -203,14 +203,14 @@ After successful merge, safely remove the persisted worktree and delete the pers
 
 ```bash
 git worktree remove .worktrees/{runId}/step-{N}
-git branch -d team/{runId}/step-{N}
+git branch -d team-{runId}-step-{N}
 ```
 
 For a confirmed-abandoned, unmerged step, remove the worktree first, then force-delete its branch:
 
 ```bash
 git worktree remove .worktrees/{runId}/step-{N}
-git branch -D team/{runId}/step-{N}
+git branch -D team-{runId}-step-{N}
 ```
 
 If either cleanup command fails, preserve artifacts and report the exact worktree path, branch name, and error.

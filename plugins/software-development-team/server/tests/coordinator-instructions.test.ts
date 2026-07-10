@@ -65,7 +65,7 @@ describe('coordinator instruction contract', () => {
 
   it.each(instructions)('$file defines a run-scoped, coordinator-owned worktree lifecycle', ({ content }) => {
     expect(content).toMatch(/mandatory.*\.worktrees\/\{runId\}\/step-\{N\}/is);
-    expect(content).toMatch(/team\/\{runId\}\/step-\{N\}/i);
+    expect(content).toMatch(/team-\{runId\}-step-\{N\}/i);
     expect(content).toMatch(/targetBranch.*git branch --show-current/is);
     expect(content).toMatch(/targetCommit.*git rev-parse HEAD/is);
     expect(content).toMatch(/capture.*target.*commit.*create/is);
@@ -82,17 +82,21 @@ describe('coordinator instruction contract', () => {
   it.each(instructions)('$file protects the captured merge target and cleanup lifecycle', ({ content }) => {
     expect(content).toMatch(/(?:merge only after|only after).*reviewer.*approval.*(?:switch|captured target branch).*merg(?:e|es)(?: only| there| nowhere else)/is);
     expect(content).toMatch(/git switch "\$targetBranch"/);
-    expect(content).toMatch(/git merge team\/\{runId\}\/step-\{N\} --no-ff/);
+    expect(content).toMatch(/git merge team-\{runId\}-step-\{N\} --no-ff/);
     expect(content).toMatch(/(?:conflict|merge conflict).*git merge --abort.*preserve.*escalate/is);
     expect(content).toMatch(/never auto-resolve/i);
-    expect(content).toMatch(/git worktree remove \.worktrees\/\{runId\}\/step-\{N\}[\s\S]*git branch -d team\/\{runId\}\/step-\{N\}/i);
-    expect(content).toMatch(/(?:abandoned|unmerged)[\s\S]*git worktree remove[\s\S]*git branch -D team\/\{runId\}\/step-\{N\}/i);
+    expect(content).toMatch(/git worktree remove \.worktrees\/\{runId\}\/step-\{N\}[\s\S]*git branch -d team-\{runId\}-step-\{N\}/i);
+    expect(content).toMatch(/(?:abandoned|unmerged)[\s\S]*git worktree remove[\s\S]*git branch -D team-\{runId\}-step-\{N\}/i);
     expect(content).toMatch(/(?:cleanup|either cleanup command).*fail.*preserve.*(?:path|branch).*error/is);
   });
 
   it.each(instructions)('$file rejects obsolete worktree and merge behavior', ({ content }) => {
     expect(content).not.toMatch(/optional (?:per-step )?(?:git )?worktree/i);
     expect(content).not.toMatch(/\.worktrees\/step-\{N\}/i);
+    // Branch names must stay flat: git cannot create `team/x/y` while a branch named
+    // `team` exists, so the old hierarchical convention could block runs.
+    expect(content).not.toMatch(/team\/\{runId\}\/step-\{N\}/i);
+    expect(content).not.toMatch(/team\/\$\{?runId\}?/i);
     expect(content).not.toMatch(/merge (?:into|to) (?:the )?(?:current|whatever) branch/i);
     // Do not reject the required "Never auto-resolve" prohibition above; only reject permissive automation.
     expect(content).not.toMatch(/(?:will|must|should|may|can)\s+(?:automatically|auto-)\s*resolve/i);

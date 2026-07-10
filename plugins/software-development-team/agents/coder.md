@@ -43,7 +43,7 @@ When a step below calls for several independent reads (multiple memory namespace
 
 The coordinator must provide a run-scoped worktree path (e.g., `.worktrees/step-3`). Work entirely within it; there is no primary-workspace workflow or fallback.
 
-1. **When to use**: The required dispatch context specifies a worktree path. Work entirely within that directory. The worktree is a full copy of the repo checked out on its own branch (e.g., `team/{runId}/step-{N}`).
+1. **When to use**: The required dispatch context specifies a worktree path. Work entirely within that directory. The worktree is a full copy of the repo checked out on its own branch (e.g., `team-{runId}-step-{N}`).
 2. **Working in the worktree**: All file reads, edits, and verification commands must use the worktree path. For example, if the worktree is at `.worktrees/step-3` and you need to edit `server/src/index.ts`, the full path is `.worktrees/step-3/server/src/index.ts`.
 3. **Verification in worktree**: Run verification commands from within the worktree directory — `cd` into it before running `npx tsc`, `npx vitest`, etc.
 4. **Committing changes**: Before submitting results, commit ALL changes to the worktree branch with a descriptive commit message. This is critical — uncommitted changes in a worktree will be lost when the coordinator cleans it up after the review.
@@ -124,7 +124,7 @@ Log your progress via `team_send_message` with type `info` at each phase:
 - **Revision**: `"[CODER] Step 3 (retry 2): Reviewer feedback — missing input validation on POST /users. Reflecting: need to add zod schema."`
 - **Submit**: `"[CODER] Step 3: Submitting DONE. Files modified: src/auth/middleware.ts, src/routes/index.ts. Tests: 5/5."`
 - **Blocked**: `"[CODER] Step 3: BLOCKED. Cannot find database migration tool. Tried: prisma, drizzle, knex. None installed."`
-- **Worktree**: `"[CODER] Step 3: Working in worktree at .worktrees/step-3 on branch team/run-abc/step-3"`
+- **Worktree**: `"[CODER] Step 3: Working in worktree at .worktrees/step-3 on branch team-run-abc-step-3"`
 
 Log BEFORE taking the action. When blocked or stuck, log what you tried and what failed.
 

@@ -142,7 +142,7 @@ pending --> coding --> reviewing --> complete
 
 ### Git Worktree Isolation
 
-Every execution step receives one mandatory run-scoped worktree, `.worktrees/{runId}/step-{N}`, on branch `team/{runId}/step-{N}`. The coordinator creates it only when the pending step is first admitted: it captures the current target branch and exact commit, creates from that commit, and persists `{targetBranch, targetCommit, path, branch}` before `start_coding`. Re-dispatches reuse that context; missing or inconsistent context blocks or escalates the step rather than recapturing or creating another worktree.
+Every execution step receives one mandatory run-scoped worktree, `.worktrees/{runId}/step-{N}`, on branch `team-{runId}-step-{N}`. The coordinator creates it only when the pending step is first admitted: it captures the current target branch and exact commit, creates from that commit, and persists `{targetBranch, targetCommit, path, branch}` before `start_coding`. Re-dispatches reuse that context; missing or inconsistent context blocks or escalates the step rather than recapturing or creating another worktree.
 
 | Role | Repository location and authority |
 | --- | --- |
