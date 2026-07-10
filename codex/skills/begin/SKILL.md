@@ -51,7 +51,16 @@ You have TWO different mechanisms. Do not confuse them:
 
 ### How to spawn a subagent
 
-When this skill says "spawn the `<name>` agent", use the native `spawn_agent` tool with this explicit role-to-label mapping: `planner` → `task_name: "planner"`; `plan-critic` → `task_name: "plan_critic"`; `coder` → `task_name: "coder"`; `reviewer` → `task_name: "reviewer"`; `researcher` → `task_name: "researcher"`; `documentation` → `task_name: "documentation"`. Before calling it, read `${CODEX_HOME:-$HOME/.codex}/agents/<name>.toml` and put its `developer_instructions`, together with the **full per-step context**, in the spawn message (see the Spawn Context Checklist below). `task_name` labels the work; it does not load the TOML file automatically. The subagent has NO inherited conversation context — everything it needs must be in the spawn request. The deterministic runnable-set scheduler below controls concurrent spawns; do not wait for one worker before considering other admitted workers.
+When this skill says "spawn the `<name>` agent", read `${CODEX_HOME:-$HOME/.codex}/agents/<name>.toml` and use Codex's native `spawn_agent`. Role and template identities stay `planner`, `plan-critic`, `coder`, `reviewer`, `researcher`, and `documentation`; `task_name` is a unique invocation label and never loads or selects a template. Every label MUST match `^[a-z0-9_]+$` and MUST be unique among all agent paths already created in the current coordinator session, including completed agents that may still be addressable.
+
+Use these deterministic labels:
+
+- Planning passes: planner draft uses `task_name: "planner_draft"`; role/template `plan-critic` uses `task_name: "plan_critic"`; final planner uses `task_name: "planner_final"`.
+- Run workers: `<role>_step_<N>_attempt_<A>`, for example `coder_step_2_attempt_1`, `researcher_step_3_attempt_1`, or `documentation_step_4_attempt_1`.
+- Reviews: `reviewer_step_<N>_attempt_<A>`, where `<A>` is the one-based review attempt for that step.
+- A standalone review uses `reviewer_step_1_attempt_1`.
+
+Increment the applicable attempt for every revision, recovery, interrupted re-dispatch, or repeated review; never reuse a prior invocation label. Including the step number prevents parallel same-role workers from colliding. Put the selected template's `developer_instructions`, together with the **full per-step context**, in the spawn message (see the Spawn Context Checklist below). The subagent has NO inherited conversation context — everything it needs must be in the spawn request. The deterministic runnable-set scheduler below controls concurrent spawns; do not wait for one worker before considering other admitted workers.
 
 ## Scope Assessment
 

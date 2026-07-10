@@ -106,6 +106,15 @@ assert 'task_name: "plan_critic"' in agent_texts["plan-critic.toml"]
 assert 'task_name: "plan_critic"' in begin_skill
 assert 'task_name: "plan_critic"' in plan_skill
 assert "template filename remain `plan-critic`" in plan_skill
+assert 'task_name: "planner_draft"' in plan_skill
+assert 'task_name: "planner_final"' in plan_skill
+assert "unique invocation label" in begin_skill
+assert "never loads or selects a template" in begin_skill
+assert "<role>_step_<N>_attempt_<A>" in begin_skill
+assert "parallel same-role workers" in begin_skill
+assert "coder_step_2_attempt_1" in resume_skill
+assert "reviewer_step_2_attempt_1" in resume_skill
+assert "existing agent path is never reused" in resume_skill
 
 assert "pre-approval, read-only role" in agent_texts["planner.toml"]
 assert "pre-approval, read-only role" in agent_texts["plan-critic.toml"]

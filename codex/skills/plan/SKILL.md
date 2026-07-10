@@ -28,7 +28,7 @@ Call `team_memory_read` for these namespaces and note any relevant entries:
 
 ### 2. Spawn the planner agent
 
-Read `${CODEX_HOME:-$HOME/.codex}/agents/planner.toml`, then call Codex's native `spawn_agent` tool with `task_name: "planner"`. Include that template's `developer_instructions` and the context below in the spawn message.
+Read `${CODEX_HOME:-$HOME/.codex}/agents/planner.toml`, then call Codex's native `spawn_agent` tool with `task_name: "planner_draft"`. This unique invocation label does not load the template. Include that template's `developer_instructions` and the context below in the spawn message.
 
 **Spawn context to include:**
 
@@ -81,7 +81,7 @@ Wait for the planner agent to return with the draft JSON plan.
 
 ### 2a. Spawn the plan-critic
 
-Read `${CODEX_HOME:-$HOME/.codex}/agents/plan-critic.toml`, then call Codex's native `spawn_agent` tool with `task_name: "plan_critic"`. The role name and template filename remain `plan-critic`; `plan_critic` is the valid native task label. Include that template's `developer_instructions` and the context below in the spawn message.
+Read `${CODEX_HOME:-$HOME/.codex}/agents/plan-critic.toml`, then call Codex's native `spawn_agent` tool with `task_name: "plan_critic"`. The role name and template filename remain `plan-critic`; `plan_critic` is the distinct, grammar-valid native task label for this pass. Include that template's `developer_instructions` and the context below in the spawn message.
 
 **Spawn context to include:**
 
@@ -113,7 +113,7 @@ Wait for the plan-critic to return with its structured critique.
 
 ### 2b. Re-spawn the planner with the critique
 
-Read `${CODEX_HOME:-$HOME/.codex}/agents/planner.toml` again, then call the native `spawn_agent` tool with `task_name: "planner"`, passing the template's `developer_instructions`, the original task, the draft plan, and the full critique:
+Read `${CODEX_HOME:-$HOME/.codex}/agents/planner.toml` again, then call the native `spawn_agent` tool with `task_name: "planner_final"`, passing the template's `developer_instructions`, the original task, the draft plan, and the full critique. Do not reuse `planner_draft`: native task names identify invocation paths, not templates, and every planning-pass label must remain unique and match `^[a-z0-9_]+$`.
 
 **Spawn context to include:**
 

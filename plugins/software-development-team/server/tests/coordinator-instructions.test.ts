@@ -76,8 +76,14 @@ describe('coordinator instruction contract', () => {
 
     const begin = codexSkills.find(({ file }) => file.endsWith('/begin/SKILL.md'))!.content;
     const plan = codexSkills.find(({ file }) => file.endsWith('/plan/SKILL.md'))!.content;
+    const resume = codexSkills.find(({ file }) => file.endsWith('/resume/SKILL.md'))!.content;
     expect(begin).toMatch(/plan-critic[^\n]*task_name:\s*["'`]plan_critic["'`]/i);
-    expect(plan).toMatch(/template filename remain[s]?\s*["'`]?plan-critic["'`]?[^\n]*plan_critic[^\n]*valid native task label/i);
+    expect(plan).toMatch(/template filename remain[s]?\s*["'`]?plan-critic["'`]?[^\n]*plan_critic[^\n]*grammar-valid native task label/i);
+    expect(plan).toMatch(/task_name:\s*["'`]planner_draft["'`][\s\S]*task_name:\s*["'`]plan_critic["'`][\s\S]*task_name:\s*["'`]planner_final["'`]/);
+    expect(begin).toMatch(/task_name[^\n]*unique invocation label[^\n]*never loads or selects a template/i);
+    expect(begin).toMatch(/<role>_step_<N>_attempt_<A>[\s\S]*parallel same-role workers[^\n]*colliding/i);
+    expect(resume).toMatch(/coder_step_2_attempt_1[\s\S]*reviewer_step_2_attempt_1/);
+    expect(resume).toMatch(/revision, recovery, interrupted re-dispatch, or repeated review[\s\S]*never reused/i);
     expect(codexAgents.find(({ role }) => role === 'plan-critic')!.content).toMatch(
       /Role\/template identity is [`']plan-critic[`']; native spawn_agent dispatch MUST use task_name:\s*["'`]plan_critic["'`]/,
     );
