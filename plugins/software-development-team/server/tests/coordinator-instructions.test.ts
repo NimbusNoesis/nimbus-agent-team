@@ -4,6 +4,19 @@ import { describe, expect, it } from 'vitest';
 // Keep this test independent of the directory Vitest was launched from.
 const repositoryRoot = new URL('../../../../', import.meta.url);
 
+const codexSkillFiles = ['begin', 'plan', 'resume', 'status', 'memory', 'research', 'review'].map(
+  (name) => `codex/skills/${name}/SKILL.md`,
+);
+const codexAgentRoles = ['planner', 'plan-critic', 'coder', 'reviewer', 'researcher', 'documentation'] as const;
+const codexAgentFiles = codexAgentRoles.map((role) => `codex/agents/${role}.toml`);
+const readRepositoryFile = (file: string) => readFileSync(new URL(file, repositoryRoot), 'utf8');
+const codexSkills = codexSkillFiles.map((file) => ({ file, content: readRepositoryFile(file) }));
+const codexAgents = codexAgentFiles.map((file, index) => ({
+  file,
+  role: codexAgentRoles[index],
+  content: readRepositoryFile(file),
+}));
+
 const instructionFiles = [
   'codex/skills/begin/SKILL.md',
   'codex/skills/resume/SKILL.md',
@@ -28,6 +41,103 @@ const agents = agentFiles.map(({ role, file }) => ({
 }));
 
 describe('coordinator instruction contract', () => {
+  it('covers every Codex skill and native agent template', () => {
+    expect(codexSkillFiles).toEqual([
+      'codex/skills/begin/SKILL.md',
+      'codex/skills/plan/SKILL.md',
+      'codex/skills/resume/SKILL.md',
+      'codex/skills/status/SKILL.md',
+      'codex/skills/memory/SKILL.md',
+      'codex/skills/research/SKILL.md',
+      'codex/skills/review/SKILL.md',
+    ]);
+    expect(codexAgentFiles).toEqual([
+      'codex/agents/planner.toml',
+      'codex/agents/plan-critic.toml',
+      'codex/agents/coder.toml',
+      'codex/agents/reviewer.toml',
+      'codex/agents/researcher.toml',
+      'codex/agents/documentation.toml',
+    ]);
+    for (const { file, content } of [...codexSkills, ...codexAgents]) {
+      expect(content, `${file} must not be empty`).not.toHaveLength(0);
+    }
+  });
+
+  it('uses native-compatible literal task labels and an explicit role mapping', () => {
+    const taskLabels = codexSkills.flatMap(({ file, content }) =>
+      [...content.matchAll(/task_name\s*:\s*["'`]([^"'`]+)["'`]/g)].map((match) => ({ file, label: match[1] })),
+    );
+
+    expect(taskLabels.length).toBeGreaterThan(0);
+    for (const { file, label } of taskLabels) {
+      expect(label, `${file} contains an invalid native task_name`).toMatch(/^[a-z0-9_]+$/);
+    }
+
+    const begin = codexSkills.find(({ file }) => file.endsWith('/begin/SKILL.md'))!.content;
+    const plan = codexSkills.find(({ file }) => file.endsWith('/plan/SKILL.md'))!.content;
+    expect(begin).toMatch(/plan-critic[^\n]*task_name:\s*["'`]plan_critic["'`]/i);
+    expect(plan).toMatch(/template filename remain[s]?\s*["'`]?plan-critic["'`]?[^\n]*plan_critic[^\n]*valid native task label/i);
+    expect(codexAgents.find(({ role }) => role === 'plan-critic')!.content).toMatch(
+      /Role\/template identity is [`']plan-critic[`']; native spawn_agent dispatch MUST use task_name:\s*["'`]plan_critic["'`]/,
+    );
+
+    const spawningSkills = codexSkills.filter(({ content }) => /spawn_agent/.test(content));
+    for (const { file, content } of spawningSkills) {
+      expect(content, `${file} must not substitute a role directly into task_name`).not.toMatch(
+        /task_name\s*:\s*(?:["'`]?<(?:name|role)>["'`]?|\$\{?(?:name|role)\}?|(?:name|role)\b)/i,
+      );
+    }
+  });
+
+  it('makes planner and critic templates compatible with pre-run overrides', () => {
+    const planner = codexAgents.find(({ role }) => role === 'planner')!.content;
+    const critic = codexAgents.find(({ role }) => role === 'plan-critic')!.content;
+    for (const [role, content] of [['planner', planner], ['plan-critic', critic]] as const) {
+      expect(content, role).toMatch(/For a pre-run spawn, no run ID exists/is);
+      expect(content, role).toMatch(/spawn prompt MUST explicitly supply a no-run reflection key override/is);
+      expect(content, role).toMatch(/use that exact key and never fabricate a run ID/is);
+    }
+    expect(planner).toMatch(/prerun-<task-slug>-(?:draft|final)-plan-reflection/);
+    expect(critic).toMatch(/prerun-<task-slug>-plan-critique-reflection/);
+  });
+
+  it('gives the team standalone reviewer an isolated worktree and complete dispatch context', () => {
+    const begin = codexSkills.find(({ file }) => file.endsWith('/begin/SKILL.md'))!.content;
+    const standalone = begin.slice(begin.indexOf('## Standalone Review Task'), begin.indexOf('## Cost Awareness'));
+    expect(standalone).toMatch(/team_start[\s\S]*capture the current target branch and exact commit/is);
+    expect(standalone).toMatch(/persist\W+\{targetBranch, targetCommit, path, branch\}[^\n]*before\W+admission/i);
+    expect(standalone).toMatch(/## Run context[\s\S]*Run ID prefix[\s\S]*## Full step context/is);
+    expect(standalone).toMatch(/Task goal[\s\S]*Step description[\s\S]*Exact files[\s\S]*Acceptance criteria[\s\S]*Dependencies/is);
+    expect(standalone).toMatch(/decisions, context, and learnings[\s\S]*Prior context and user guidance/is);
+    expect(standalone).toMatch(/Persisted worktree lifecycle context[\s\S]*Worktree path[\s\S]*Branch name[\s\S]*Captured target/is);
+    expect(standalone).toMatch(/perform every repository read, verification command, and Git inspection inside this worktree/is);
+    expect(standalone).toMatch(/do NOT call `team_submit_result`/);
+  });
+
+  it('requires complete recovered context for every resume dispatch', () => {
+    const resume = codexSkills.find(({ file }) => file.endsWith('/resume/SKILL.md'))!.content;
+    const checklist = resume.slice(resume.indexOf('## Spawn Context Checklist'), resume.indexOf('## Pipeline Parallelism'));
+    const requiredContext = [
+      'Task goal',
+      'Step description',
+      'Files to touch',
+      'Acceptance criteria',
+      'Full dependencies',
+      'Verification commands',
+      'Relevant memory',
+      'Run ID and step ID',
+      'Actual reflection prefix',
+      'Prior context',
+      'Tool name mapping',
+      'Persisted worktree lifecycle',
+    ];
+    for (const field of requiredContext) expect(checklist).toContain(`**${field}**`);
+    expect(resume).toMatch(/interrupted-worker re-dispatches reuse this exact persisted context/is);
+    expect(resume).toMatch(/missing or inconsistent[\s\S]*do not dispatch and do not recreate/is);
+    expect(checklist).toMatch(/review feedback, previous worker result\/error, user guidance, retry\/escalation history, and relevant team messages/is);
+  });
+
   it.each(instructions)('$file defines the bounded deterministic scheduler', ({ content }) => {
     expect(content).toMatch(/maxParallel/i);
     expect(content).toMatch(/simultaneously spawned \*\*workers\*\*|simultaneously spawned workers/i);
