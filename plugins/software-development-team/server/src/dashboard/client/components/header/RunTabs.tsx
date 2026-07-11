@@ -4,7 +4,6 @@ import { selectRun } from '../../state/api';
 
 // Human-readable label per run status, shown in each tab's tooltip.
 const STATUS_LABEL: Record<string, string> = {
-  planning: 'Planning',
   ready: 'Ready',
   in_progress: 'Running',
   escalated: 'Escalated',

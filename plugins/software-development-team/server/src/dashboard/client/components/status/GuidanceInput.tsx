@@ -1,16 +1,23 @@
-import { useRef } from 'preact/hooks';
+import { useRef, useState } from 'preact/hooks';
 import { currentRun } from '../../state/store';
 import { sendGuidance } from '../../state/api';
 
 export function GuidanceInput() {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [sendFailed, setSendFailed] = useState(false);
 
-  const send = () => {
+  const send = async () => {
     const body = inputRef.current?.value.trim();
     const run = currentRun.value;
     if (!body || !run) return;
-    sendGuidance(run.id, body);
-    if (inputRef.current) inputRef.current.value = '';
+    const ok = await sendGuidance(run.id, body);
+    if (ok) {
+      setSendFailed(false);
+      // Only clear on success — on failure the user keeps their text to retry.
+      if (inputRef.current) inputRef.current.value = '';
+    } else {
+      setSendFailed(true);
+    }
   };
 
   return (
@@ -22,9 +29,13 @@ export function GuidanceInput() {
           ref={inputRef}
           placeholder="Type guidance for the team..."
           onKeyDown={(e) => { if (e.key === 'Enter') send(); }}
+          onInput={() => { if (sendFailed) setSendFailed(false); }}
         />
         <button onClick={send}>Send</button>
       </div>
+      {sendFailed && (
+        <div class="guidance-error">Failed to send guidance. Check the server and try again.</div>
+      )}
     </div>
   );
 }

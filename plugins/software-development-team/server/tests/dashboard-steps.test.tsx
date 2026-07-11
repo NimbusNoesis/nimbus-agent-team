@@ -147,6 +147,12 @@ describe('StepCard', () => {
     expect(container.querySelector('.step-retry')).toBeNull();
   });
 
+  it('does not set an inline cursor style on the card (only .step-header is clickable)', () => {
+    const { container } = render(<StepCard stepState={makeStep()} />);
+    const card = container.querySelector('.step') as HTMLElement;
+    expect(card.style.cursor).toBe('');
+  });
+
   it('clicking header expands the step (sets expandedStepId)', () => {
     const stepState = makeStep({ step: { id: 42, description: 'Expand me', files: [], acceptanceCriteria: [], dependsOn: [] } });
     const { container } = render(<StepCard stepState={stepState} />);
@@ -192,6 +198,37 @@ describe('StepDetail', () => {
     currentRun.value = makeRun({ steps: [dep, s] });
     render(<StepDetail stepState={s} />);
     expect(screen.getByText(/Waiting on step 1/)).toBeTruthy();
+  });
+
+  it('shows file-conflict blocking reason for pending step whose file is claimed by a coding step', () => {
+    const other = makeStep({
+      step: { id: 2, description: 'Other coding step', files: ['src/shared.ts'] },
+      status: 'coding',
+      claimedFiles: ['src/shared.ts'],
+    });
+    const s = makeStep({
+      step: { id: 1, description: 'Blocked pending step', files: ['src/shared.ts'] },
+      status: 'pending',
+    });
+    currentRun.value = makeRun({ steps: [other, s] });
+    const { container } = render(<StepDetail stepState={s} />);
+    expect(container.querySelector('.step-blocking')).toBeTruthy();
+    expect(screen.getByText('File conflict: src/shared.ts is claimed by step 2')).toBeTruthy();
+  });
+
+  it('does not report a file conflict for a pending step when the claiming step is complete', () => {
+    const other = makeStep({
+      step: { id: 2, description: 'Finished step', files: ['src/shared.ts'] },
+      status: 'complete',
+      claimedFiles: ['src/shared.ts'],
+    });
+    const s = makeStep({
+      step: { id: 1, description: 'Pending step', files: ['src/shared.ts'] },
+      status: 'pending',
+    });
+    currentRun.value = makeRun({ steps: [other, s] });
+    const { container } = render(<StepDetail stepState={s} />);
+    expect(container.querySelector('.step-blocking')).toBeNull();
   });
 
 

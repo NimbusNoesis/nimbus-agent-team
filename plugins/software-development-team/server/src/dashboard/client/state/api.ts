@@ -9,22 +9,39 @@ export async function fetchRuns(): Promise<RunState[]> {
 
 export async function fetchMessages(runId: string): Promise<Message[]> {
   const r = await fetch(`/api/runs/${encodeURIComponent(runId)}/messages`);
-  if (!r.ok) return [];
+  if (!r.ok) {
+    console.warn(`Failed to fetch messages for run ${runId}: server responded ${r.status}`);
+    return [];
+  }
   return r.json();
 }
 
 export async function fetchMemory(): Promise<MemoryEntry[]> {
   const r = await fetch('/api/memory');
-  if (!r.ok) return [];
+  if (!r.ok) {
+    console.warn(`Failed to fetch memory: server responded ${r.status}`);
+    return [];
+  }
   return r.json();
 }
 
-export async function sendGuidance(runId: string, body: string): Promise<void> {
-  await fetch('/api/guidance', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ runId, body }),
-  });
+/** Returns true when the guidance was accepted by the server, false otherwise. */
+export async function sendGuidance(runId: string, body: string): Promise<boolean> {
+  try {
+    const r = await fetch('/api/guidance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runId, body }),
+    });
+    if (!r.ok) {
+      console.warn(`Failed to send guidance: server responded ${r.status}`);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.warn('Failed to send guidance:', e);
+    return false;
+  }
 }
 
 export async function selectRun(run: RunState): Promise<void> {

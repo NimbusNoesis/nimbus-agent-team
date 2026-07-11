@@ -69,10 +69,13 @@ describe('API client', () => {
       expect(mockFetch).toHaveBeenCalledWith('/api/runs/run%2Fwith%20spaces/messages');
     });
 
-    it('returns empty array on non-ok response', async () => {
+    it('returns empty array and warns on non-ok response', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       mockFetch.mockReturnValue(errorResponse(404));
       const result = await fetchMessages('r1');
       expect(result).toEqual([]);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('404'));
+      warnSpy.mockRestore();
     });
   });
 
@@ -84,22 +87,44 @@ describe('API client', () => {
       expect(result).toEqual(entries);
     });
 
-    it('returns empty array on non-ok response', async () => {
+    it('returns empty array and warns on non-ok response', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       mockFetch.mockReturnValue(errorResponse(500));
       const result = await fetchMemory();
       expect(result).toEqual([]);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('500'));
+      warnSpy.mockRestore();
     });
   });
 
   describe('sendGuidance', () => {
-    it('POSTs with correct Content-Type and body', async () => {
+    it('POSTs with correct Content-Type and body, returns true on ok', async () => {
       mockFetch.mockReturnValue(okJson({ success: true }));
-      await sendGuidance('r1', 'Please focus on tests');
+      const result = await sendGuidance('r1', 'Please focus on tests');
       expect(mockFetch).toHaveBeenCalledWith('/api/guidance', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ runId: 'r1', body: 'Please focus on tests' }),
       });
+      expect(result).toBe(true);
+    });
+
+    it('returns false and warns on non-ok response', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockFetch.mockReturnValue(errorResponse(404));
+      const result = await sendGuidance('gone-run', 'hello?');
+      expect(result).toBe(false);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('404'));
+      warnSpy.mockRestore();
+    });
+
+    it('returns false and warns on network error', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockFetch.mockReturnValue(Promise.reject(new Error('network down')));
+      const result = await sendGuidance('r1', 'anyone there?');
+      expect(result).toBe(false);
+      expect(warnSpy).toHaveBeenCalledWith('Failed to send guidance:', expect.any(Error));
+      warnSpy.mockRestore();
     });
   });
 
