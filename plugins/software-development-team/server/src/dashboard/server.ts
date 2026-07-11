@@ -138,14 +138,20 @@ export async function startDashboard(
     broadcast({ type: 'memory_entry_update', entry });
   };
 
+  const onEntryDelete = (entry: MemoryEntry) => {
+    broadcast({ type: 'memory_entry_delete', entry });
+  };
+
   bus.on('message', onMessage);
   sm.on('state_update', onStateUpdate);
   memoryStore.on('entry_change', onEntryChange);
+  memoryStore.on('entry_delete', onEntryDelete);
 
   httpServer.once('close', () => {
     bus.off('message', onMessage);
     sm.off('state_update', onStateUpdate);
     memoryStore.off('entry_change', onEntryChange);
+    memoryStore.off('entry_delete', onEntryDelete);
   });
 
   return new Promise<number>((resolve, reject) => {
