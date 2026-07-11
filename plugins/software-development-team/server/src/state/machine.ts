@@ -275,6 +275,14 @@ export class StateMachine extends EventEmitter {
       throw new Error(`Step ${stepId} cannot be marked reviewed from status '${stepState.status}'`);
     }
 
+    // Preserve a genuinely submitted result (markReviewed is callable from
+    // 'reviewing', which is only reachable via submitResult) so the synthetic
+    // result below doesn't silently discard it — same audit-trail pattern as
+    // submitResult.
+    if (stepState.result) {
+      stepState.resultHistory = [...(stepState.resultHistory ?? []), stepState.result];
+    }
+
     // Read-only review steps never submit a coder result. Record a synthetic
     // 'done' result so the dashboard reflects the outcome, then close the step.
     stepState.result = {
@@ -325,6 +333,18 @@ export class StateMachine extends EventEmitter {
       throw new Error(`Step ${stepId} is not escalated`);
     }
 
+    // Escalation cleared this step's claims, so resuming must re-run the same
+    // admission check as startStep against other active steps' claims. Throw
+    // BEFORE any mutation so a rejected call is side-effect free (no DB write,
+    // no updatedAt change, no state_update emission).
+    const fileConflicts = this.collectFileConflicts(run, stepState);
+    if (fileConflicts.length > 0) {
+      throw new Error(`Step ${stepId} cannot resume from escalation — file conflicts: ${fileConflicts.join(', ')}`);
+    }
+
+    // Re-claim the step's planned files so collectFileConflicts sees this step
+    // again while it is back in 'coding'.
+    stepState.claimedFiles = [...stepState.step.files];
     stepState.retryCount = 0;
     stepState.consecutiveSameError = 0;
     stepState.lastErrorSignature = undefined;
