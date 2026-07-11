@@ -40,7 +40,7 @@ cd server
 npm install          # install dependencies
 npx tsc --noEmit     # type check
 npx tsup             # build (ESM output to dist/)
-npx vitest run       # run tests (376 tests across 18 files)
+npx vitest run       # run tests (433 tests across 20 files)
 npx vitest           # watch mode
 npm run knip         # find unused files, exports, and dependencies
 ```
