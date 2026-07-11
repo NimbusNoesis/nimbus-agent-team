@@ -76,12 +76,18 @@ export class Persistence {
     const dir = this.runDir(runId);
     await mkdir(dir, { recursive: true });
     const file = join(dir, 'messages.jsonl');
+    // First touch of this run in this process lifetime: appendCounts is
+    // in-memory only, so the every-COMPACT_INTERVAL compaction restarts from
+    // zero each boot. Compact once up front so a log that grew past the cap
+    // in earlier sessions is bounded again. This reads the file only on the
+    // first append per run per process, keeping the hot path cheap.
+    const firstTouch = !this.appendCounts.has(runId);
     await appendFile(file, JSON.stringify(message) + '\n');
 
     // Opportunistically compact so the log stays bounded (mirrors the DB cap).
     const count = (this.appendCounts.get(runId) ?? 0) + 1;
-    if (count >= COMPACT_INTERVAL) {
-      this.appendCounts.set(runId, 0);
+    if (firstTouch || count >= COMPACT_INTERVAL) {
+      this.appendCounts.set(runId, count % COMPACT_INTERVAL);
       await this.compactMessages(runId, file);
     } else {
       this.appendCounts.set(runId, count);

@@ -212,6 +212,42 @@ describe('Database', () => {
       db.writeMemoryEntry(makeMemoryEntry());
       expect(db.searchMemory('zzz_nomatch')).toEqual([]);
     });
+
+    it('treats % and _ in the query as literals, not wildcards', () => {
+      db.writeMemoryEntry(makeMemoryEntry({ key: 'literal', value: 'task is 100%_done now' }));
+      // Would match '%100%_done%' via wildcards (% -> "Xy", _ -> "z") but is
+      // not a literal occurrence of "100%_done".
+      db.writeMemoryEntry(makeMemoryEntry({ key: 'wildcard-bait', namespace: 'context', value: 'task is 100Xyzdone now' }));
+      const results = db.searchMemory('100%_done');
+      expect(results).toHaveLength(1);
+      expect(results[0].key).toBe('literal');
+    });
+
+    it('does not let _ match an arbitrary character', () => {
+      db.writeMemoryEntry(makeMemoryEntry({ key: 'underscore', value: 'value 100_ literal' }));
+      db.writeMemoryEntry(makeMemoryEntry({ key: 'no-underscore', namespace: 'context', value: 'value 100X literal' }));
+      const results = db.searchMemory('100_');
+      expect(results).toHaveLength(1);
+      expect(results[0].key).toBe('underscore');
+    });
+
+    it('does not let % match an arbitrary substring', () => {
+      db.writeMemoryEntry(makeMemoryEntry({ key: 'percent', value: 'coverage 95%25 report' }));
+      db.writeMemoryEntry(makeMemoryEntry({ key: 'no-percent', namespace: 'context', value: 'coverage 95xx25 report' }));
+      const results = db.searchMemory('95%25');
+      expect(results).toHaveLength(1);
+      expect(results[0].key).toBe('percent');
+    });
+
+    it('handles backslashes in the query literally without breaking', () => {
+      db.writeMemoryEntry(makeMemoryEntry({ key: 'backslash', value: 'path\\to\\file on disk' }));
+      db.writeMemoryEntry(makeMemoryEntry({ key: 'no-backslash', namespace: 'context', value: 'pathXtoXfile on disk' }));
+      const results = db.searchMemory('path\\to');
+      expect(results).toHaveLength(1);
+      expect(results[0].key).toBe('backslash');
+      // A trailing backslash must not produce a dangling escape.
+      expect(() => db.searchMemory('ends-with\\')).not.toThrow();
+    });
   });
 
   describe('close', () => {

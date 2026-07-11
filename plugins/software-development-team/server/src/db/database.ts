@@ -253,11 +253,14 @@ export class Database {
       run_id: string | null;
       updated_at: string;
     };
-    const pattern = `%${query}%`;
+    // Escape LIKE wildcards (% and _) and the escape character itself so the
+    // query matches literally instead of acting as a pattern.
+    const escaped = query.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+    const pattern = `%${escaped}%`;
     const rows = this.selectAll<MemRow>(
       `SELECT namespace, key, value, run_id, updated_at
        FROM memory_entries
-       WHERE key LIKE ? OR value LIKE ?
+       WHERE key LIKE ? ESCAPE '\\' OR value LIKE ? ESCAPE '\\'
        ORDER BY updated_at ASC`,
       [pattern, pattern]
     );
