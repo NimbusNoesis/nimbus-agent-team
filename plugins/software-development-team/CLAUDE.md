@@ -10,10 +10,10 @@ A Claude Code plugin that orchestrates a multi-agent coding team (coordinator, p
 - **Database** (`server/src/db/database.ts`) — in-memory SQLite database via sql.js (pure JS/WASM). Single backing store for runs, messages, and memory entries. Pure storage — no EventEmitter.
 - **State Machine** (`server/src/state/machine.ts`) — manages step lifecycle: `pending` -> `coding` -> `reviewing` -> `complete` / `escalated`. A read-only review step that never submits a code result can be closed directly via `markReviewed` (`team_advance` action `mark_reviewed`), which moves `coding`/`reviewing` -> `complete` with a synthetic `done` result so it doesn't appear stuck. Enforces dependency ordering, file conflict detection, and stuck detection, and validates plans at `team_start` (duplicate step IDs, unknown dependencies, and dependency cycles are rejected). The server has no WIP cap; coordinators instead bound simultaneous workers by the host capacity, which `team_status` reports as `hostCapacity`. It manages workflow state only and never manages Git worktrees, branches, commits, switches, merges, or cleanup. Backed by Database.
 - **Message Bus** (`server/src/bus/message-bus.ts`) — append-only message log with EventEmitter, 10K cap per run. Backed by Database.
-- **Memory Store** (`server/src/memory/store.ts`) — key-value store in 5 namespaces (decisions, context, learnings, reviews, reflections). Extends EventEmitter, emits `entry_change` on writes. Backed by Database.
+- **Memory Store** (`server/src/memory/store.ts`) — key-value store in 5 namespaces (decisions, context, learnings, reviews, reflections). Extends EventEmitter, emits `entry_change` on writes and `entry_delete` on deletes (carrying the entry as it existed). Backed by Database.
 - **Tool Registry** (`server/src/tools/registry.ts`) — dispatches MCP tool calls to handlers
 - **Dashboard** (`server/src/dashboard/`) — Express + WebSocket server broadcasting state and message events to a Preact + Signals client
-- **Persistence** (`server/src/state/persistence.ts`) — file-based persistence in `.team/` directory (disk I/O layer, orthogonal to in-memory Database)
+- **Persistence** (`server/src/state/persistence.ts`) — file-based persistence in `.team/` directory (disk I/O layer, orthogonal to in-memory Database). Run-state saves and message appends — including graceful-shutdown saves in `index.ts` — are serialized through a single `PersistQueue` (`server/src/state/persist-queue.ts`); shutdown enqueues final run-state saves and `drain()`s the queue so they cannot interleave with in-flight writes.
 
 ## Key Files
 
@@ -24,7 +24,7 @@ server/src/
   index.ts         MCP server setup, tool registration, Database wiring
   types.ts         All TypeScript types (StepState, RunState, Message, MemoryEntry, DashboardEvent)
   db/              Database (sql.js in-memory SQLite)
-  state/           StateMachine + Persistence
+  state/           StateMachine + Persistence + PersistQueue
   bus/             MessageBus
   memory/          MemoryStore
   tools/           Tool handlers (workflow, results, messages, memory)
@@ -51,6 +51,9 @@ The commands above are for local development. When installed as a plugin, the se
 
 ### Dashboard data paths differ from MCP tool paths
 The `team_status` MCP tool handler enriches step data with computed fields (e.g., `blockingReasons`). The dashboard receives raw `RunState` via WebSocket `state_update` events and `GET /api/runs`. If you add a computed field to the tool response, the dashboard won't see it unless you also compute it client-side or add it to the broadcast event.
+
+### MCP tool schemas are single-sourced
+Each tools module (`tools/workflow.ts`, `tools/messages.ts`, `tools/memory.ts`, `tools/results.ts`) exports a raw zod shape per tool (e.g. `teamAdvanceShape`), and the handler validates with `z.object(shape)` — `TeamAdvanceSchema` additionally hangs a handler-side `superRefine` off it for `set_worktree`, since a raw shape has nowhere to attach refinements. `index.ts` spreads those SAME exported shapes into `server.tool()`; it defines no inline schemas and does not import zod. Shared validators (`positiveInt`, `memoryKey`) live in `tools/schemas.ts`, and `since` on `team_get_messages` validates as `z.string().datetime({ offset: true })`. When changing a tool's parameters, edit the exported shape in its tools module — never re-inline a schema in `index.ts`, or the MCP registration layer and the handler layer will drift.
 
 ### EventEmitter pattern for cross-component communication
 StateMachine, MessageBus, and MemoryStore all extend EventEmitter. The dashboard server listens for events and broadcasts to WebSocket clients. When adding new observable state, follow this pattern: emit from the store -> listen in dashboard server -> broadcast to clients.
@@ -138,13 +141,19 @@ Only explicit reviewer approval authorizes the coordinator to switch to the capt
 
 `startDashboard` listens on `127.0.0.1` explicitly. The dashboard has no authentication and `/api/guidance` injects messages the coordinator treats as user guidance — never widen the bind address.
 
+WebSocket upgrades are additionally Origin-checked (`verifyClient` in `dashboard/server.ts`): browsers do not apply CORS to WebSockets, so loopback binding alone would let any web page open `ws://localhost:<port>` and read the event stream. The allowlist is exact-hostname only — `localhost` / `127.0.0.1` / `::1` (plus the bracketed `[::1]` form) — because substring matching would admit e.g. `http://localhost.evil.example`. Requests with no Origin header (non-browser clients: tests, wscat, curl) are allowed; malformed Origins are rejected. The CSP `connect-src` is likewise pinned to localhost ws forms (`ws://localhost:*`, `ws://127.0.0.1:*`, and their `wss:` variants).
+
 ### Memory restore preserves timestamps
 
 Startup restore uses `MemoryStore.restore()`, which writes the entry exactly as persisted (original `updatedAt`, no `entry_change` event). `write()` is only for live writes — it re-stamps `updatedAt` and emits. Using `write()` in the restore path would re-stamp every entry to boot time and scramble `updated_at` ordering after each restart.
 
 ### Step results keep an audit trail
 
-`submitResult` pushes any displaced result onto `stepState.resultHistory` before overwriting `result` (reviewer verdicts overwrite coder submissions by design). The history is persisted in `state.json` for post-run inspection but intentionally excluded from the `team_status` response to keep it small.
+`submitResult` pushes any displaced result onto `stepState.resultHistory` before overwriting `result` (reviewer verdicts overwrite coder submissions by design). `markReviewed` does the same — it preserves any genuinely submitted result in `resultHistory` before recording its synthetic `done` result. The history is persisted in `state.json` for post-run inspection but intentionally excluded from the `team_status` response to keep it small. Relatedly, `resolveEscalation` re-claims the step's planned files when moving `escalated` -> `coding` (escalation cleared the claims), and rejects with a file-conflict error — before any mutation — if those files are now claimed by another active step.
+
+### Message log compaction spans restarts
+
+`Persistence.appendMessage` compacts a run's `messages.jsonl` every 2000 appends, but the append counter is in-memory only. So it also compacts on the first append per run per process lifetime — truncating over-cap files left by prior sessions — while keeping the hot path cheap.
 
 ### One live server per project
 
@@ -174,11 +183,11 @@ After a run completes, the coordinator promotes generalizable reflections and re
 
 ### team_memory_delete tool
 
-The `team_memory_delete` MCP tool deletes a memory entry by namespace and key, both from the in-memory SQLite DB and from disk (`.team/memory/{namespace}/{key}.json`). Used by the coordinator during post-run compaction to clean up old reflection entries after summarizing them.
+The `team_memory_delete` MCP tool deletes a memory entry by namespace and key, both from the in-memory SQLite DB and from disk (`.team/memory/{namespace}/{key}.json`). `MemoryStore.delete()` emits a distinct `entry_delete` event carrying the entry exactly as it existed; the dashboard server broadcasts it as `memory_entry_delete` and the client removes the entry live. (It does NOT emit `entry_change` with an empty value — that would upsert a ghost entry instead of removing it.) Used by the coordinator during post-run compaction to clean up old reflection entries after summarizing them.
 
 ### team_memory_read search ignores namespace filter
 
-The `handleTeamMemoryRead` handler checks `namespace` before `search`. When both are provided, `search` is ignored — it returns all entries in that namespace instead. To search, call with `search` only (no `namespace`). Results include a `namespace` field for client-side grouping.
+The `handleTeamMemoryRead` handler checks `namespace` before `search`. When both are provided, `search` is ignored — it returns all entries in that namespace instead. To search, call with `search` only (no `namespace`). Results include a `namespace` field for client-side grouping. Search queries match literally: `searchMemory` escapes `%` and `_` (and the escape character itself) and uses `LIKE ... ESCAPE`, so they are not SQL wildcards.
 
 ### Inserting content into Markdown ordered lists
 
