@@ -1,21 +1,27 @@
 import { z } from 'zod';
 import type { MemoryStore } from '../memory/store.js';
+import { memoryKey } from './schemas.js';
 
 const MemoryNamespaceSchema = z.enum(['decisions', 'context', 'learnings', 'reviews', 'reflections']);
-const memoryKey = z.string().regex(/^[a-zA-Z0-9_\-]+$/, 'Key must be alphanumeric with hyphens/underscores only');
 
-const TeamMemoryWriteSchema = z.object({
+// Raw shapes exported for MCP registration — see src/tools/schemas.ts for why
+// both validation layers derive from these single definitions.
+export const teamMemoryWriteShape = {
   key: memoryKey,
   namespace: MemoryNamespaceSchema,
   value: z.string().min(1),
   runId: z.string().optional(),
-});
+};
 
-const TeamMemoryReadSchema = z.object({
+const TeamMemoryWriteSchema = z.object(teamMemoryWriteShape);
+
+export const teamMemoryReadShape = {
   namespace: MemoryNamespaceSchema.optional(),
   key: memoryKey.optional(),
   search: z.string().optional(),
-});
+};
+
+const TeamMemoryReadSchema = z.object(teamMemoryReadShape);
 
 export function handleTeamMemoryWrite(store: MemoryStore, args: unknown) {
   const parsed = TeamMemoryWriteSchema.parse(args);
@@ -46,10 +52,12 @@ export function handleTeamMemoryRead(store: MemoryStore, args: unknown) {
   return result;
 }
 
-const TeamMemoryDeleteSchema = z.object({
+export const teamMemoryDeleteShape = {
   namespace: MemoryNamespaceSchema,
   key: memoryKey,
-});
+};
+
+const TeamMemoryDeleteSchema = z.object(teamMemoryDeleteShape);
 
 export function handleTeamMemoryDelete(store: MemoryStore, args: unknown) {
   const parsed = TeamMemoryDeleteSchema.parse(args);

@@ -7,6 +7,19 @@ import { handleTeamSendMessage, handleTeamGetMessages } from './messages.js';
 import { handleTeamMemoryWrite, handleTeamMemoryRead, handleTeamMemoryDelete } from './memory.js';
 import { logger } from '../logger.js';
 
+// Small identifying fields that are safe to include in failure logs. Free-text
+// payloads (value, body, summary, details, memory values, message bodies) must
+// NEVER be logged — they would land verbatim in server.log on every failure.
+const SAFE_LOG_FIELDS = ['runId', 'stepId', 'key', 'namespace', 'action', 'from', 'to'] as const;
+
+function safeLogContext(args: Record<string, unknown>): Record<string, unknown> {
+  const context: Record<string, unknown> = { argKeys: Object.keys(args) };
+  for (const field of SAFE_LOG_FIELDS) {
+    if (field in args) context[field] = args[field];
+  }
+  return context;
+}
+
 export class ToolRegistry {
   private dashboardUrl = 'http://localhost:0';
 
@@ -27,7 +40,7 @@ export class ToolRegistry {
       logger.debug('ToolRegistry', `← ${tool} OK`);
       return result;
     } catch (err: any) {
-      logger.error('ToolRegistry', `← ${tool} FAILED: ${err.message}`, { tool, args });
+      logger.error('ToolRegistry', `← ${tool} FAILED: ${err.message}`, { tool, ...safeLogContext(args) });
       throw err;
     }
   }

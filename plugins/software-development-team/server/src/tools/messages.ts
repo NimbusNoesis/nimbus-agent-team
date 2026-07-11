@@ -4,20 +4,28 @@ import type { StateMachine } from '../state/machine.js';
 
 const MessageTypeSchema = z.enum(['info', 'review', 'escalation', 'guidance', 'result']);
 
-const TeamSendMessageSchema = z.object({
+// Raw shapes exported for MCP registration — see src/tools/schemas.ts for why
+// both validation layers derive from these single definitions.
+export const teamSendMessageShape = {
   runId: z.string().min(1),
   from: z.string().min(1),
   to: z.string().min(1),
   type: MessageTypeSchema,
   body: z.string().min(1),
-});
+};
 
-const TeamGetMessagesSchema = z.object({
+const TeamSendMessageSchema = z.object(teamSendMessageShape);
+
+export const teamGetMessagesShape = {
   runId: z.string().min(1),
   to: z.string().min(1),
   type: MessageTypeSchema.optional(),
-  since: z.string().datetime().optional(),
-});
+  // offset: true — accept ISO timestamps with timezone offsets (e.g.
+  // 2026-07-10T12:00:00+02:00), not only the Z form toISOString() produces.
+  since: z.string().datetime({ offset: true }).optional(),
+};
+
+const TeamGetMessagesSchema = z.object(teamGetMessagesShape);
 
 export function handleTeamSendMessage(bus: MessageBus, sm: StateMachine, args: unknown) {
   const parsed = TeamSendMessageSchema.parse(args);
