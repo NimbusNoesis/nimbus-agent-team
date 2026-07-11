@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Persistence } from '../src/state/persistence.js';
-import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
+import { MAX_MESSAGES_PER_RUN } from '../src/bus/message-bus.js';
+import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RunState, Message, MemoryEntry } from '../src/types.js';
@@ -153,5 +154,89 @@ describe('Persistence', () => {
   it('loadAllRunStates returns empty array when runs dir does not exist', async () => {
     const all = await persistence.loadAllRunStates();
     expect(all).toEqual([]);
+  });
+
+  describe('message log compaction across restarts', () => {
+    const makeMsg = (i: number): Message => ({
+      id: `m${i}`,
+      runId: 'r-compact',
+      from: 'coder',
+      to: 'all',
+      type: 'info',
+      body: `msg ${i}`,
+      timestamp: new Date(Date.UTC(2026, 0, 1) + i).toISOString(),
+    });
+
+    async function writeOversizedLog(runId: string, total: number): Promise<string> {
+      const dir = join(tmpDir, 'runs', runId);
+      await mkdir(dir, { recursive: true });
+      const file = join(dir, 'messages.jsonl');
+      const lines: string[] = [];
+      for (let i = 0; i < total; i++) {
+        lines.push(JSON.stringify(makeMsg(i)));
+      }
+      await writeFile(file, lines.join('\n') + '\n');
+      return file;
+    }
+
+    async function readLog(file: string): Promise<Message[]> {
+      const data = await readFile(file, 'utf-8');
+      return data.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    }
+
+    it('compacts an over-cap file on first append after restart (fresh append counter)', async () => {
+      const overflow = 50;
+      const file = await writeOversizedLog('r-compact', MAX_MESSAGES_PER_RUN + overflow);
+
+      // Fresh instance simulates a server restart: appendCounts starts empty.
+      const fresh = new Persistence(tmpDir);
+      const newMsg: Message = {
+        id: 'm-new', runId: 'r-compact', from: 'coder', to: 'all',
+        type: 'info', body: 'after restart', timestamp: new Date().toISOString(),
+      };
+      await fresh.appendMessage('r-compact', newMsg);
+
+      const messages = await readLog(file);
+      expect(messages.length).toBeLessThanOrEqual(MAX_MESSAGES_PER_RUN);
+      // Newest retained: the just-appended message is the last line.
+      expect(messages[messages.length - 1].id).toBe('m-new');
+      // Oldest dropped: the file held cap+overflow lines plus the new append,
+      // so at least overflow+1 of the oldest entries are gone.
+      expect(messages[0].id).toBe(`m${overflow + 1}`);
+      expect(messages.some((m) => m.id === 'm0')).toBe(false);
+    });
+
+    it('leaves an under-cap file untruncated on first append', async () => {
+      const file = await writeOversizedLog('r-compact', 5);
+
+      const fresh = new Persistence(tmpDir);
+      const newMsg: Message = {
+        id: 'm-new', runId: 'r-compact', from: 'coder', to: 'all',
+        type: 'info', body: 'small log', timestamp: new Date().toISOString(),
+      };
+      await fresh.appendMessage('r-compact', newMsg);
+
+      const messages = await readLog(file);
+      expect(messages).toHaveLength(6);
+      expect(messages[0].id).toBe('m0');
+      expect(messages[5].id).toBe('m-new');
+    });
+
+    it('reads the file only on first touch, not on every append', async () => {
+      await writeOversizedLog('r-compact', 5);
+      const fresh = new Persistence(tmpDir);
+      const compactSpy = vi.spyOn(fresh as any, 'compactMessages');
+
+      for (let i = 0; i < 3; i++) {
+        await fresh.appendMessage('r-compact', {
+          id: `live-${i}`, runId: 'r-compact', from: 'coder', to: 'all',
+          type: 'info', body: `live ${i}`, timestamp: new Date().toISOString(),
+        });
+      }
+
+      // Only the first append triggers the compaction check.
+      expect(compactSpy).toHaveBeenCalledTimes(1);
+      compactSpy.mockRestore();
+    });
   });
 });
