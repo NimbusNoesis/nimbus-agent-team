@@ -96,9 +96,10 @@ When the user's task is to **review existing code** (not build something), the r
    ```
 
    No plan-approval gate is needed for a one-step read-only review — just confirm scope with the user.
-3. After `team_start` returns the real run ID, capture the current target branch and exact commit, create the mandatory run-scoped worktree, and persist `{targetBranch, targetCommit, path, branch}` for this review step **before** admission, exactly as specified in "Initial Pending Admission: Create and Persist Once" below. If capture, creation, or persistence fails, do not call `start_coding` and do not spawn the reviewer; report and escalate the exact failure. Then mark the step coding, relay the dispatch, and spawn the reviewer with the complete persisted worktree context:
+3. After `team_start` returns the real run ID, capture the current target branch and exact commit, create the mandatory run-scoped worktree, and persist `{targetBranch, targetCommit, path, branch}` with `team_advance(action: "set_worktree")` **before** admission, exactly as specified in "Initial Pending Admission: Create and Persist Once" below. If capture, creation, or persistence fails, do not call `start_coding` and do not spawn the reviewer; report and escalate the exact failure. Then mark the step coding, relay the dispatch, and spawn the reviewer with the complete persisted worktree context:
 
    ```text
+   team_advance(runId, stepId, action: "set_worktree", worktree: { targetBranch, targetCommit, path, branch })
    team_advance(runId, stepId, action: "start_coding", agent: "reviewer")
    team_send_message(from: "reviewer", to: "coordinator", type: "info", body: "Reviewing <targets> (standalone review)")
    ```
@@ -307,7 +308,7 @@ targetCommit=$(git rev-parse HEAD)
 git worktree add -b team-{runId}-step-{N} .worktrees/{runId}/step-{N} "$targetCommit"
 ```
 
-Persist `{targetBranch, targetCommit, path, branch}` as the step's worktree lifecycle context before calling `start_coding`: path is `.worktrees/{runId}/step-{N}` and branch is `team-{runId}-step-{N}`. This is the only capture and creation for that step. If initial capture or creation fails, do not call `start_coding` and do not dispatch any agent. Record the exact error and intended path/branch in the team message/state, mark or escalate the step as blocked according to the workflow, and wait for resolution.
+Call `team_advance(runId, stepId, action: "set_worktree", worktree: { targetBranch, targetCommit, path, branch })` before `start_coding`, using path `.worktrees/{runId}/step-{N}` and branch `team-{runId}-step-{N}`. The server persists this tuple in step state, exposes it through `team_status`, and rejects overwrites. This is the only capture and creation for that step. If initial capture, creation, or persistence fails, do not call `start_coding` and do not dispatch any agent. Record the exact error and intended path/branch, then block or escalate the step and wait for resolution.
 
 ### Mandatory Execution Dispatch Context
 

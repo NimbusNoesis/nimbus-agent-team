@@ -201,13 +201,37 @@ describe('ToolRegistry', () => {
     expect(result.entries[0].namespace).toBe('decisions');
   });
 
-  it('team_status reports a positive hostCapacity for coordinator scheduling', async () => {
+  it('team_status reports only an explicitly configured hostCapacity', async () => {
     const { runId } = await registry.handle('team_start', {
       steps: [{ id: 1, description: 'S1', files: [], acceptanceCriteria: [], dependsOn: [] }],
     });
-    const status = await registry.handle('team_status', { runId });
-    expect(Number.isInteger(status.hostCapacity)).toBe(true);
-    expect(status.hostCapacity).toBeGreaterThan(0);
+    const previous = process.env.TEAM_HOST_CAPACITY;
+    try {
+      delete process.env.TEAM_HOST_CAPACITY;
+      expect(await registry.handle('team_status', { runId })).not.toHaveProperty('hostCapacity');
+      process.env.TEAM_HOST_CAPACITY = '4';
+      expect((await registry.handle('team_status', { runId })).hostCapacity).toBe(4);
+      process.env.TEAM_HOST_CAPACITY = 'not-a-quota';
+      expect(await registry.handle('team_status', { runId })).not.toHaveProperty('hostCapacity');
+    } finally {
+      if (previous === undefined) delete process.env.TEAM_HOST_CAPACITY;
+      else process.env.TEAM_HOST_CAPACITY = previous;
+    }
+  });
+
+  it('persists and reports set-once worktree context before admission', async () => {
+    const { runId } = await registry.handle('team_start', {
+      steps: [{ id: 1, description: 'S1', files: [], acceptanceCriteria: [], dependsOn: [] }],
+    });
+    const worktree = {
+      targetBranch: 'main', targetCommit: 'abc123',
+      path: '.worktrees/run/step-1', branch: 'team-run-step-1',
+    };
+    await registry.handle('team_advance', { runId, stepId: 1, action: 'set_worktree', worktree });
+    expect((await registry.handle('team_status', { runId })).steps[0].worktree).toEqual(worktree);
+    await expect(registry.handle('team_advance', {
+      runId, stepId: 1, action: 'set_worktree', worktree,
+    })).rejects.toThrow('already set');
   });
 
   it('team_send_message rejects an unknown runId instead of orphaning the message', async () => {

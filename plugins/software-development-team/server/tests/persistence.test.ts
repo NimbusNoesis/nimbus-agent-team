@@ -31,6 +31,24 @@ describe('Persistence', () => {
     expect(loaded).toEqual(run);
   });
 
+  it('preserves durable worktree lifecycle context across restart', async () => {
+    const run: RunState = {
+      id: 'worktree-run', status: 'ready',
+      steps: [{
+        step: { id: 1, description: 'work', files: [], acceptanceCriteria: [], dependsOn: [] },
+        status: 'pending', retryCount: 0, assignedAgent: null, result: null,
+        claimedFiles: [], consecutiveSameError: 0,
+        worktree: {
+          targetBranch: 'main', targetCommit: 'abc123',
+          path: '.worktrees/worktree-run/step-1', branch: 'team-worktree-run-step-1',
+        },
+      }],
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    };
+    await persistence.saveRunState(run);
+    expect((await persistence.loadRunState(run.id))?.steps[0].worktree).toEqual(run.steps[0].worktree);
+  });
+
   it('appends and loads messages', async () => {
     const msg: Message = {
       id: 'm1', runId: 'r1', from: 'coder', to: 'all',

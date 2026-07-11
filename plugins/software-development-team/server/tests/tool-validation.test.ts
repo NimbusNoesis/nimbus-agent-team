@@ -117,6 +117,12 @@ describe('Zod schema validation', () => {
       });
       expect(result.success).toBe(true);
     });
+
+    it('requires worktree payload for set_worktree', () => {
+      expect(() => handleTeamAdvance(sm, {
+        runId: 'r1', stepId: 1, action: 'set_worktree',
+      })).toThrow(ZodError);
+    });
   });
 
   describe('TeamSubmitResultSchema', () => {

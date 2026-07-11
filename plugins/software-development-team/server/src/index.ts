@@ -8,10 +8,11 @@ import { ToolRegistry } from './tools/registry.js';
 import { startDashboard } from './dashboard/server.js';
 import { Persistence } from './state/persistence.js';
 import { Database } from './db/database.js';
-import { resolve, join } from 'node:path';
-import { readFileSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { logger } from './logger.js';
 import type { RunState } from './types.js';
+import { claimServerLock, releaseServerLock } from './state/server-lock.js';
 
 const teamDir = resolve(process.env.TEAM_DIR ?? '.team');
 logger.info('Server', `Team directory: ${teamDir}`);
@@ -37,43 +38,34 @@ const server = new McpServer({
 // files — last writer wins, and neither sees the other's runs. We warn loudly
 // rather than refuse to start, since a second session may legitimately open
 // the project without ever running the team.
-const lockFile = join(teamDir, 'server.lock');
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function checkAndClaimLock(): void {
   try {
-    const pid = Number(readFileSync(lockFile, 'utf-8').trim());
-    if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) {
-      let alive = false;
-      try {
-        process.kill(pid, 0);
-        alive = true;
-      } catch {
-        // ESRCH: stale lock from a crashed server — safe to take over.
-      }
-      if (alive) {
-        logger.warn(
-          'Server',
-          `Another team MCP server (pid ${pid}) appears to be running against ${teamDir}. ` +
-          `Concurrent sessions on the same project race on run state and will not see each other's runs — ` +
-          `finish or close the other session before starting team runs here.`
-        );
-      }
+    const liveOwners = claimServerLock(teamDir, process.pid, isProcessAlive);
+    if (liveOwners.length > 0) {
+      logger.warn(
+        'Server',
+        `Other team MCP servers (pids ${liveOwners.join(', ')}) appear to be running against ${teamDir}. ` +
+        `Concurrent sessions on the same project race on run state and will not see each other's runs — ` +
+        `finish or close the other sessions before starting team runs here.`
+      );
     }
-  } catch {
-    // No readable lock — nothing running.
-  }
-  try {
-    mkdirSync(teamDir, { recursive: true });
-    writeFileSync(lockFile, String(process.pid));
   } catch (err) {
-    logger.warn('Server', `Could not write server lock file`, { lockFile, error: String(err) });
+    logger.warn('Server', `Could not claim server lock file`, { teamDir, error: String(err) });
   }
 }
 
 function releaseLock(): void {
   try {
-    const pid = Number(readFileSync(lockFile, 'utf-8').trim());
-    if (pid === process.pid) rmSync(lockFile, { force: true });
+    releaseServerLock(teamDir, process.pid, isProcessAlive);
   } catch {
     // Best effort only.
   }
@@ -128,13 +120,19 @@ async function main() {
 
   server.tool(
     'team_advance',
-    'Advance a step: start_coding, approve, request_revision, resolve_escalation, or mark_reviewed (close a read-only review step that has no code result to submit). Pass an optional summary with mark_reviewed.',
+    'Persist a set-once worktree context or advance a step through its lifecycle.',
     {
       runId: z.string().min(1),
       stepId: positiveInt,
-      action: z.enum(['start_coding', 'approve', 'request_revision', 'resolve_escalation', 'mark_reviewed']),
+      action: z.enum(['set_worktree', 'start_coding', 'approve', 'request_revision', 'resolve_escalation', 'mark_reviewed']),
       agent: z.string().min(1).optional(),
       summary: z.string().optional(),
+      worktree: z.object({
+        targetBranch: z.string().min(1),
+        targetCommit: z.string().min(1),
+        path: z.string().min(1),
+        branch: z.string().min(1),
+      }).optional(),
     },
     async (args) => {
       const result = await registry.handle('team_advance', args);

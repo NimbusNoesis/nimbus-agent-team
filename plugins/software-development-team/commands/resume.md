@@ -198,7 +198,7 @@ targetCommit=$(git rev-parse HEAD)
 git worktree add -b team-{runId}-step-{N} .worktrees/{runId}/step-{N} "$targetCommit"
 ```
 
-Persist `{targetBranch, targetCommit, path, branch}` as the step worktree lifecycle context before `start_coding`; path is `.worktrees/{runId}/step-{N}` and branch is `team-{runId}-step-{N}`. Never recapture or recreate it for that step. If initial capture or creation fails, do not call `start_coding` and do not dispatch. Record the exact error plus intended path/branch in team state/messages, block or escalate, and wait for resolution.
+Call `team_advance(runId, stepId, action: "set_worktree", worktree: { targetBranch, targetCommit, path, branch })` before `start_coding`; use path `.worktrees/{runId}/step-{N}` and branch `team-{runId}-step-{N}`. The server persists and returns this set-once tuple through `team_status`. Never recapture, recreate, or overwrite it. If capture, creation, or persistence fails, do not call `start_coding` and do not dispatch. Record the exact error plus intended path/branch, block or escalate, and wait for resolution.
 
 ### Mandatory Execution Dispatch Context
 
