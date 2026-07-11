@@ -1,15 +1,20 @@
 import { z } from 'zod';
 import type { StateMachine } from '../state/machine.js';
+import { positiveInt } from './schemas.js';
 
-const TeamSubmitResultSchema = z.object({
+// Raw shape exported for MCP registration — see src/tools/schemas.ts for why
+// both validation layers derive from this single definition.
+export const teamSubmitResultShape = {
   runId: z.string().min(1),
-  stepId: z.number().int().positive(),
+  stepId: positiveInt,
   result: z.object({
     status: z.enum(['done', 'done_with_concerns', 'needs_revision', 'blocked']),
     summary: z.string().min(1),
     details: z.string().optional(),
   }),
-});
+};
+
+const TeamSubmitResultSchema = z.object(teamSubmitResultShape);
 
 export function handleTeamSubmitResult(sm: StateMachine, args: unknown) {
   const parsed = TeamSubmitResultSchema.parse(args);

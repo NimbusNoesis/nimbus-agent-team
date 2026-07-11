@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ToolRegistry } from '../src/tools/registry.js';
 import { StateMachine } from '../src/state/machine.js';
 import { MessageBus } from '../src/bus/message-bus.js';
 import { MemoryStore } from '../src/memory/store.js';
 import { Database } from '../src/db/database.js';
+import { logger } from '../src/logger.js';
 
 describe('ToolRegistry', () => {
   let registry: ToolRegistry;
@@ -247,5 +248,50 @@ describe('ToolRegistry', () => {
         { id: 2, description: 'S2', files: [], acceptanceCriteria: [], dependsOn: [1] },
       ],
     })).rejects.toThrow('dependency cycle');
+  });
+
+  it('failure logs never contain message bodies — only arg keys and identifying fields', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    try {
+      await expect(registry.handle('team_send_message', {
+        runId: 'no-such-run', from: 'coder', to: 'all', type: 'info', body: 'SECRET-MESSAGE-BODY',
+      })).rejects.toThrow('not found');
+
+      const call = errorSpy.mock.calls.find(([component]) => component === 'ToolRegistry');
+      expect(call).toBeDefined();
+      const data = call![2];
+      expect(data).toMatchObject({
+        tool: 'team_send_message',
+        argKeys: ['runId', 'from', 'to', 'type', 'body'],
+        runId: 'no-such-run',
+        from: 'coder',
+        to: 'all',
+      });
+      expect(JSON.stringify(data)).not.toContain('SECRET-MESSAGE-BODY');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('failure logs never contain memory values — only arg keys and identifying fields', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    try {
+      await expect(registry.handle('team_memory_write', {
+        key: 'invalid key!', namespace: 'decisions', value: 'SECRET-MEMORY-VALUE',
+      })).rejects.toThrow();
+
+      const call = errorSpy.mock.calls.find(([component]) => component === 'ToolRegistry');
+      expect(call).toBeDefined();
+      const data = call![2];
+      expect(data).toMatchObject({
+        tool: 'team_memory_write',
+        argKeys: ['key', 'namespace', 'value'],
+        key: 'invalid key!',
+        namespace: 'decisions',
+      });
+      expect(JSON.stringify(data)).not.toContain('SECRET-MEMORY-VALUE');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

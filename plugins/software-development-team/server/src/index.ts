@@ -1,12 +1,16 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { z } from 'zod';
 import { StateMachine } from './state/machine.js';
 import { MessageBus } from './bus/message-bus.js';
 import { MemoryStore } from './memory/store.js';
 import { ToolRegistry } from './tools/registry.js';
+import { teamStartShape, teamStatusShape, teamAdvanceShape } from './tools/workflow.js';
+import { teamSubmitResultShape } from './tools/results.js';
+import { teamSendMessageShape, teamGetMessagesShape } from './tools/messages.js';
+import { teamMemoryWriteShape, teamMemoryReadShape, teamMemoryDeleteShape } from './tools/memory.js';
 import { startDashboard } from './dashboard/server.js';
 import { Persistence } from './state/persistence.js';
+import { PersistQueue } from './state/persist-queue.js';
 import { Database } from './db/database.js';
 import { resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
@@ -71,9 +75,6 @@ function releaseLock(): void {
   }
 }
 
-const positiveInt = z.number().int().positive();
-const memoryKey = z.string().regex(/^[a-zA-Z0-9_\-]+$/, 'Key must be alphanumeric with hyphens/underscores only');
-
 // --- Startup ---
 
 async function main() {
@@ -89,19 +90,13 @@ async function main() {
 
   // --- Tool Definitions ---
 
+  // Tool input schemas are spread from the shapes exported by the handler
+  // modules (src/tools/*.ts), so the MCP validation layer and the handlers'
+  // own .parse() calls derive from one definition and cannot drift.
   server.tool(
     'team_start',
     'Initialize a new task run with plan steps. Returns run ID.',
-    {
-      task: z.string().optional().describe('Human-readable task description shown in the dashboard'),
-      steps: z.array(z.object({
-        id: positiveInt,
-        description: z.string().min(1),
-        files: z.array(z.string()),
-        acceptanceCriteria: z.array(z.string()),
-        dependsOn: z.array(positiveInt),
-      })).min(1),
-    },
+    { ...teamStartShape },
     async (args) => {
       const result = await registry.handle('team_start', args);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
@@ -111,7 +106,7 @@ async function main() {
   server.tool(
     'team_status',
     'Get current run state: steps, statuses, retry counts.',
-    { runId: z.string().min(1) },
+    { ...teamStatusShape },
     async (args) => {
       const result = await registry.handle('team_status', args);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
@@ -121,19 +116,7 @@ async function main() {
   server.tool(
     'team_advance',
     'Persist a set-once worktree context or advance a step through its lifecycle.',
-    {
-      runId: z.string().min(1),
-      stepId: positiveInt,
-      action: z.enum(['set_worktree', 'start_coding', 'approve', 'request_revision', 'resolve_escalation', 'mark_reviewed']),
-      agent: z.string().min(1).optional(),
-      summary: z.string().optional(),
-      worktree: z.object({
-        targetBranch: z.string().min(1),
-        targetCommit: z.string().min(1),
-        path: z.string().min(1),
-        branch: z.string().min(1),
-      }).optional(),
-    },
+    { ...teamAdvanceShape },
     async (args) => {
       const result = await registry.handle('team_advance', args);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
@@ -143,15 +126,7 @@ async function main() {
   server.tool(
     'team_submit_result',
     'Submit work result for a step: done, done_with_concerns, needs_revision, or blocked.',
-    {
-      runId: z.string().min(1),
-      stepId: positiveInt,
-      result: z.object({
-        status: z.enum(['done', 'done_with_concerns', 'needs_revision', 'blocked']),
-        summary: z.string().min(1),
-        details: z.string().optional(),
-      }),
-    },
+    { ...teamSubmitResultShape },
     async (args) => {
       const result = await registry.handle('team_submit_result', args);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
@@ -161,13 +136,7 @@ async function main() {
   server.tool(
     'team_send_message',
     'Post a message to the team bus.',
-    {
-      runId: z.string().min(1),
-      from: z.string().min(1),
-      to: z.string().min(1),
-      type: z.enum(['info', 'review', 'escalation', 'guidance', 'result']),
-      body: z.string().min(1),
-    },
+    { ...teamSendMessageShape },
     async (args) => {
       const result = await registry.handle('team_send_message', args);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
@@ -177,12 +146,7 @@ async function main() {
   server.tool(
     'team_get_messages',
     'Read messages for an agent. Supports filtering by type and since timestamp.',
-    {
-      runId: z.string().min(1),
-      to: z.string().min(1),
-      type: z.enum(['info', 'review', 'escalation', 'guidance', 'result']).optional(),
-      since: z.string().optional(),
-    },
+    { ...teamGetMessagesShape },
     async (args) => {
       const result = await registry.handle('team_get_messages', args);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
@@ -192,12 +156,7 @@ async function main() {
   server.tool(
     'team_memory_write',
     'Store a key-value entry in shared memory.',
-    {
-      key: memoryKey,
-      namespace: z.enum(['decisions', 'context', 'learnings', 'reviews', 'reflections']),
-      value: z.string().min(1),
-      runId: z.string().optional(),
-    },
+    { ...teamMemoryWriteShape },
     async (args) => {
       const result = await registry.handle('team_memory_write', args);
       await persistence.saveMemoryEntry({
@@ -214,11 +173,7 @@ async function main() {
   server.tool(
     'team_memory_read',
     'Read memory entries by key, namespace, or search query.',
-    {
-      namespace: z.enum(['decisions', 'context', 'learnings', 'reviews', 'reflections']).optional(),
-      key: z.string().optional(),
-      search: z.string().optional(),
-    },
+    { ...teamMemoryReadShape },
     async (args) => {
       const result = await registry.handle('team_memory_read', args);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
@@ -228,10 +183,7 @@ async function main() {
   server.tool(
     'team_memory_delete',
     'Delete a memory entry by namespace and key.',
-    {
-      namespace: z.enum(['decisions', 'context', 'learnings', 'reviews', 'reflections']),
-      key: memoryKey,
-    },
+    { ...teamMemoryDeleteShape },
     async (args) => {
       const result = await registry.handle('team_memory_delete', args);
       await persistence.deleteMemoryEntry(args.namespace, args.key);
@@ -278,41 +230,34 @@ async function main() {
   // Serialized persistence — one queue for run states AND message appends, so
   // shutdown can await everything in flight (previously message appends were
   // fire-and-forget and could be lost on SIGTERM).
-  let pendingPersist: Promise<void> = Promise.resolve();
-
-  function enqueuePersist(task: () => Promise<void>, context: Record<string, unknown>) {
-    pendingPersist = pendingPersist
-      .then(task)
-      .catch((err) => {
-        logger.error('Server', 'Persistence write failed', { ...context, error: String(err) });
-      });
-    return pendingPersist;
-  }
+  const persistQueue = new PersistQueue();
 
   // Event-driven persistence — state saved on every transition
   sm.on('state_update', (run) => {
-    enqueuePersist(() => persistence.saveRunState(run), { kind: 'run_state', runId: run.id });
+    persistQueue.enqueue(() => persistence.saveRunState(run), { kind: 'run_state', runId: run.id });
   });
 
   bus.on('message', (msg) => {
-    enqueuePersist(() => persistence.appendMessage(msg.runId, msg), { kind: 'message', runId: msg.runId });
+    persistQueue.enqueue(() => persistence.appendMessage(msg.runId, msg), { kind: 'message', runId: msg.runId });
   });
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
   logger.info('Server', 'MCP stdio transport connected — ready for tool calls');
 
-  // Graceful shutdown — save all state before exit
+  // Graceful shutdown — save all state before exit. Final saves go through
+  // the same serialized queue (a direct saveRunState could race a queued save
+  // for the same run — both write state.json.tmp then rename), and drain()
+  // loops until the tail settles so saves enqueued after shutdown begins are
+  // awaited too.
   let shuttingDown = false;
   async function shutdown() {
     if (shuttingDown) return;
     shuttingDown = true;
-    await pendingPersist;
     for (const run of sm.getAllRuns()) {
-      await persistence.saveRunState(run).catch((err) => {
-        logger.error('Server', 'Failed to save run state during shutdown', { runId: run.id, error: String(err) });
-      });
+      persistQueue.enqueue(() => persistence.saveRunState(run), { kind: 'shutdown_run_state', runId: run.id });
     }
+    await persistQueue.drain();
     releaseLock();
     process.exit(0);
   }

@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { ZodError } from 'zod';
-import { handleTeamStart, handleTeamStatus, handleTeamAdvance } from '../src/tools/workflow.js';
+import { z, ZodError } from 'zod';
+import { handleTeamStart, handleTeamStatus, handleTeamAdvance, teamAdvanceShape } from '../src/tools/workflow.js';
 import { handleTeamSubmitResult } from '../src/tools/results.js';
-import { handleTeamSendMessage, handleTeamGetMessages } from '../src/tools/messages.js';
+import { handleTeamSendMessage, handleTeamGetMessages, teamGetMessagesShape } from '../src/tools/messages.js';
 import { handleTeamMemoryWrite, handleTeamMemoryRead, handleTeamMemoryDelete } from '../src/tools/memory.js';
 import { createTestStack } from './helpers.js';
 import type { StateMachine } from '../src/state/machine.js';
@@ -123,6 +123,12 @@ describe('Zod schema validation', () => {
         runId: 'r1', stepId: 1, action: 'set_worktree',
       })).toThrow(ZodError);
     });
+
+    it('rejects empty summary string', () => {
+      expect(() => handleTeamAdvance(sm, {
+        runId: 'r1', stepId: 1, action: 'mark_reviewed', summary: '',
+      })).toThrow(ZodError);
+    });
   });
 
   describe('TeamSubmitResultSchema', () => {
@@ -158,25 +164,25 @@ describe('Zod schema validation', () => {
 
   describe('TeamSendMessageSchema', () => {
     it('rejects empty from', () => {
-      expect(() => handleTeamSendMessage(bus, {
+      expect(() => handleTeamSendMessage(bus, sm, {
         runId: 'r1', from: '', to: 'all', type: 'info', body: 'hi',
       })).toThrow(ZodError);
     });
 
     it('rejects empty to', () => {
-      expect(() => handleTeamSendMessage(bus, {
+      expect(() => handleTeamSendMessage(bus, sm, {
         runId: 'r1', from: 'coder', to: '', type: 'info', body: 'hi',
       })).toThrow(ZodError);
     });
 
     it('rejects empty body', () => {
-      expect(() => handleTeamSendMessage(bus, {
+      expect(() => handleTeamSendMessage(bus, sm, {
         runId: 'r1', from: 'coder', to: 'all', type: 'info', body: '',
       })).toThrow(ZodError);
     });
 
     it('rejects invalid type enum', () => {
-      expect(() => handleTeamSendMessage(bus, {
+      expect(() => handleTeamSendMessage(bus, sm, {
         runId: 'r1', from: 'coder', to: 'all', type: 'invalid_type', body: 'hi',
       })).toThrow(ZodError);
     });
@@ -195,6 +201,20 @@ describe('Zod schema validation', () => {
       expect(() => handleTeamGetMessages(bus, {
         runId: 'r1', to: 'all', since: 'not-a-date',
       })).toThrow(ZodError);
+    });
+
+    it('accepts since with a timezone offset', () => {
+      const result = handleTeamGetMessages(bus, {
+        runId: 'r1', to: 'all', since: '2026-07-10T12:00:00+02:00',
+      });
+      expect(result.messages).toEqual([]);
+    });
+
+    it('accepts server-generated toISOString since values', () => {
+      const result = handleTeamGetMessages(bus, {
+        runId: 'r1', to: 'all', since: new Date().toISOString(),
+      });
+      expect(result.messages).toEqual([]);
     });
 
     it('accepts optional fields omitted', () => {
@@ -273,6 +293,32 @@ describe('Zod schema validation', () => {
       expect(() => handleTeamMemoryDelete(memory, {
         namespace: 'decisions', key: 'bad key!',
       })).toThrow(ZodError);
+    });
+  });
+
+  // index.ts spreads these exported shapes into server.tool(), so validating
+  // z.object(shape) here exercises exactly what the MCP layer enforces —
+  // guarding against the layers drifting apart again.
+  describe('exported shapes (MCP registration layer parity)', () => {
+    it('team_advance shape rejects an empty summary at the MCP layer', () => {
+      const result = z.object(teamAdvanceShape).safeParse({
+        runId: 'r1', stepId: 1, action: 'mark_reviewed', summary: '',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('team_get_messages shape accepts a timezone-offset since at the MCP layer', () => {
+      const result = z.object(teamGetMessagesShape).safeParse({
+        runId: 'r1', to: 'all', since: '2026-07-10T12:00:00+02:00',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('team_get_messages shape rejects a non-datetime since at the MCP layer', () => {
+      const result = z.object(teamGetMessagesShape).safeParse({
+        runId: 'r1', to: 'all', since: 'not-a-date',
+      });
+      expect(result.success).toBe(false);
     });
   });
 });

@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import type { StateMachine } from '../state/machine.js';
-
-const positiveInt = z.number().int().positive();
+import { positiveInt } from './schemas.js';
 
 // Worker-slot capacity of this host, reported to coordinators via team_status.
 // Both hosts' coordinator instructions size their worker pool from this value
@@ -21,14 +20,22 @@ const PlanStepSchema = z.object({
   dependsOn: z.array(positiveInt),
 });
 
-const TeamStartSchema = z.object({
-  task: z.string().optional(),
+// Raw shapes are exported for MCP registration: server.tool() takes a
+// ZodRawShape (plain object of validators), not a ZodObject. index.ts spreads
+// these same shapes into its registrations and the handlers below parse
+// z.object(shape), so both validation layers derive from one definition.
+export const teamStartShape = {
+  task: z.string().optional().describe('Human-readable task description shown in the dashboard'),
   steps: z.array(PlanStepSchema).min(1),
-});
+};
 
-const TeamStatusSchema = z.object({
+const TeamStartSchema = z.object(teamStartShape);
+
+export const teamStatusShape = {
   runId: z.string().min(1),
-});
+};
+
+const TeamStatusSchema = z.object(teamStatusShape);
 
 const WorktreeSchema = z.object({
   targetBranch: z.string().min(1),
@@ -37,14 +44,19 @@ const WorktreeSchema = z.object({
   branch: z.string().min(1),
 });
 
-const TeamAdvanceSchema = z.object({
+export const teamAdvanceShape = {
   runId: z.string().min(1),
   stepId: positiveInt,
   action: z.enum(['set_worktree', 'start_coding', 'approve', 'request_revision', 'resolve_escalation', 'mark_reviewed']),
   agent: z.string().min(1).optional(),
   summary: z.string().min(1).optional(),
   worktree: WorktreeSchema.optional(),
-}).superRefine((value, ctx) => {
+};
+
+// The set_worktree cross-field requirement can only live on the handler-side
+// ZodObject (a raw shape has nowhere to hang superRefine), so the MCP layer
+// accepts set_worktree without a worktree and the handler rejects it.
+const TeamAdvanceSchema = z.object(teamAdvanceShape).superRefine((value, ctx) => {
   if (value.action === 'set_worktree' && !value.worktree) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['worktree'], message: 'worktree is required for set_worktree' });
   }
