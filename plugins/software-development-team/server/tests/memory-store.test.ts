@@ -43,6 +43,43 @@ describe('MemoryStore', () => {
     expect(store.read('decisions', 'k')).toBeUndefined();
   });
 
+  describe('delete', () => {
+    it('emits entry_delete once with the original value and updatedAt preserved', () => {
+      store.write({ key: 'k', namespace: 'decisions', value: 'v', runId: 'r1' });
+      const written = store.read('decisions', 'k')!;
+
+      const events: unknown[] = [];
+      store.on('entry_delete', (entry) => events.push(entry));
+
+      expect(store.delete('decisions', 'k')).toBe(true);
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual({
+        key: 'k',
+        namespace: 'decisions',
+        value: 'v',
+        runId: 'r1',
+        updatedAt: written.updatedAt,
+      });
+    });
+
+    it('does not emit entry_change on delete', () => {
+      store.write({ key: 'k', namespace: 'decisions', value: 'v' });
+      let changeEvents = 0;
+      store.on('entry_change', () => changeEvents++);
+      store.delete('decisions', 'k');
+      expect(changeEvents).toBe(0);
+    });
+
+    it('returns false and emits nothing when the key is missing', () => {
+      let events = 0;
+      store.on('entry_delete', () => events++);
+      store.on('entry_change', () => events++);
+      expect(store.delete('decisions', 'no-such-key')).toBe(false);
+      expect(events).toBe(0);
+    });
+  });
+
   describe('restore', () => {
     it('preserves the persisted updatedAt instead of re-stamping it', () => {
       store.restore({

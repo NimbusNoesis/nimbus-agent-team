@@ -59,7 +59,10 @@ export class MemoryStore extends EventEmitter {
     const existing = this.db.readMemoryEntry(namespace, key);
     if (!existing) return false;
     this.db.deleteMemoryEntry(namespace, key);
-    this.emit('entry_change', { ...existing, value: '', updatedAt: new Date().toISOString() });
+    // Emit the entry exactly as it existed — no value-blanking, no re-stamped
+    // updatedAt. A distinct event lets the dashboard remove the entry instead
+    // of upserting an empty ghost card via entry_change.
+    this.emit('entry_delete', { ...existing });
     return true;
   }
 

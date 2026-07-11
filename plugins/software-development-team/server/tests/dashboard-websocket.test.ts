@@ -1,24 +1,39 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import NodeWebSocket from 'ws';
 import {
   allRuns, currentRun, messages, memoryEntries, loadingRunId,
 } from '../src/dashboard/client/state/store';
 import type { RunState, MemoryEntry } from '../src/dashboard/client/state/store';
+import { Database } from '../src/db/database.js';
+import { StateMachine } from '../src/state/machine.js';
+import { MessageBus } from '../src/bus/message-bus.js';
+import { MemoryStore } from '../src/memory/store.js';
+import { startDashboard } from '../src/dashboard/server.js';
 
 // Mock WebSocket and fetch for the websocket module
 let wsInstances: MockWebSocket[] = [];
 
 class MockWebSocket {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSING = 2;
+  static readonly CLOSED = 3;
+
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   onclose: (() => void) | null = null;
+  readyState: number = MockWebSocket.CONNECTING;
   closed = false;
 
   constructor(_url: string) {
     wsInstances.push(this);
   }
 
-  close() { this.closed = true; }
+  close() {
+    this.closed = true;
+    this.readyState = MockWebSocket.CLOSED;
+  }
 
   simulateMessage(data: unknown) {
     this.onmessage?.({ data: JSON.stringify(data) });
@@ -40,6 +55,10 @@ function makeRun(id: string, status: RunState['status'] = 'in_progress'): RunSta
 }
 
 beforeEach(() => {
+  // Release the module-level single-flight guard in websocket.ts: mark every
+  // socket from the previous test as CLOSED so connectWebSocket() opens a
+  // fresh one instead of no-opping on a lingering CONNECTING/OPEN mock.
+  for (const ws of wsInstances) ws.readyState = MockWebSocket.CLOSED;
   wsInstances = [];
   allRuns.value = [];
   currentRun.value = null;
@@ -173,6 +192,40 @@ describe('WebSocket message handling', () => {
     expect(memoryEntries.value[0].value).toBe('updated');
   });
 
+  it('handles memory_entry_delete by removing the matching entry', () => {
+    memoryEntries.value = [
+      { key: 'arch', namespace: 'decisions', value: 'use preact', updatedAt: '2026-01-01T00:00:00Z' },
+      { key: 'arch', namespace: 'learnings', value: 'same key, other namespace', updatedAt: '2026-01-01T00:00:00Z' },
+    ];
+    connectWebSocket();
+    const ws = wsInstances[0];
+
+    ws.simulateMessage({
+      type: 'memory_entry_delete',
+      entry: { key: 'arch', namespace: 'decisions', value: 'use preact', updatedAt: '2026-01-01T00:00:00Z' },
+    });
+
+    // Only the namespace+key match is removed — no empty ghost card remains.
+    expect(memoryEntries.value).toHaveLength(1);
+    expect(memoryEntries.value[0].namespace).toBe('learnings');
+  });
+
+  it('memory_entry_delete for an unknown entry leaves the list unchanged', () => {
+    memoryEntries.value = [
+      { key: 'arch', namespace: 'decisions', value: 'use preact', updatedAt: '2026-01-01T00:00:00Z' },
+    ];
+    connectWebSocket();
+    const ws = wsInstances[0];
+
+    ws.simulateMessage({
+      type: 'memory_entry_delete',
+      entry: { key: 'no-such-key', namespace: 'decisions', value: '', updatedAt: '2026-01-01T00:00:00Z' },
+    });
+
+    expect(memoryEntries.value).toHaveLength(1);
+    expect(memoryEntries.value[0].key).toBe('arch');
+  });
+
   it('creates immutable arrays on update (signal reactivity)', () => {
     connectWebSocket();
     const ws = wsInstances[0];
@@ -233,6 +286,85 @@ describe('WebSocket error and reconnection', () => {
     expect(ws2).toBeDefined();
     expect(ws2).not.toBe(ws1);
     vi.useRealTimers();
+  });
+});
+
+describe('WebSocket single-flight guard', () => {
+  it('is a no-op while a socket is CONNECTING', () => {
+    connectWebSocket();
+    expect(wsInstances).toHaveLength(1);
+
+    connectWebSocket();
+    connectWebSocket();
+
+    expect(wsInstances).toHaveLength(1);
+  });
+
+  it('is a no-op while a socket is OPEN', () => {
+    connectWebSocket();
+    wsInstances[0].readyState = MockWebSocket.OPEN;
+
+    connectWebSocket();
+
+    expect(wsInstances).toHaveLength(1);
+  });
+
+  it('allows reconnection after close, without stacking a second socket from the reconnect timer', () => {
+    vi.useFakeTimers();
+    connectWebSocket();
+    const ws1 = wsInstances[0];
+
+    // Socket dies: guard is released in onclose, so an app-init retry may connect again.
+    ws1.readyState = MockWebSocket.CLOSED;
+    ws1.onclose?.();
+    connectWebSocket();
+    expect(wsInstances).toHaveLength(2);
+
+    // The reconnect ws1 scheduled must now be a no-op — otherwise two live
+    // sockets would each perpetuate their own reconnect loop forever.
+    vi.advanceTimersByTime(2000);
+    expect(wsInstances).toHaveLength(2);
+    vi.useRealTimers();
+  });
+});
+
+describe('Dashboard server broadcasts memory_entry_delete', () => {
+  it('sends memory_entry_delete with the deleted entry to connected clients', async () => {
+    const db = await Database.create();
+    const sm = new StateMachine(db);
+    const bus = new MessageBus(db);
+    const memoryStore = new MemoryStore(db);
+    const port = await startDashboard(sm, bus, memoryStore);
+
+    // Write before connecting so the entry_change broadcast isn't received.
+    memoryStore.write({ key: 'doomed', namespace: 'reflections', value: 'to be removed', runId: 'r1' });
+    const written = memoryStore.read('reflections', 'doomed')!;
+
+    const ws = await new Promise<NodeWebSocket>((resolve, reject) => {
+      const socket = new NodeWebSocket(`ws://localhost:${port}`);
+      socket.on('open', () => resolve(socket));
+      socket.on('error', reject);
+    });
+    try {
+      const msgPromise = new Promise<any>((resolve) => {
+        ws.once('message', (data) => resolve(JSON.parse(data.toString())));
+      });
+      memoryStore.delete('reflections', 'doomed');
+      const event = await msgPromise;
+
+      expect(event.type).toBe('memory_entry_delete');
+      // Payload is the entry as it existed: original value and updatedAt,
+      // not blanked or re-stamped.
+      expect(event.entry).toEqual({
+        key: 'doomed',
+        namespace: 'reflections',
+        value: 'to be removed',
+        runId: 'r1',
+        updatedAt: written.updatedAt,
+      });
+    } finally {
+      ws.close();
+    }
   });
 });
 

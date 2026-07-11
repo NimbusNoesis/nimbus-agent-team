@@ -82,10 +82,11 @@ export interface MemoryEntry {
 
 // --- Dashboard Events ---
 
-// memory_update: emitted on initial load or full refresh — carries all entries for a run.
-// memory_entry_update: emitted by MemoryStore on individual entry changes (WebSocket broadcast).
+// memory_entry_update: broadcast when MemoryStore emits entry_change (write/upsert of a single entry).
+// memory_entry_delete: broadcast when MemoryStore emits entry_delete — carries the entry as it
+// existed at deletion time so clients can remove it by namespace+key.
 export type DashboardEvent =
   | { type: 'state_update'; run: RunState }
   | { type: 'new_message'; message: Message }
-  | { type: 'memory_update'; entries: MemoryEntry[] }
-  | { type: 'memory_entry_update'; entry: MemoryEntry };
+  | { type: 'memory_entry_update'; entry: MemoryEntry }
+  | { type: 'memory_entry_delete'; entry: MemoryEntry };

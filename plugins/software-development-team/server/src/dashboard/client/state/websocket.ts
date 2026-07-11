@@ -1,9 +1,26 @@
 import { allRuns, currentRun, messages, memoryEntries } from './store';
 import { fetchRuns, fetchMemory } from './api';
 
+// Single-flight guard: the socket currently connecting or connected. Each
+// socket self-perpetuates via onclose → setTimeout(connectWebSocket, 2000),
+// so if app init retries after a partial failure and calls connectWebSocket
+// again, a second concurrent socket would otherwise be opened and both would
+// reconnect forever. While this socket is CONNECTING or OPEN, further
+// connectWebSocket calls are no-ops.
+let currentSocket: WebSocket | null = null;
+
 export function connectWebSocket(): void {
+  if (
+    currentSocket &&
+    (currentSocket.readyState === WebSocket.CONNECTING ||
+      currentSocket.readyState === WebSocket.OPEN)
+  ) {
+    return;
+  }
+
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${protocol}//${location.host}`);
+  currentSocket = ws;
 
   ws.onopen = async () => {
     try {
@@ -53,9 +70,18 @@ export function connectWebSocket(): void {
       if (idx !== -1) newEntries[idx] = data.entry;
       else newEntries.push(data.entry);
       memoryEntries.value = newEntries;
+    } else if (data.type === 'memory_entry_delete') {
+      memoryEntries.value = memoryEntries.value.filter(
+        e => !(e.namespace === data.entry.namespace && e.key === data.entry.key)
+      );
     }
   };
 
   ws.onerror = () => ws.close();
-  ws.onclose = () => setTimeout(connectWebSocket, 2000);
+  ws.onclose = () => {
+    // Release the guard before scheduling the reconnect (but only if a newer
+    // socket hasn't already replaced this one), so the reconnect isn't a no-op.
+    if (currentSocket === ws) currentSocket = null;
+    setTimeout(connectWebSocket, 2000);
+  };
 }
