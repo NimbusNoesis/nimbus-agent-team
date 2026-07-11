@@ -28,6 +28,22 @@ describe('Dashboard server', () => {
       expect(res.headers.get('content-security-policy')).toContain("default-src 'self'");
     });
 
+    it('restricts connect-src to localhost WebSocket origins (no bare ws:/wss:)', async () => {
+      const res = await fetch(`${baseUrl}/api/runs`);
+      const csp = res.headers.get('content-security-policy') ?? '';
+      const connectSrc = csp
+        .split(';')
+        .map((d) => d.trim())
+        .find((d) => d.startsWith('connect-src'));
+      expect(connectSrc).toBe(
+        "connect-src 'self' ws://localhost:* ws://127.0.0.1:* wss://localhost:* wss://127.0.0.1:*",
+      );
+      // No token may be a bare scheme wildcard allowing arbitrary hosts
+      const tokens = connectSrc!.split(/\s+/).slice(1);
+      expect(tokens).not.toContain('ws:');
+      expect(tokens).not.toContain('wss:');
+    });
+
     it('sets X-Content-Type-Options to nosniff', async () => {
       const res = await fetch(`${baseUrl}/api/runs`);
       expect(res.headers.get('x-content-type-options')).toBe('nosniff');
@@ -127,6 +143,77 @@ describe('Dashboard server', () => {
         body: JSON.stringify({ runId: 'no-such-run', body: 'hello?' }),
       });
       expect(res.status).toBe(404);
+    });
+  });
+
+  describe('WebSocket origin allowlist', () => {
+    /** Opens a WS connection, resolving on 'open' and rejecting on 'error'. */
+    function tryConnect(origin?: string): Promise<WebSocket> {
+      return new Promise((resolve, reject) => {
+        const ws = new WebSocket(
+          `ws://localhost:${port}`,
+          origin === undefined ? {} : { headers: { Origin: origin } },
+        );
+        ws.on('open', () => resolve(ws));
+        ws.on('error', (err) => reject(err));
+      });
+    }
+
+    async function expectAccepted(origin?: string): Promise<void> {
+      const ws = await tryConnect(origin);
+      ws.close();
+    }
+
+    async function expectRejected(origin: string): Promise<void> {
+      await expect(tryConnect(origin)).rejects.toThrow();
+    }
+
+    it('accepts connections with no Origin header', async () => {
+      await expectAccepted(undefined);
+    });
+
+    it('accepts http://localhost with the server port', async () => {
+      await expectAccepted(`http://localhost:${port}`);
+    });
+
+    it('accepts localhost and 127.0.0.1 origins on any port, http and https', async () => {
+      await expectAccepted('http://localhost:3000');
+      await expectAccepted('https://localhost:8443');
+      await expectAccepted('http://127.0.0.1:5173');
+      await expectAccepted('https://127.0.0.1:9999');
+      await expectAccepted('http://localhost');
+      await expectAccepted('http://127.0.0.1');
+    });
+
+    it('rejects a cross-origin Origin header', async () => {
+      await expectRejected('http://evil.example');
+    });
+
+    it('rejects hostnames that merely start with localhost', async () => {
+      await expectRejected('http://localhost.evil.example');
+      await expectRejected('http://localhost.evil.example:3000');
+      await expectRejected('http://127.0.0.1.evil.example');
+    });
+
+    it('rejects non-http(s) and malformed Origin values', async () => {
+      await expectRejected('ftp://localhost');
+      await expectRejected('not a url');
+    });
+
+    it('still receives broadcasts on a connection with an allowed Origin', async () => {
+      const ws = await tryConnect(`http://localhost:${port}`);
+      try {
+        const msgPromise = new Promise<any>((resolve) => {
+          ws.once('message', (data) => resolve(JSON.parse(data.toString())));
+        });
+        sm.createRun([{
+          id: 1, description: 'Origin WS test', files: [], acceptanceCriteria: [], dependsOn: [],
+        }]);
+        const event = await msgPromise;
+        expect(event.type).toBe('state_update');
+      } finally {
+        ws.close();
+      }
     });
   });
 
