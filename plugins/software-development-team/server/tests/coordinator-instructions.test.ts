@@ -193,7 +193,8 @@ describe('coordinator instruction contract', () => {
     expect(content).toMatch(/targetCommit.*git rev-parse HEAD/is);
     expect(content).toMatch(/capture.*target.*commit.*create/is);
     expect(content).toMatch(/Initial Pending Admission.*Create and Persist Once/is);
-    expect(content).toMatch(/persist.*\{targetBranch, targetCommit, path, branch\}.*before.*start_coding/is);
+    expect(content).toMatch(/set_worktree[\s\S]*\{\s*targetBranch, targetCommit, path, branch\s*\}[\s\S]*before.*start_coding/is);
+    expect(content).toMatch(/server persists|durable step state/is);
     expect(content).toMatch(/(?:never recapture.*create another worktree|only capture and creation)/is);
     expect(content).toMatch(/reviewer.*revision.*interrupted[\s\S]*reuse.*persisted|(?:reviewer|revision-coder|interrupted-worker).*reuse.*persisted/is);
     expect(content).toMatch(/(?:missing|inconsistent).*?(?:do not dispatch|do not recreate).*?(?:block|escalate)/is);

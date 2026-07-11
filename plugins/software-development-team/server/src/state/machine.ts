@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import type { PlanStep, RunState, StepState, StepResult } from '../types.js';
+import type { PlanStep, RunState, StepState, StepResult, WorktreeContext } from '../types.js';
 import { logger } from '../logger.js';
 import { Database } from '../db/database.js';
 
@@ -99,6 +99,20 @@ export class StateMachine extends EventEmitter {
 
   getAllRuns(): RunState[] {
     return this.db.getAllRuns().map((r) => structuredClone(r));
+  }
+
+  setWorktree(runId: string, stepId: number, worktree: WorktreeContext): void {
+    const run = this.requireRun(runId);
+    const stepState = this.requireStep(run, stepId);
+    if (stepState.status !== 'pending') {
+      throw new Error(`Step ${stepId} worktree can only be set while pending, not '${stepState.status}'`);
+    }
+    if (stepState.worktree) {
+      throw new Error(`Step ${stepId} worktree lifecycle context is already set`);
+    }
+    stepState.worktree = { ...worktree };
+    logger.info('StateMachine', `Step ${stepId} worktree context persisted`, { runId, worktree });
+    this.updateRunStatus(run);
   }
 
   startStep(runId: string, stepId: number, agent: string): void {

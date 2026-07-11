@@ -15,6 +15,13 @@ export interface PlanStep {
   dependsOn: number[];  // step IDs this depends on
 }
 
+export interface WorktreeContext {
+  targetBranch: string;
+  targetCommit: string;
+  path: string;
+  branch: string;
+}
+
 export interface StepState {
   step: PlanStep;
   status: StepStatus;
@@ -27,6 +34,7 @@ export interface StepState {
   startedAt?: string;           // ISO timestamp when step entered coding status
   completedAt?: string;         // ISO timestamp when step entered complete status
   resultHistory?: StepResult[]; // prior results displaced by later submissions (e.g., coder result overwritten by reviewer verdict)
+  worktree?: WorktreeContext;   // set once before initial admission and reused across retries/resume
 }
 
 export interface StepResult {
