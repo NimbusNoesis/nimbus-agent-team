@@ -37,20 +37,6 @@ ENTRY="$BUILD_DIR/dist/index.js"
 
 mkdir -p "$BUILD_DIR"
 
-# Serialize concurrent builds — the SessionStart pre-warm hook and the MCP launch
-# wrapper can run at the same time and must not clobber each other.
-LOCK="$BUILD_DIR/.build.lock"
-i=0
-while ! mkdir "$LOCK" 2>/dev/null; do
-  i=$((i + 1))
-  if [ "$i" -ge 3000 ]; then   # ~10 min => assume a crashed build left a stale lock
-    log "reclaiming stale build lock"
-    rmdir "$LOCK" 2>/dev/null || true
-  fi
-  sleep 0.2
-done
-trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT INT TERM
-
 # Order-independent, content-sensitive signature of all build inputs.
 build_signature() {
   {

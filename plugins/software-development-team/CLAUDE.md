@@ -190,7 +190,7 @@ Claude Code has no plugin install/postinstall hook, and `${CLAUDE_PLUGIN_ROOT}` 
 
 - **`.mcp.json`** launches `sh ${CLAUDE_PLUGIN_ROOT}/server/launch.sh <SRC_DIR> <DATA_DIR>` instead of `node dist/index.js`.
 - **`server/launch.sh`** calls `scripts/ensure-build.sh` (which prints the built entry path on stdout, all logs on stderr) then `exec node "$ENTRY"`. Because the build runs *inside* the launch command, the server is always built before `node` runs — independent of hook/MCP startup ordering, which the docs do not guarantee.
-- **`server/scripts/ensure-build.sh`** is idempotent: it syncs sources into `${CLAUDE_PLUGIN_DATA}/server`, runs `npm ci` (only when the manifest changed) and `tsup`, and skips entirely when a content signature of `src/` + configs matches the last build (`.build-stamp`). A `mkdir`-based lock (`.build.lock`) serializes concurrent builds.
+- **`server/scripts/ensure-build.sh`** is idempotent: it syncs sources into `${CLAUDE_PLUGIN_DATA}/server`, runs `npm ci` (only when the manifest changed) and `tsup`, and skips entirely when a content signature of `src/` + configs matches the last build (`.build-stamp`).
 - When `DATA_DIR` is empty or equals `SRC_DIR` (local dev), `ensure-build.sh` builds in place instead of out-of-tree.
 
 First launch after install/update runs a full `npm ci` + build (~30–60s); bump `MCP_TIMEOUT` if the MCP client times out. `dist/` and `node_modules/` stay gitignored — nothing built is committed.
