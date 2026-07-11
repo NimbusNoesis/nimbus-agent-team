@@ -2,6 +2,11 @@
 // It binds to a random ephemeral port (port 0) on localhost and has no authentication.
 // Do NOT expose this server to a network. If network access is ever needed,
 // authentication and authorization must be added before deployment.
+// WebSocket upgrades enforce an Origin allowlist: browsers do not apply CORS to
+// WebSocket connections, so without this check any web page could open
+// ws://localhost:<port> and read the full event stream. Upgrade requests with a
+// non-localhost (or malformed) Origin header are rejected; requests with no
+// Origin header (non-browser clients) are allowed.
 import express from 'express';
 import WebSocket, { WebSocketServer } from 'ws';
 import { createServer } from 'node:http';
@@ -16,6 +21,31 @@ import { logger } from '../logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// Hostnames allowed to originate browser WebSocket connections. Exact match only —
+// substring/startsWith matching would let e.g. http://localhost.evil.example through.
+// Node's WHATWG URL keeps IPv6 brackets in `hostname` ('[::1]'), but include the
+// bare form too for safety across parsers.
+const ALLOWED_WS_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+/**
+ * Returns true when a WebSocket upgrade should be accepted based on its Origin
+ * header. No Origin (non-browser clients: tests, wscat, curl) is allowed;
+ * otherwise the origin must parse as a URL with an http/https protocol and a
+ * hostname that is exactly localhost / 127.0.0.1 / ::1 (any port, or no port).
+ * A malformed Origin is rejected.
+ */
+function isAllowedWsOrigin(origin: string | undefined): boolean {
+  if (origin === undefined || origin === '') return true;
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+  return ALLOWED_WS_HOSTNAMES.has(url.hostname);
+}
+
 export async function startDashboard(
   sm: StateMachine,
   bus: MessageBus,
@@ -25,7 +55,7 @@ export async function startDashboard(
 
   // Security headers
   app.use((_req, res, next) => {
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:");
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://localhost:* ws://127.0.0.1:* wss://localhost:* wss://127.0.0.1:*; img-src 'self' data:");
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     next();
@@ -75,7 +105,17 @@ export async function startDashboard(
   });
 
   const httpServer = createServer(app);
-  const wss = new WebSocketServer({ server: httpServer });
+  const wss = new WebSocketServer({
+    server: httpServer,
+    // Browsers do not apply CORS to WebSocket connections — reject upgrades
+    // from non-localhost origins so arbitrary web pages cannot read the event
+    // stream. Connections without an Origin header (non-browser clients) pass.
+    verifyClient: ({ origin }: { origin?: string }) => {
+      if (isAllowedWsOrigin(origin)) return true;
+      logger.warn('Dashboard', 'Rejected WebSocket upgrade from disallowed origin', { origin: String(origin) });
+      return false;
+    },
+  });
 
   function broadcast(event: DashboardEvent) {
     const data = JSON.stringify(event);
