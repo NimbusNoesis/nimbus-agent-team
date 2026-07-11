@@ -42,4 +42,25 @@ describe('MemoryStore', () => {
     store.delete('decisions', 'k');
     expect(store.read('decisions', 'k')).toBeUndefined();
   });
+
+  describe('restore', () => {
+    it('preserves the persisted updatedAt instead of re-stamping it', () => {
+      store.restore({
+        key: 'old-entry', namespace: 'learnings', value: 'from disk',
+        runId: 'r1', updatedAt: '2020-01-02T03:04:05.000Z',
+      });
+      const entry = store.read('learnings', 'old-entry');
+      expect(entry?.updatedAt).toBe('2020-01-02T03:04:05.000Z');
+      expect(entry?.value).toBe('from disk');
+    });
+
+    it('emits no entry_change event', () => {
+      let events = 0;
+      store.on('entry_change', () => events++);
+      store.restore({
+        key: 'silent', namespace: 'context', value: 'v', updatedAt: '2021-06-07T00:00:00.000Z',
+      });
+      expect(events).toBe(0);
+    });
+  });
 });

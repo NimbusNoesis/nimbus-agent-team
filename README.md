@@ -18,8 +18,7 @@ only the host-specific glue differs. They can be installed side by side.
 ├── plugins/
 │   └── software-development-team/    The Claude Code plugin
 │       ├── agents/                   Agent definitions (.md + YAML frontmatter)
-│       ├── commands/begin.md         Coordinator entry point (/begin)
-│       ├── skills/                   Slash-command skills (status, memory, resume, plan, research, review)
+│       ├── commands/                 Slash commands (begin, status, memory, resume, plan, research, review)
 │       ├── hooks/                    SessionStart pre-warm hook
 │       └── server/                   Host-agnostic MCP server (SQLite + bus + memory + dashboard)
 └── codex/                            The OpenAI Codex CLI distribution

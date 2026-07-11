@@ -77,9 +77,9 @@ For every execution or resumed dispatch use `<role>_step_<N>_attempt_<A>`: for e
 
 Repeat until all steps are complete. Every iteration refreshes `team_status`, checks `team_get_messages`, handles stuck detection, completes lifecycle transitions, and refills worker capacity.
 
-1. Determine the worker limit from the host capacity reported by `team_status`: `maxParallel = reportedHostCapacity - 1` (the coordinator consumes one slot). Thus four total slots permit three simultaneously spawned workers. If host capacity is unknown, use `maxParallel = 1`. Do not impose a server WIP cap. Count every spawned planner, plan-critic, coder, reviewer, researcher, and documentation worker; only the coordinator is excluded.
+1. Determine the worker limit from the host capacity reported by `team_status` (its `hostCapacity` field): `maxParallel = hostCapacity - 1` (the coordinator consumes one slot). Thus four total slots permit three simultaneously spawned workers. If host capacity is unknown, use `maxParallel = 1`. Do not impose a server WIP cap. Count every spawned planner, plan-critic, coder, reviewer, researcher, and documentation worker; only the coordinator is excluded.
 2. Count active spawned workers and available slots. First reserve available slots for review/revision lifecycle work: spawn reviewers for completed coder results, and after an accepted `request_revision`, spawn revision coders. Then build the remaining runnable set from PENDING steps in plan order. A pending candidate is eligible only when all dependencies are complete, it has no `fileConflicts` or `blockingReasons`, and its exact declared file strings are disjoint from active claims and from selections already made in this batch. Exact string matching is the contract; do not normalize paths or infer overlap.
-3. For every selected pending step, call `team_advance(runId, stepId, action: "start_coding", agent: "<role>")` **before** spawning. `team_advance` is authoritative admission control. If it rejects the action, treat the snapshot as stale: refresh `team_status` and reschedule from the beginning; never spawn from the rejected snapshot.
+3. For every selected pending step, call `team_advance(runId, stepId, action: "start_coding", agent: "<role>")` **before** spawning. The `agent` label must always be a fixed dashboard roster name (`planner`, `coder`, `reviewer`, `researcher`, `documentation`) — never a generic or invented label; the dashboard's agent status panel only lights cards for roster names. For work that fits no specialist exactly, use the closest specialist (almost always `coder`) as both the roster label and the spawned role. `team_advance` is authoritative admission control. If it rejects the action, treat the snapshot as stale: refresh `team_status` and reschedule from the beginning; never spawn from the rejected snapshot.
 4. Only after admission succeeds, relay and spawn the selected role (coder, researcher, or documentation) with the full per-step context. If native spawning fails after admission, call `team_submit_result` with `result.status='blocked'` and the spawn error, then immediately refresh `team_status` and relay the failure; never pretend the worker was spawned or advance the step. Refill capacity whenever a worker returns or a lifecycle action completes.
 
 ### Review and revision lifecycle
@@ -96,6 +96,14 @@ Print the issue. Wait for user guidance. When received, `team_advance(resolve_es
 ### Step is CODING (agent was interrupted mid-work) → Re-spawn
 
 If a step is stuck in CODING state because the previous coordinator session was interrupted before the agent returned, treat its recovery as lifecycle work: admit it only when a worker slot is available, account for its active file claim, and re-spawn the appropriate original role with the same step context. The worker checks what was done and completes or redoes the work, then calls `team_submit_result`. Note this situation to the user: "Step N was mid-coding when interrupted — re-spawning worker."
+
+### Worker returned but step still `coding` → close it (safety net)
+
+After ANY spawned worker returns, refresh `team_status` before scheduling anything else. If that worker's step is still `coding`, the worker failed to submit its result (crashed, ran out of context, or never called `team_submit_result`). Never leave the step open:
+
+- **Read-only work** (findings only, no edits): close it with `team_advance(runId, stepId, action: "mark_reviewed", summary: "<one-line summary>")`.
+- **Code work with usable output**: if the worker's return text and the step worktree (`git -C .worktrees/{runId}/step-{N} status`) show completed work, call `team_submit_result` on the worker's behalf (`status: "done"`, summary taken from the worker's return text) so the step moves to `reviewing`, then spawn the reviewer as normal.
+- **No usable output**: call `team_submit_result` with `status: "blocked"` and the failure details, then follow Stuck Detection.
 
 ## Spawn Context Checklist
 

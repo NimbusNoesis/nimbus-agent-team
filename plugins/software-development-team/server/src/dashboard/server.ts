@@ -61,6 +61,10 @@ export async function startDashboard(
       res.status(400).json({ error: 'runId and body required' });
       return;
     }
+    if (!sm.getRun(runId)) {
+      res.status(404).json({ error: `Run ${runId} not found` });
+      return;
+    }
     try {
       bus.post({ runId, from: 'user', to: 'coordinator', type: 'guidance', body });
       res.json({ success: true });
@@ -106,7 +110,9 @@ export async function startDashboard(
 
   return new Promise<number>((resolve, reject) => {
     httpServer.once('error', reject);
-    httpServer.listen(0, () => {
+    // Loopback only — this server has no authentication, and /api/guidance
+    // injects messages the coordinator treats as user input. Never bind wider.
+    httpServer.listen(0, '127.0.0.1', () => {
       httpServer.off('error', reject);
       const addr = httpServer.address();
       const port = typeof addr === 'object' && addr ? addr.port : 0;

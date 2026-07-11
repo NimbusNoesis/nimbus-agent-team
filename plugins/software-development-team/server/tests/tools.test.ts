@@ -200,4 +200,28 @@ describe('ToolRegistry', () => {
     expect(result.entries).toHaveLength(1);
     expect(result.entries[0].namespace).toBe('decisions');
   });
+
+  it('team_status reports a positive hostCapacity for coordinator scheduling', async () => {
+    const { runId } = await registry.handle('team_start', {
+      steps: [{ id: 1, description: 'S1', files: [], acceptanceCriteria: [], dependsOn: [] }],
+    });
+    const status = await registry.handle('team_status', { runId });
+    expect(Number.isInteger(status.hostCapacity)).toBe(true);
+    expect(status.hostCapacity).toBeGreaterThan(0);
+  });
+
+  it('team_send_message rejects an unknown runId instead of orphaning the message', async () => {
+    await expect(registry.handle('team_send_message', {
+      runId: 'no-such-run', from: 'planner', to: 'coordinator', type: 'info', body: 'pre-run note',
+    })).rejects.toThrow('not found');
+  });
+
+  it('team_start rejects an invalid plan (dependency cycle)', async () => {
+    await expect(registry.handle('team_start', {
+      steps: [
+        { id: 1, description: 'S1', files: [], acceptanceCriteria: [], dependsOn: [2] },
+        { id: 2, description: 'S2', files: [], acceptanceCriteria: [], dependsOn: [1] },
+      ],
+    })).rejects.toThrow('dependency cycle');
+  });
 });

@@ -537,4 +537,61 @@ describe('StateMachine', () => {
         .toThrow('not escalated');
     });
   });
+
+  describe('plan validation', () => {
+    it('rejects duplicate step ids', () => {
+      expect(() => sm.createRun([makeStep(1), makeStep(1)]))
+        .toThrow('duplicate step id 1');
+    });
+
+    it('rejects a step that depends on itself', () => {
+      expect(() => sm.createRun([makeStep(1, [1])]))
+        .toThrow('depends on itself');
+    });
+
+    it('rejects dependencies on nonexistent steps', () => {
+      expect(() => sm.createRun([makeStep(1, [99])]))
+        .toThrow('depends on step 99, which does not exist');
+    });
+
+    it('rejects dependency cycles', () => {
+      expect(() => sm.createRun([makeStep(1, [2]), makeStep(2, [1])]))
+        .toThrow('dependency cycle');
+    });
+
+    it('rejects longer dependency cycles', () => {
+      expect(() => sm.createRun([makeStep(1, [3]), makeStep(2, [1]), makeStep(3, [2])]))
+        .toThrow('dependency cycle');
+    });
+
+    it('accepts a valid diamond dependency graph', () => {
+      const run = sm.createRun([makeStep(1), makeStep(2, [1]), makeStep(3, [1]), makeStep(4, [2, 3])]);
+      expect(run.steps).toHaveLength(4);
+    });
+  });
+
+  describe('result history', () => {
+    it('preserves the displaced coder result when the reviewer verdict overwrites it', () => {
+      const run = sm.createRun([makeStep(1)]);
+      sm.startStep(run.id, 1, 'coder');
+      sm.submitResult(run.id, 1, { status: 'done', summary: 'coder finished' });
+      sm.submitResult(run.id, 1, { status: 'done', summary: 'reviewer approved' });
+      const step = sm.getRun(run.id)!.steps[0];
+      expect(step.result?.summary).toBe('reviewer approved');
+      expect(step.resultHistory).toHaveLength(1);
+      expect(step.resultHistory![0].summary).toBe('coder finished');
+    });
+
+    it('accumulates history across revision cycles', () => {
+      const run = sm.createRun([makeStep(1)]);
+      sm.startStep(run.id, 1, 'coder');
+      sm.submitResult(run.id, 1, { status: 'done', summary: 'attempt 1' });
+      sm.submitResult(run.id, 1, { status: 'needs_revision', summary: 'reviewer rejected' });
+      sm.requestRevision(run.id, 1);
+      sm.submitResult(run.id, 1, { status: 'done', summary: 'attempt 2' });
+      const step = sm.getRun(run.id)!.steps[0];
+      expect(step.result?.summary).toBe('attempt 2');
+      expect(step.resultHistory!.map((r) => r.summary)).toEqual(['attempt 1', 'reviewer rejected']);
+    });
+  });
 });

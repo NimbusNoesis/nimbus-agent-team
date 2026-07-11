@@ -21,7 +21,7 @@ const instructionFiles = [
   'codex/skills/begin/SKILL.md',
   'codex/skills/resume/SKILL.md',
   'plugins/software-development-team/commands/begin.md',
-  'plugins/software-development-team/skills/resume.md',
+  'plugins/software-development-team/commands/resume.md',
 ] as const;
 
 const instructions = instructionFiles.map((file) => ({

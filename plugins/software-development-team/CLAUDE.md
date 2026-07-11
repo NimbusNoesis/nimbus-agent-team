@@ -8,7 +8,7 @@ A Claude Code plugin that orchestrates a multi-agent coding team (coordinator, p
 
 - **MCP Server** (`server/src/index.ts`) — entry point, registers tools, starts dashboard, manages persistence
 - **Database** (`server/src/db/database.ts`) — in-memory SQLite database via sql.js (pure JS/WASM). Single backing store for runs, messages, and memory entries. Pure storage — no EventEmitter.
-- **State Machine** (`server/src/state/machine.ts`) — manages step lifecycle: `pending` -> `coding` -> `reviewing` -> `complete` / `escalated`. A read-only review step that never submits a code result can be closed directly via `markReviewed` (`team_advance` action `mark_reviewed`), which moves `coding`/`reviewing` -> `complete` with a synthetic `done` result so it doesn't appear stuck. Enforces dependency ordering, file conflict detection, and stuck detection. The server has no WIP cap; coordinators instead bound simultaneous workers by the host capacity. It manages workflow state only and never manages Git worktrees, branches, commits, switches, merges, or cleanup. Backed by Database.
+- **State Machine** (`server/src/state/machine.ts`) — manages step lifecycle: `pending` -> `coding` -> `reviewing` -> `complete` / `escalated`. A read-only review step that never submits a code result can be closed directly via `markReviewed` (`team_advance` action `mark_reviewed`), which moves `coding`/`reviewing` -> `complete` with a synthetic `done` result so it doesn't appear stuck. Enforces dependency ordering, file conflict detection, and stuck detection, and validates plans at `team_start` (duplicate step IDs, unknown dependencies, and dependency cycles are rejected). The server has no WIP cap; coordinators instead bound simultaneous workers by the host capacity, which `team_status` reports as `hostCapacity`. It manages workflow state only and never manages Git worktrees, branches, commits, switches, merges, or cleanup. Backed by Database.
 - **Message Bus** (`server/src/bus/message-bus.ts`) — append-only message log with EventEmitter, 10K cap per run. Backed by Database.
 - **Memory Store** (`server/src/memory/store.ts`) — key-value store in 5 namespaces (decisions, context, learnings, reviews, reflections). Extends EventEmitter, emits `entry_change` on writes. Backed by Database.
 - **Tool Registry** (`server/src/tools/registry.ts`) — dispatches MCP tool calls to handlers
@@ -19,8 +19,7 @@ A Claude Code plugin that orchestrates a multi-agent coding team (coordinator, p
 
 ```
 agents/            Agent definitions (planner, plan-critic, coder, reviewer, researcher, documentation)
-commands/begin.md  Coordinator command (the /begin entry point)
-skills/            User-invocable skills (status, memory, resume, plan, research, review)
+commands/          User-invocable slash commands (begin, status, memory, resume, plan, research, review)
 server/src/
   index.ts         MCP server setup, tool registration, Database wiring
   types.ts         All TypeScript types (StepState, RunState, Message, MemoryEntry, DashboardEvent)
@@ -41,7 +40,7 @@ cd server
 npm install          # install dependencies
 npx tsc --noEmit     # type check
 npx tsup             # build (ESM output to dist/)
-npx vitest run       # run tests (309 tests across 17 files)
+npx vitest run       # run tests (376 tests across 18 files)
 npx vitest           # watch mode
 npm run knip         # find unused files, exports, and dependencies
 ```
@@ -65,6 +64,10 @@ Run switching is handled by `RunTabs.tsx` (`components/header/`) — an always-v
 ### Subagent MCP tool inheritance
 Subagents dispatched via the Agent tool inherit all MCP tools from the parent session by default. The plugin's `.mcp.json` makes the `software-development-team` MCP server available in the session, and subagents can call its tools directly. Each agent's `tools:` frontmatter acts as an allowlist, scoping which MCP tools that agent can access. Note: plugin agents cannot use the `mcpServers` frontmatter field (silently ignored for security), but this is irrelevant since the server is already session-level.
 
+### Agent dispatches require an explicit namespaced subagent_type
+
+Plugin agents register as `software-development-team:<name>` (e.g., `software-development-team:coder`). Every Agent-tool dispatch in the coordinator commands must pass one of those namespaced values as an explicit `subagent_type` — bare names like `"coder"` are not valid agent types, and omitting the parameter dispatches the default general-purpose agent, which has no team role instructions and never calls `team_submit_result`, stranding the step in `coding`. The `agent` label passed to `team_advance(start_coding)` is separate: it must be a fixed dashboard roster name (`planner`, `coder`, `reviewer`, `researcher`, `documentation`) or the agent status panel lights no card. As a backstop, the coordinator commands include a safety net: after any worker returns, refresh `team_status`, and if the step is still `coding`, close it (`mark_reviewed` for read-only work, `team_submit_result` on the worker's behalf otherwise).
+
 ### MCP tool names include a plugin prefix
 
 When loaded via the plugin system, MCP tool names are prefixed with `plugin_<plugin-name>_`. The full tool name pattern is `mcp__plugin_software-development-team_software-development-team__team_X`. Agent definitions, skills, and the coordinator command must all use this full name — the shorter `mcp__software-development-team__team_X` form does not exist at runtime.
@@ -75,11 +78,11 @@ A parallel Codex distribution lives in the repo-root `codex/` directory (`codex/
 
 - **Tool prefix differs per host.** Claude Code (plugin): `mcp__plugin_software-development-team_software-development-team__team_X`. Codex: `mcp__software-development-team__team_X` (server name only — Codex does not add a `plugin_…` prefix). The `codex/` files use the shorter form throughout.
 - **Dispatch model differs per host.** Claude Code dispatches subagents via the built-in Agent tool with `subagent_type`. Codex spawns subagents on the coordinator's request (no Agent tool); the coordinator passes the full per-step context in the spawn request, and the static role lives in the agent TOML.
-- **Entry points differ per host.** Claude Code uses `commands/begin.md` + `skills/*.md` (with `$ARGUMENTS` templating). Codex uses **skills** (`codex/skills/<name>/SKILL.md`, `name` + `description` frontmatter only, no `$ARGUMENTS` — the user's request arrives as context, and the `description` drives `/skills` selection and implicit triggering).
+- **Entry points differ per host.** Claude Code uses **commands** (`commands/*.md` — begin, status, memory, resume, plan, research, review — with `description`/`argument-hint` frontmatter and `$ARGUMENTS` templating). Codex uses **skills** (`codex/skills/<name>/SKILL.md`, `name` + `description` frontmatter only, no `$ARGUMENTS` — the user's request arrives as context, and the `description` drives `/skills` selection and implicit triggering). Do not put flat `.md` files in a plugin `skills/` directory on the Claude side — the plugin system only loads skills as `skills/<name>/SKILL.md` directories, so flat files there are silently ignored (this is why all Claude entry points live in `commands/`).
 
 When changing coordinator logic or an agent's instructions, update **both** the `plugins/software-development-team/` source of truth and its `codex/` counterpart so the two hosts stay in sync. The `server/` is shared, so server changes apply to both automatically.
 
-Coordinator scheduling is deterministic: reserve capacity for eligible review/revision lifecycle work first, then choose dependency-complete pending work in plan order. File claims compare as exact planned strings and overlapping claims always serialize, including in worktrees. `start_coding` is the authoritative admission check; rejection requires a fresh status and reschedule. A native spawn failure must be submitted as a `blocked` result, and normal scheduling uses neither pause nor cancel semantics.
+Coordinator scheduling is deterministic: reserve capacity for eligible review/revision lifecycle work first, then choose dependency-complete pending work in plan order. Worker budgets come from the `hostCapacity` field in the `team_status` response (`maxParallel = hostCapacity - 1`); if the field is absent the coordinators fall back to one worker, so keep the field name in sync across the server and both hosts' instruction files. File claims compare as exact planned strings and overlapping claims always serialize, including in worktrees. `start_coding` is the authoritative admission check; rejection requires a fresh status and reschedule. A native spawn failure must be submitted as a `blocked` result, and normal scheduling uses neither pause nor cancel semantics.
 
 ### Coordinator message relay for dashboard visibility
 
@@ -127,17 +130,39 @@ File claims compare as exact planned strings. Every exact overlap serializes, ev
 
 Only explicit reviewer approval authorizes the coordinator to switch to the captured target branch and merge the step branch there with `--no-ff`. On conflict, run `git merge --abort`, preserve the worktree and branch, record the exact error and conflicting files, and escalate. Never auto-resolve. After a successful merge, remove the worktree then delete the branch. A confirmed abandoned, unmerged step is never merged; remove its worktree first and then force-delete its branch. Preserve artifacts and report the exact worktree path, branch, and error if either cleanup fails.
 
+### team_send_message requires an existing run
+
+`handleTeamSendMessage` rejects unknown run IDs so messages cannot be orphaned under fabricated runs (the dashboard only shows messages for runs that exist). Anything running before `team_start` — the planning phase in `begin`, plan-only mode — must persist rationale via `team_memory_write` instead; the coordinator relays one planning-phase summary message right after `team_start` succeeds. The dashboard's `POST /api/guidance` applies the same check (404 for unknown runs).
+
+### Dashboard binds loopback only
+
+`startDashboard` listens on `127.0.0.1` explicitly. The dashboard has no authentication and `/api/guidance` injects messages the coordinator treats as user guidance — never widen the bind address.
+
+### Memory restore preserves timestamps
+
+Startup restore uses `MemoryStore.restore()`, which writes the entry exactly as persisted (original `updatedAt`, no `entry_change` event). `write()` is only for live writes — it re-stamps `updatedAt` and emits. Using `write()` in the restore path would re-stamp every entry to boot time and scramble `updated_at` ordering after each restart.
+
+### Step results keep an audit trail
+
+`submitResult` pushes any displaced result onto `stepState.resultHistory` before overwriting `result` (reviewer verdicts overwrite coder submissions by design). The history is persisted in `state.json` for post-run inspection but intentionally excluded from the `team_status` response to keep it small.
+
+### One live server per project
+
+The server writes its PID to `.team/server.lock` at startup and logs a prominent warning when another live server already holds the lock. Two concurrent sessions against the same project (a second Claude Code window, or Claude Code + Codex at once) each hold an independent in-memory DB, race last-writer-wins on `.team/` state, and cannot see each other's runs — use the hosts sequentially. Also launch from the project root: `TEAM_DIR` resolves from the server's cwd, so a session started in a subdirectory gets a different `.team`.
+
 ### Use sql.js, not better-sqlite3
 better-sqlite3 requires native C++ compilation and is incompatible with Node v24+ (needs C++20). sql.js is a pure JS/WASM SQLite that works everywhere with no native dependencies. The Database class uses a static `Database.create()` factory method for async sql.js initialization.
 
-### Skills are standalone slash commands
+### All user entry points are commands
 
-Skills in `skills/` are user-invocable slash commands that provide focused workflows without the full team orchestration. They follow the same frontmatter format as commands (`description`, `argument-hint`). There are two patterns:
+Beyond the coordinator (`begin`), the plugin ships six focused slash commands in `commands/` that provide workflows without the full team orchestration (frontmatter: `description`, `argument-hint`; `$ARGUMENTS` templating). There are two patterns:
 
-- **Utility skills** (`status`, `memory`, `resume`) — call MCP tools directly to query or manage state
-- **Agent-dispatch skills** (`plan`, `research`, `review`) — dispatch a single subagent via the Agent tool for focused work
+- **Utility commands** (`status`, `memory`, `resume`) — call MCP tools directly to query or manage state
+- **Agent-dispatch commands** (`plan`, `research`, `review`) — dispatch a single subagent via the Agent tool (always with an explicit namespaced `subagent_type`) for focused work
 
-Agent-dispatch skills that run outside a team run (no `runId`) must explicitly tell the dispatched agent NOT to call team MCP tools (`team_submit_result`, `team_memory_write`, `team_send_message`). The `plan` skill is an exception — it includes MCP tool mappings because the planner writes to memory.
+These files previously lived in `skills/` as flat `.md` files, where the plugin system silently ignored them (skills require `skills/<name>/SKILL.md` directories) — keep them in `commands/`.
+
+Agent-dispatch commands that run outside a team run (no `runId`) must explicitly tell the dispatched agent NOT to call team MCP tools (`team_submit_result`, `team_memory_write`, `team_send_message`). The `plan` command is an exception — it includes MCP tool mappings because the planner writes to memory.
 
 ### Memory keys are run-scoped to prevent cross-run overwrites
 

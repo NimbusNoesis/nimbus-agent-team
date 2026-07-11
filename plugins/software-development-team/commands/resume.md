@@ -33,6 +33,19 @@ You have TWO different tool systems. Do not confuse them:
 
 **The MCP tools and the Agent tool are completely separate.** The `agent` parameter in `team_advance` is just a label string (e.g., `"coder"`), NOT a dispatch prompt. To actually make a coder do work, you must use the `Agent` tool.
 
+### Agent types for dispatch
+
+The team's agent types are plugin-namespaced. These are the only valid `subagent_type` values:
+
+- `software-development-team:planner`
+- `software-development-team:plan-critic`
+- `software-development-team:coder`
+- `software-development-team:reviewer`
+- `software-development-team:researcher`
+- `software-development-team:documentation`
+
+**Every Agent dispatch MUST pass one of these as an explicit `subagent_type`.** Bare names like `"coder"` are not valid agent types, and omitting `subagent_type` dispatches the default general-purpose agent — it has no team role instructions, no tool-name mapping, and never calls `team_submit_result`, so its step strands in `coding` forever.
+
 ## Re-entry Steps
 
 1. Call `team_dashboard_url` and show the user the dashboard link.
@@ -75,14 +88,17 @@ mcp__plugin_software-development-team_software-development-team__team_advance(ru
 
 `start_coding` is authoritative. Dispatch a worker **only after it succeeds**. If it is rejected, the scheduling snapshot is stale: call `team_status`, recompute the runnable set, and retry the scheduling decision; never dispatch from the stale snapshot.
 
-**Then**, dispatch the appropriate agent using the **Agent tool** (this is the built-in Claude Code tool, NOT an MCP tool). The agent you dispatch depends on the step type:
+The `agent` label passed to `team_advance` must always be a fixed dashboard roster name (`planner`, `coder`, `reviewer`, `researcher`, `documentation`) — never `general-purpose` or any other label; the dashboard's agent status panel only lights cards for roster names. For work that fits no specialist exactly, use the closest specialist (almost always `coder`) as both the roster label and the dispatched agent type.
 
-- **coder** — implements code changes (most steps)
-- **researcher** — investigates unknowns, APIs, or patterns before coding
-- **documentation** — writes or updates documentation
+**Then**, dispatch the appropriate agent using the **Agent tool** (this is the built-in Claude Code tool, NOT an MCP tool) with an explicit `subagent_type`. The agent you dispatch depends on the step type:
+
+- **coder** (`subagent_type: "software-development-team:coder"`) — implements code changes (most steps)
+- **researcher** (`subagent_type: "software-development-team:researcher"`) — investigates unknowns, APIs, or patterns before coding
+- **documentation** (`subagent_type: "software-development-team:documentation"`) — writes or updates documentation
 
 ```
 Agent(
+  subagent_type: "software-development-team:coder",
   description: "Implement step N: <brief>",
   prompt: "<full dispatch context per checklist>"
 )
@@ -94,7 +110,7 @@ Treat a failed worker spawn as a lifecycle event: do not leave a successfully st
 
 Check `steps[n].result`:
 
-- **If result.status is `done` or `done_with_concerns`**: The coder finished. Dispatch the reviewer using the **Agent tool**. The reviewer will call `team_submit_result` with its verdict. After the reviewer Agent returns, check `team_status` again for the reviewer's result, then call `team_advance` with `approve` or `request_revision`.
+- **If result.status is `done` or `done_with_concerns`**: The coder finished. Dispatch the reviewer using the **Agent tool** (`subagent_type: "software-development-team:reviewer"`). The reviewer will call `team_submit_result` with its verdict. After the reviewer Agent returns, check `team_status` again for the reviewer's result, then call `team_advance` with `approve` or `request_revision`.
 - **If result.status is `needs_revision` (set by reviewer)**: Call `team_advance` with `request_revision`, then dispatch the coder again with the reviewer's feedback.
 
 **`done_with_concerns` handling**: A coder may submit `done_with_concerns` when the implementation is complete but they have concerns. The reviewer CAN approve a `done_with_concerns` result — treat it the same as `done` for dispatch purposes, but ensure the reviewer reads and evaluates the concerns. If the concerns are serious enough to affect correctness, the reviewer should reject with `needs_revision`.
@@ -105,7 +121,7 @@ Call `team_advance(approve)`. Print milestone, refresh `team_status`, and rerun 
 
 ### Reviewer rejected (result.status is `needs_revision`) → Revise
 
-Call `team_advance(request_revision)`. Dispatch coder again with reviewer feedback via Agent tool.
+Call `team_advance(request_revision)`. Dispatch coder again with reviewer feedback via Agent tool (`subagent_type: "software-development-team:coder"`).
 
 When re-dispatching a coder after `NEEDS_REVISION`:
 
@@ -120,7 +136,15 @@ Print the issue. Wait for user guidance. When received, `team_advance(resolve_es
 
 ### Step is CODING (agent was interrupted mid-work) → Re-dispatch
 
-If a step is stuck in CODING state because the previous coordinator session was interrupted before the agent returned, re-dispatch the coder agent with the same step context. The coder will check what was done and complete or redo the work, then call `team_submit_result`. Note this situation to the user: "Step N was mid-coding when interrupted — re-dispatching coder."
+If a step is stuck in CODING state because the previous coordinator session was interrupted before the agent returned, re-dispatch the coder agent (`subagent_type: "software-development-team:coder"`) with the same step context. The coder will check what was done and complete or redo the work, then call `team_submit_result`. Note this situation to the user: "Step N was mid-coding when interrupted — re-dispatching coder."
+
+### Worker returned but step still `coding` → close it (safety net)
+
+After ANY worker Agent returns, refresh `team_status` before scheduling anything else. If that worker's step is still `coding`, the worker failed to submit its result (crashed, ran out of context, or never called `team_submit_result`). Never leave the step open:
+
+- **Read-only work** (findings only, no edits): close it with `team_advance(runId, stepId, action: "mark_reviewed", summary: "<one-line summary>")`.
+- **Code work with usable output**: if the worker's return text and the step worktree (`git -C .worktrees/{runId}/step-{N} status`) show completed work, call `team_submit_result` on the worker's behalf (`status: "done"`, summary taken from the worker's return text) so the step moves to `reviewing`, then dispatch the reviewer as normal.
+- **No usable output**: call `team_submit_result` with `status: "blocked"` and the failure details, then follow Stuck Detection.
 
 ## Dispatch Context Checklist
 
@@ -137,7 +161,7 @@ Every Agent dispatch prompt needs all of these — subagents have no inherited c
 
 ## Deterministic Runnable-Set Scheduling
 
-At every loop iteration and whenever a worker returns, refresh `team_status` and refill available capacity. `maxParallel` is the coordinator's or user's requested number of simultaneously spawned **workers**; only the coordinator is excluded. Count coder, reviewer, researcher, documentation, planner, and plan-critic workers. Parse that requested worker budget as a positive integer and clamp invalid, absent, or non-positive values to `1`. Then, when a positive host capacity is reported, cap it at `reportedHostCapacity - 1`; a reported four-slot host therefore permits at most three workers. If host capacity is absent or unknown, use the conservative one-worker limit. There is no separate server WIP cap.
+At every loop iteration and whenever a worker returns, refresh `team_status` and refill available capacity. `maxParallel` is the coordinator's or user's requested number of simultaneously spawned **workers**; only the coordinator is excluded. Count coder, reviewer, researcher, documentation, planner, and plan-critic workers. Parse that requested worker budget as a positive integer and clamp invalid, absent, or non-positive values to `1`. `team_status` reports the host's worker-slot capacity in its `hostCapacity` field. When a positive `hostCapacity` is reported, cap the budget at `hostCapacity - 1`; a reported four-slot host therefore permits at most three workers. If host capacity is absent or unknown, use the conservative one-worker limit. There is no separate server WIP cap.
 
 Prioritize existing lifecycle work before new implementation work: first dispatch eligible reviewers and coder revisions, then use remaining capacity for new pending steps. For pending steps, examine dependency-complete candidates in plan order. A candidate is runnable only when it has no `fileConflicts` or other blocking indicator in the fresh status and its claimed files are disjoint from every active claim and every earlier selected same-batch claim. File comparison is exact planned file-string matching. Select and start candidates in that order until capacity is full.
 

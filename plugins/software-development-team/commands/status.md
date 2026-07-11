@@ -43,4 +43,4 @@ Steps (<N complete> / <total>):
    - If any step has `fileConflicts`: Print "CONFLICT: Step N conflicts with step M on <files>."
    - If any step has `retryCount > 0`: Note "(retry <N>/3)" next to the step.
 
-5. If the run is complete, say so and remind the user they can check memory with `/memory`.
+5. If the run is complete, say so and remind the user they can check memory with `/software-development-team:memory`.

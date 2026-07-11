@@ -8,17 +8,76 @@ import { ToolRegistry } from './tools/registry.js';
 import { startDashboard } from './dashboard/server.js';
 import { Persistence } from './state/persistence.js';
 import { Database } from './db/database.js';
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
+import { readFileSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { logger } from './logger.js';
 import type { RunState } from './types.js';
 
 const teamDir = resolve(process.env.TEAM_DIR ?? '.team');
 logger.info('Server', `Team directory: ${teamDir}`);
 
+// Keep the MCP handshake version in sync with the package version.
+function packageVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf-8'));
+    return typeof pkg.version === 'string' ? pkg.version : '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
 const server = new McpServer({
   name: 'software-development-team',
-  version: '0.1.0',
+  version: packageVersion(),
 });
+
+// Best-effort concurrent-session detection. Two live servers on the same
+// .team directory (a second Claude Code session, or Claude Code + Codex at
+// once) each hold an independent in-memory DB and race on the same state
+// files — last writer wins, and neither sees the other's runs. We warn loudly
+// rather than refuse to start, since a second session may legitimately open
+// the project without ever running the team.
+const lockFile = join(teamDir, 'server.lock');
+
+function checkAndClaimLock(): void {
+  try {
+    const pid = Number(readFileSync(lockFile, 'utf-8').trim());
+    if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) {
+      let alive = false;
+      try {
+        process.kill(pid, 0);
+        alive = true;
+      } catch {
+        // ESRCH: stale lock from a crashed server — safe to take over.
+      }
+      if (alive) {
+        logger.warn(
+          'Server',
+          `Another team MCP server (pid ${pid}) appears to be running against ${teamDir}. ` +
+          `Concurrent sessions on the same project race on run state and will not see each other's runs — ` +
+          `finish or close the other session before starting team runs here.`
+        );
+      }
+    }
+  } catch {
+    // No readable lock — nothing running.
+  }
+  try {
+    mkdirSync(teamDir, { recursive: true });
+    writeFileSync(lockFile, String(process.pid));
+  } catch (err) {
+    logger.warn('Server', `Could not write server lock file`, { lockFile, error: String(err) });
+  }
+}
+
+function releaseLock(): void {
+  try {
+    const pid = Number(readFileSync(lockFile, 'utf-8').trim());
+    if (pid === process.pid) rmSync(lockFile, { force: true });
+  } catch {
+    // Best effort only.
+  }
+}
 
 const positiveInt = z.number().int().positive();
 const memoryKey = z.string().regex(/^[a-zA-Z0-9_\-]+$/, 'Key must be alphanumeric with hyphens/underscores only');
@@ -27,6 +86,7 @@ const memoryKey = z.string().regex(/^[a-zA-Z0-9_\-]+$/, 'Key must be alphanumeri
 
 async function main() {
   logger.info('Server', 'Starting software-development-team MCP server...');
+  checkAndClaimLock();
 
   const db = await Database.create();
   const sm = new StateMachine(db);
@@ -73,7 +133,7 @@ async function main() {
       runId: z.string().min(1),
       stepId: positiveInt,
       action: z.enum(['start_coding', 'approve', 'request_revision', 'resolve_escalation', 'mark_reviewed']),
-      agent: z.string().optional(),
+      agent: z.string().min(1).optional(),
       summary: z.string().optional(),
     },
     async (args) => {
@@ -193,7 +253,7 @@ async function main() {
 
   const entries = await persistence.loadMemoryEntries();
   for (const entry of entries) {
-    memory.write(entry);
+    memory.restore(entry);
   }
   logger.info('Server', `Loaded ${entries.length} memory entries from disk`);
 
@@ -217,26 +277,27 @@ async function main() {
   registry.setDashboardUrl(`http://localhost:${dashboardPort}`);
   logger.info('Server', `Dashboard URL: http://localhost:${dashboardPort}`);
 
-  // Serialized persistence — ensures SIGTERM waits for any in-flight write
+  // Serialized persistence — one queue for run states AND message appends, so
+  // shutdown can await everything in flight (previously message appends were
+  // fire-and-forget and could be lost on SIGTERM).
   let pendingPersist: Promise<void> = Promise.resolve();
 
-  function persistRunState(run: RunState) {
+  function enqueuePersist(task: () => Promise<void>, context: Record<string, unknown>) {
     pendingPersist = pendingPersist
-      .then(() => persistence.saveRunState(run))
+      .then(task)
       .catch((err) => {
-        logger.error('Server', 'Failed to save run state', { runId: run.id, error: String(err) });
+        logger.error('Server', 'Persistence write failed', { ...context, error: String(err) });
       });
+    return pendingPersist;
   }
 
   // Event-driven persistence — state saved on every transition
   sm.on('state_update', (run) => {
-    persistRunState(run);
+    enqueuePersist(() => persistence.saveRunState(run), { kind: 'run_state', runId: run.id });
   });
 
   bus.on('message', (msg) => {
-    persistence.appendMessage(msg.runId, msg).catch((err) => {
-      logger.error('Server', 'Failed to append message', { runId: msg.runId, error: String(err) });
-    });
+    enqueuePersist(() => persistence.appendMessage(msg.runId, msg), { kind: 'message', runId: msg.runId });
   });
 
   const transport = new StdioServerTransport();
@@ -244,17 +305,27 @@ async function main() {
   logger.info('Server', 'MCP stdio transport connected — ready for tool calls');
 
   // Graceful shutdown — save all state before exit
+  let shuttingDown = false;
   async function shutdown() {
+    if (shuttingDown) return;
+    shuttingDown = true;
     await pendingPersist;
     for (const run of sm.getAllRuns()) {
       await persistence.saveRunState(run).catch((err) => {
         logger.error('Server', 'Failed to save run state during shutdown', { runId: run.id, error: String(err) });
       });
     }
+    releaseLock();
     process.exit(0);
   }
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+  // When the host exits without signaling (stdin closes), shut down instead of
+  // lingering as an orphan kept alive by the dashboard's open listener.
+  server.server.onclose = () => {
+    logger.info('Server', 'MCP transport closed — shutting down');
+    void shutdown();
+  };
 }
 
 main().catch((err) => {

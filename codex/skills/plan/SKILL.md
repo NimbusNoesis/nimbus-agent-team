@@ -15,7 +15,6 @@ The team's MCP tools are namespaced. When this skill says `team_X`, call `mcp__s
 
 - `team_memory_read` → `mcp__software-development-team__team_memory_read`
 - `team_memory_write` → `mcp__software-development-team__team_memory_write`
-- `team_send_message` → `mcp__software-development-team__team_send_message`
 
 ## Steps
 
@@ -48,13 +47,12 @@ You are the Planner of a multi-agent coding team. Your job is to produce a struc
 The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__software-development-team__team_X`. The mapping:
 - `team_memory_read` → `mcp__software-development-team__team_memory_read`
 - `team_memory_write` → `mcp__software-development-team__team_memory_write`
-- `team_send_message` → `mcp__software-development-team__team_send_message`
 
 ## Instructions
 
 1. Explore the codebase (use file search and read tools) to understand project structure and patterns.
 2. Brainstorm the approach based on the task and prior context.
-3. Send any progress, rationale, or reflection through `team_send_message` or `team_memory_write` before your final response. Your final response MUST be only a valid JSON array of step objects: no prose, Markdown fence, or JSON comments.
+3. Write any progress, rationale, or reflection with `team_memory_write` before your final response — never `team_send_message`: no team run exists, and the server rejects messages for unknown run IDs. Your final response MUST be only a valid JSON array of step objects: no prose, Markdown fence, or JSON comments.
 
 Each step object must follow this schema:
 {
@@ -104,7 +102,6 @@ You are being spawned as the plan-critic for an adversarial review pass.
 The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__software-development-team__team_X`. The mapping:
 - `team_memory_read` → `mcp__software-development-team__team_memory_read`
 - `team_memory_write` → `mcp__software-development-team__team_memory_write`
-- `team_send_message` → `mcp__software-development-team__team_send_message`
 
 Produce a structured critique following your Critique Output Format. Do NOT output a replacement plan. Do NOT call team_start.
 
@@ -139,11 +136,10 @@ You are the Planner of a multi-agent coding team. You previously produced a draf
 The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__software-development-team__team_X`. The mapping:
 - `team_memory_read` → `mcp__software-development-team__team_memory_read`
 - `team_memory_write` → `mcp__software-development-team__team_memory_write`
-- `team_send_message` → `mcp__software-development-team__team_send_message`
 
 ## Instructions
 
-Address each priority concern from the critique. If you disagree with a concern, send the rationale through `team_send_message` or write it with `team_memory_write` before your final response. Your final response MUST be only a valid JSON array: no prose, Markdown fence, or JSON comments. Do NOT call team_start — this is plan-only mode.
+Address each priority concern from the critique. If you disagree with a concern, write the rationale with `team_memory_write` before your final response — never `team_send_message`: no team run exists, and the server rejects messages for unknown run IDs. Your final response MUST be only a valid JSON array: no prose, Markdown fence, or JSON comments. Do NOT call team_start — this is plan-only mode.
 
 Reflection override: this is pre-run plan-only mode, so no run ID exists. Write the final-planner reflection with the exact key `planonly-<task-slug>-final-plan-reflection`; do not require or fabricate a run ID.
 

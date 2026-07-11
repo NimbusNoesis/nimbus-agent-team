@@ -105,7 +105,11 @@ that every MCP tool is present.
 
 ### Scheduling contract
 
-The coordinator's `maxParallel` is a simultaneous-worker limit, excluding the coordinator. It counts every role worker; a four-slot host therefore permits three workers, and unknown capacity permits one. The server itself has no WIP cap.
+The coordinator's `maxParallel` is a simultaneous-worker limit, excluding the coordinator. It counts every role worker; a four-slot host therefore permits three workers, and unknown capacity permits one. The server reports capacity in the `hostCapacity` field of `team_status`. The server itself has no WIP cap.
+
+**Tool scoping is instruction-only on Codex.** Claude Code enforces each agent's tool list via `tools:` frontmatter; Codex role templates carry only `developer_instructions`, so every spawned subagent can technically call any team MCP tool. The role prompts define who may write which memory namespace and who submits results — treat violations in transcripts as bugs.
+
+**One session at a time per project.** Codex and Claude Code share the same `.team/` state directory but each session runs its own server instance with an independent in-memory DB. Concurrent sessions race on state and cannot see each other's runs; the server warns via `.team/server.lock` when it detects another live instance. Launch `codex` from the project root — `.team/` resolves from the working directory.
 
 On every fresh status snapshot, the scheduler gives eligible review/revision lifecycle work priority, then selects dependency-complete pending steps in plan order. Claimed files are compared as exact declared strings: blockers, conflicts, and overlap with active or same-batch claims serialize work even when worktrees are used. `start_coding` is authoritative, so rejection refreshes status and reschedules; a spawn failure is submitted as `blocked`; and freed capacity is refilled without pause or cancel semantics.
 

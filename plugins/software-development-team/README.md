@@ -2,7 +2,7 @@
 
 A [Claude Code](https://claude.ai/claude-code) plugin that orchestrates a multi-agent coding team. A coordinator dispatches planner, coder, reviewer, researcher, and documentation agents that work autonomously through a structured plan with shared memory, a real-time dashboard, and built-in quality gates.
 
-> **Running in OpenAI Codex CLI?** The same team runs on Codex too — see [`../../codex/README.md`](../../codex/README.md). The Codex port reuses this plugin's `server/` unchanged; the two hosts coexist.
+> **Running in OpenAI Codex CLI?** The same team runs on Codex too — see [`../../codex/README.md`](../../codex/README.md). The Codex port reuses this plugin's `server/` unchanged; the two hosts coexist. Use them **sequentially** on a given project: each session runs its own server instance against the same `.team/` state, and concurrent instances race on it (the server logs a warning via `.team/server.lock` when it detects another live instance). Launch sessions from the project root — team state lands in `.team/` relative to the working directory.
 
 ## Features
 
@@ -70,12 +70,12 @@ claude
 
 The dashboard URL is printed at the start of each run (e.g., `http://localhost:<port>`).
 
-### Skills
+### Commands
 
-In addition to the main `/begin` command, the plugin provides focused skills:
+In addition to the main `/begin` command, the plugin provides focused commands:
 
-| Skill | Description |
-| ----- | ----------- |
+| Command | Description |
+| ------- | ----------- |
 | `/status` | Check current run status and step progress |
 | `/memory` | Browse and search team memory across all namespaces |
 | `/resume <run-id>` | Resume an interrupted run |
@@ -156,7 +156,7 @@ Only an explicit reviewer approval permits the coordinator to switch to the capt
 
 ### Coordinator scheduling
 
-The coordinator treats `maxParallel` as a worker budget, not a count that includes the coordinator. It counts every spawned role worker (planner, plan-critic, coder, reviewer, researcher, and documentation); host capacity of four therefore allows three workers, while absent or unknown capacity permits one. There is no server-side WIP cap.
+The coordinator treats `maxParallel` as a worker budget, not a count that includes the coordinator. It counts every spawned role worker (planner, plan-critic, coder, reviewer, researcher, and documentation); host capacity of four therefore allows three workers, while absent or unknown capacity permits one. The server reports capacity in the `hostCapacity` field of `team_status`. There is no server-side WIP cap.
 
 Each fresh scheduling pass prioritizes eligible review and revision lifecycle work, then selects dependency-complete pending steps in plan order. A step must have no reported blocker or conflict and its exact planned file strings must be disjoint from active and same-batch claims. `start_coding` is authoritative: a rejection refreshes status and restarts selection. Spawn failures are submitted as `blocked`, and every worker completion refills capacity. Normal scheduling never pauses or cancels steps.
 
@@ -201,15 +201,14 @@ software-development-team/
     documentation.md         Documentation agent
   commands/
     begin.md                 /begin command entry point (defines the coordinator)
-  hooks/
-    hooks.json               SessionStart hook that pre-warms the server build
-  skills/
     status.md                Check run status and progress
     memory.md                Browse and search team memory
     resume.md                Resume an interrupted run
     plan.md                  Plan-only mode (no execution)
     research.md              Standalone research queries
     review.md                Standalone code review
+  hooks/
+    hooks.json               SessionStart hook that pre-warms the server build
   server/
     launch.sh                MCP entry point — builds if needed, then runs the server
     scripts/

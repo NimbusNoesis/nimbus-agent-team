@@ -17,7 +17,6 @@ The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__
 
 - `team_memory_read` → `mcp__plugin_software-development-team_software-development-team__team_memory_read`
 - `team_memory_write` → `mcp__plugin_software-development-team_software-development-team__team_memory_write`
-- `team_send_message` → `mcp__plugin_software-development-team_software-development-team__team_send_message`
 
 ## Steps
 
@@ -56,7 +55,6 @@ You are the Planner of a multi-agent coding team. Your job is to produce a struc
 The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__plugin_software-development-team_software-development-team__team_X`. The mapping:
 - `team_memory_read` → `mcp__plugin_software-development-team_software-development-team__team_memory_read`
 - `team_memory_write` → `mcp__plugin_software-development-team_software-development-team__team_memory_write`
-- `team_send_message` → `mcp__plugin_software-development-team_software-development-team__team_send_message`
 
 ## Instructions
 
@@ -81,6 +79,7 @@ Rules:
 - No two steps should list the same file unless one dependsOn the other.
 - Target 5-6 steps for most features. Keep each step focused.
 - Do NOT call team_start — this is plan-only mode.
+- Do NOT call team_send_message — no team run exists, and the server rejects messages for unknown run IDs. Persist rationale with team_memory_write instead.
 
 After outputting the plan, write a reflection to memory: team_memory_write(namespace: "reflections", key: "planonly-<task-slug>-reflection", value: <what was complex, key decisions, tradeoffs, gotchas>). Use the `planonly-` prefix and a descriptive task slug: plan-only mode runs outside any team run, so there is no run-ID to scope the key with. This durable key keeps standalone-plan reflections distinct from run-scoped (`<run-prefix>-step-N-reflection`) entries; re-planning the same task intentionally overwrites its prior plan-only reflection.
 ```
@@ -118,9 +117,8 @@ You are being dispatched as the plan-critic for an adversarial review pass.
 The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__plugin_software-development-team_software-development-team__team_X`. The mapping:
 - `team_memory_read` → `mcp__plugin_software-development-team_software-development-team__team_memory_read`
 - `team_memory_write` → `mcp__plugin_software-development-team_software-development-team__team_memory_write`
-- `team_send_message` → `mcp__plugin_software-development-team_software-development-team__team_send_message`
 
-Produce a structured critique following your Critique Output Format. Do NOT output a replacement plan. Do NOT call team_start.
+Produce a structured critique following your Critique Output Format. Do NOT output a replacement plan. Do NOT call team_start. Do NOT call team_send_message — no team run exists, and the server rejects messages for unknown run IDs.
 ```
 
 Wait for the plan-critic to return with its structured critique.
@@ -159,11 +157,10 @@ You are the Planner of a multi-agent coding team. You previously produced a draf
 The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__plugin_software-development-team_software-development-team__team_X`. The mapping:
 - `team_memory_read` → `mcp__plugin_software-development-team_software-development-team__team_memory_read`
 - `team_memory_write` → `mcp__plugin_software-development-team_software-development-team__team_memory_write`
-- `team_send_message` → `mcp__plugin_software-development-team_software-development-team__team_send_message`
 
 ## Instructions
 
-Produce the FINAL plan as a JSON array. Address each priority concern from the critique. If you disagree with a concern, state your rationale briefly inline as a comment before the final JSON. Do NOT call team_start — this is plan-only mode.
+Produce the FINAL plan as a JSON array. Address each priority concern from the critique. If you disagree with a concern, state your rationale briefly inline as a comment before the final JSON. Do NOT call team_start — this is plan-only mode. Do NOT call team_send_message — no team run exists, and the server rejects messages for unknown run IDs.
 
 Each step object must follow this schema:
 {

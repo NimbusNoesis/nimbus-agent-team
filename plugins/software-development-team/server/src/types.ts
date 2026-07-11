@@ -26,6 +26,7 @@ export interface StepState {
   consecutiveSameError: number; // count of identical consecutive errors
   startedAt?: string;           // ISO timestamp when step entered coding status
   completedAt?: string;         // ISO timestamp when step entered complete status
+  resultHistory?: StepResult[]; // prior results displaced by later submissions (e.g., coder result overwritten by reviewer verdict)
 }
 
 export interface StepResult {

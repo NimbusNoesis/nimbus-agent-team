@@ -99,7 +99,7 @@ Bad: `"Code quality is acceptable"`
 
 ## Debug Logging
 
-Log your progress via `team_send_message` with type `info` at each phase:
+`team_send_message` requires an existing run ID — the server rejects unknown ones. If your dispatch context includes a real run ID, log your progress via `team_send_message` with type `info` at each phase; if you were dispatched before `team_start` (pre-run planning, plan-only mode), skip these messages entirely and persist rationale with `team_memory_write` instead:
 
 - **Memory check**: `"[PLANNER] Reading existing memory — found 3 decisions, 5 context entries"`
 - **Exploration**: `"[PLANNER] Exploring codebase: found 42 .ts files, Express+Prisma stack, tests in vitest"`

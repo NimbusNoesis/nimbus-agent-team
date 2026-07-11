@@ -15,6 +15,7 @@ export class StateMachine extends EventEmitter {
   }
 
   createRun(steps: PlanStep[], task?: string): RunState {
+    this.validatePlan(steps);
     const run: RunState = {
       id: randomUUID(),
       task,
@@ -35,6 +36,55 @@ export class StateMachine extends EventEmitter {
     logger.info('StateMachine', `Run created with ${steps.length} steps`, { runId: run.id, stepIds: steps.map((s) => s.id) });
     this.emit('state_update', structuredClone(run));
     return structuredClone(run);
+  }
+
+  // Reject malformed plans at creation so they cannot become permanently stuck
+  // runs: duplicate step IDs make step lookup ambiguous, unknown dependencies
+  // can never complete, and dependency cycles can never be scheduled.
+  private validatePlan(steps: PlanStep[]): void {
+    const ids = new Set<number>();
+    for (const step of steps) {
+      if (ids.has(step.id)) {
+        throw new Error(`Plan invalid: duplicate step id ${step.id}`);
+      }
+      ids.add(step.id);
+    }
+    for (const step of steps) {
+      for (const depId of step.dependsOn) {
+        if (depId === step.id) {
+          throw new Error(`Plan invalid: step ${step.id} depends on itself`);
+        }
+        if (!ids.has(depId)) {
+          throw new Error(`Plan invalid: step ${step.id} depends on step ${depId}, which does not exist`);
+        }
+      }
+    }
+    // Cycle detection via iterative DFS coloring.
+    const byId = new Map(steps.map((s) => [s.id, s]));
+    const state = new Map<number, 'visiting' | 'done'>();
+    for (const step of steps) {
+      if (state.get(step.id) === 'done') continue;
+      const stack: Array<{ id: number; depIndex: number }> = [{ id: step.id, depIndex: 0 }];
+      state.set(step.id, 'visiting');
+      while (stack.length > 0) {
+        const frame = stack[stack.length - 1];
+        const deps = byId.get(frame.id)!.dependsOn;
+        if (frame.depIndex >= deps.length) {
+          state.set(frame.id, 'done');
+          stack.pop();
+          continue;
+        }
+        const depId = deps[frame.depIndex++];
+        const depState = state.get(depId);
+        if (depState === 'visiting') {
+          throw new Error(`Plan invalid: dependency cycle involving steps ${depId} and ${frame.id}`);
+        }
+        if (depState !== 'done') {
+          state.set(depId, 'visiting');
+          stack.push({ id: depId, depIndex: 0 });
+        }
+      }
+    }
   }
 
   restoreRun(run: RunState): void {
@@ -85,6 +135,38 @@ export class StateMachine extends EventEmitter {
     return this.collectFileConflicts(run, stepState);
   }
 
+  // Snapshot variants: compute from an already-fetched run so callers iterating
+  // all steps (e.g., team_status) don't re-fetch and re-parse the run per step.
+  fileConflictsFor(run: RunState, stepId: number): string[] {
+    return this.collectFileConflicts(run, this.requireStep(run, stepId));
+  }
+
+  blockingReasonsFor(run: RunState, stepId: number): string[] {
+    const stepState = this.requireStep(run, stepId);
+    const reasons: string[] = [];
+
+    for (const depId of stepState.step.dependsOn) {
+      const dep = run.steps.find((s) => s.step.id === depId);
+      if (!dep) {
+        reasons.push(`Waiting on step ${depId}, which does not exist in this run — the step can never start`);
+      } else if (dep.status !== 'complete') {
+        reasons.push(`Waiting on step ${depId}: ${dep.step.description}`);
+      }
+    }
+
+    for (const other of run.steps) {
+      if (other.step.id === stepId) continue;
+      if (other.status !== 'coding' && other.status !== 'reviewing') continue;
+      for (const file of stepState.step.files) {
+        if (other.claimedFiles.includes(file)) {
+          reasons.push(`File conflict: ${file} is claimed by step ${other.step.id}`);
+        }
+      }
+    }
+
+    return reasons;
+  }
+
   private collectFileConflicts(run: RunState, stepState: StepState): string[] {
     const conflicts: string[] = [];
     for (const other of run.steps) {
@@ -100,30 +182,7 @@ export class StateMachine extends EventEmitter {
   }
 
   getBlockingReasons(runId: string, stepId: number): string[] {
-    const run = this.requireRun(runId);
-    const stepState = this.requireStep(run, stepId);
-    const reasons: string[] = [];
-
-    // Check unmet dependencies
-    for (const depId of stepState.step.dependsOn) {
-      const dep = run.steps.find((s) => s.step.id === depId);
-      if (dep && dep.status !== 'complete') {
-        reasons.push(`Waiting on step ${depId}: ${dep.step.description}`);
-      }
-    }
-
-    // Check file conflicts
-    for (const other of run.steps) {
-      if (other.step.id === stepId) continue;
-      if (other.status !== 'coding' && other.status !== 'reviewing') continue;
-      for (const file of stepState.step.files) {
-        if (other.claimedFiles.includes(file)) {
-          reasons.push(`File conflict: ${file} is claimed by step ${other.step.id}`);
-        }
-      }
-    }
-
-    return reasons;
+    return this.blockingReasonsFor(this.requireRun(runId), stepId);
   }
 
   submitResult(runId: string, stepId: number, result: StepResult): void {
@@ -148,6 +207,11 @@ export class StateMachine extends EventEmitter {
       stepState.consecutiveSameError = 0;
     }
 
+    // Preserve the displaced result (e.g., the coder's submission when the
+    // reviewer's verdict overwrites it) so the state file keeps an audit trail.
+    if (stepState.result) {
+      stepState.resultHistory = [...(stepState.resultHistory ?? []), stepState.result];
+    }
     stepState.result = result;
 
     if (result.status === 'blocked') {

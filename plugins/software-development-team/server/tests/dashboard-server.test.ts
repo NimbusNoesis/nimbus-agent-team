@@ -119,6 +119,15 @@ describe('Dashboard server', () => {
       });
       expect(res.status).toBe(400);
     });
+
+    it('returns 404 for an unknown runId instead of orphaning the message', async () => {
+      const res = await fetch(`${baseUrl}/api/guidance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId: 'no-such-run', body: 'hello?' }),
+      });
+      expect(res.status).toBe(404);
+    });
   });
 
   describe('WebSocket broadcast', () => {

@@ -43,7 +43,7 @@ export class ToolRegistry {
       case 'team_submit_result':
         return handleTeamSubmitResult(this.sm, args);
       case 'team_send_message':
-        return handleTeamSendMessage(this.bus, args);
+        return handleTeamSendMessage(this.bus, this.sm, args);
       case 'team_get_messages':
         return handleTeamGetMessages(this.bus, args);
       case 'team_memory_write':

@@ -180,16 +180,11 @@ Each subagent spawn consumes tokens independently. Token costs scale linearly wi
    dashboard URL. Otherwise continue without a dashboard link as required by the
    MCP Availability Preflight diagnostic.
 2. Read shared memory (`team_memory_read` for all namespaces: `decisions`, `context`, `learnings`, `reviews`, `reflections`) for prior context.
-3. Create plan steps (yourself for quick tasks, or from planner output). **For planner-produced plans, run the adversarial review sub-phase (3a–3b) below before proceeding to step 4. For quick tasks you drafted yourself, skip directly to step 4.** These planning spawns happen before `team_start`, so no run ID exists. When spawning the initial planner, explicitly override its reflection contract with `prerun-<task-slug>-draft-plan-reflection` and instruct it not to require or fabricate a run ID. Also include this final-output contract: all progress, rationale, and reflections must be sent with `team_send_message` or written with `team_memory_write` before the final response; the final response must be only a valid JSON array of plan steps, with no prose, Markdown fence, or JSON comments.
+3. Create plan steps (yourself for quick tasks, or from planner output). **For planner-produced plans, run the adversarial review sub-phase (3a–3b) below before proceeding to step 4. For quick tasks you drafted yourself, skip directly to step 4.** These planning spawns happen before `team_start`, so no run ID exists. When spawning the initial planner, explicitly override its reflection contract with `prerun-<task-slug>-draft-plan-reflection` and instruct it not to require or fabricate a run ID. Also include this final-output contract: all progress, rationale, and reflections must be written with `team_memory_write` before the final response — never `team_send_message`, which requires an existing run ID and is rejected for unknown runs; the final response must be only a valid JSON array of plan steps, with no prose, Markdown fence, or JSON comments.
 
    **3a. Spawn the plan-critic** (planner-produced plans only).
 
-   Relay before spawning:
-
-   ```text
-   team_send_message(from: "plan-critic", to: "coordinator", type: "info",
-     body: "plan-critic starting: adversarial review of draft plan for '{task description}'")
-   ```
+   No dashboard relay yet: the run does not exist until `team_start`, and `team_send_message` requires an existing run ID — the server rejects unknown ones. Planning-phase activity is relayed in one summary message right after `team_start` succeeds.
 
    Spawn the plan-critic agent with this context:
 
@@ -212,41 +207,28 @@ Each subagent spawn consumes tokens independently. Token costs scale linearly wi
    Produce a structured critique following your Critique Output Format. Do NOT output a replacement plan. Do NOT call team_start.
    ```
 
-   Relay after the plan-critic returns:
-
-   ```text
-   team_send_message(from: "plan-critic", to: "coordinator", type: "result",
-     body: "plan-critic complete: {N} questions, {N} risks, {N} gaps, {N} priority concerns")
-   ```
+   Note the critique summary counts ({N} questions, {N} risks, {N} gaps, {N} priority concerns) for the post-`team_start` planning relay.
 
    **3b. Re-spawn the planner with the critique.**
 
-   Relay before spawning:
-
-   ```text
-   team_send_message(from: "planner", to: "coordinator", type: "info",
-     body: "planner revising: incorporating plan-critic feedback")
-   ```
-
-   Spawn the planner agent again, passing the original task, the draft plan, and the full critique. Explicitly state that no run exists yet, no run ID may be required or fabricated, and its reflection key override is `prerun-<task-slug>-final-plan-reflection` (use the exact resolved key). Instruct the planner to produce a **final plan** that either addresses each concern or explicitly rejects it with rationale. Any rationale, progress update, or reflection must be sent with `team_send_message` or written with `team_memory_write` before the final response. The final response must be only a valid JSON array of plan steps, with no prose, Markdown fence, or JSON comments. The planner's output from this pass replaces the draft — use it as the plan for the approval gate.
-
-   Relay after the planner returns with the final plan:
-
-   ```text
-   team_send_message(from: "planner", to: "coordinator", type: "result",
-     body: "planner complete: final revised plan ready — {N} steps")
-   ```
+   Spawn the planner agent again, passing the original task, the draft plan, and the full critique. Explicitly state that no run exists yet, no run ID may be required or fabricated, and its reflection key override is `prerun-<task-slug>-final-plan-reflection` (use the exact resolved key). Instruct the planner to produce a **final plan** that either addresses each concern or explicitly rejects it with rationale. Any rationale, progress update, or reflection must be written with `team_memory_write` before the final response (never `team_send_message` — no run exists yet). The final response must be only a valid JSON array of plan steps, with no prose, Markdown fence, or JSON comments. The planner's output from this pass replaces the draft — use it as the plan for the approval gate.
 
 4. **Plan approval gate**: Present the final plan to the user and wait for approval. Show steps, files, dependencies, and estimated scope. For quick tasks (1-3 steps), ask "Ready to proceed?" For large tasks, ask the user to review the full plan.
 5. Only after user approval: call `team_start` with the approved steps.
+6. Immediately after `team_start` returns the run ID, relay the planning phase to the dashboard in one message so the feed reflects how the plan was produced:
+
+   ```text
+   team_send_message(runId, from: "coordinator", to: "all", type: "info",
+     body: "Planning phase: planner drafted {N} steps; plan-critic raised {N} questions / {N} risks / {N} gaps; final plan has {N} steps. Plan approved by user.")
+   ```
 
 ## The Loop and Deterministic Runnable-Set Scheduler
 
 Repeat until all steps are complete. Every iteration refreshes `team_status`, checks `team_get_messages`, handles stuck detection, completes lifecycle transitions, and refills worker capacity.
 
-1. Determine the worker limit from the host capacity reported by `team_status`: `maxParallel = reportedHostCapacity - 1` (the coordinator consumes one slot). Thus four total slots permit three simultaneously spawned workers. If host capacity is unknown, use `maxParallel = 1`. Do not impose a server WIP cap. Count every spawned planner, plan-critic, coder, reviewer, researcher, and documentation worker; only the coordinator is excluded.
+1. Determine the worker limit from the host capacity reported by `team_status` (its `hostCapacity` field): `maxParallel = hostCapacity - 1` (the coordinator consumes one slot). Thus four total slots permit three simultaneously spawned workers. If host capacity is unknown, use `maxParallel = 1`. Do not impose a server WIP cap. Count every spawned planner, plan-critic, coder, reviewer, researcher, and documentation worker; only the coordinator is excluded.
 2. Count active spawned workers and available slots. First reserve available slots for review/revision lifecycle work: spawn reviewers for completed coder results, and after an accepted `request_revision`, spawn revision coders. Then build the remaining runnable set from PENDING steps in plan order. A pending candidate is eligible only when all dependencies are complete, it has no `fileConflicts` or `blockingReasons`, and its exact declared file strings are disjoint from active claims and from selections already made in this batch. Exact string matching is the contract; do not normalize paths or infer overlap.
-3. For every selected pending step, call `team_advance(runId, stepId, action: "start_coding", agent: "<role>")` **before** spawning. `team_advance` is authoritative admission control. If it rejects the action, treat the snapshot as stale: refresh `team_status` and reschedule from the beginning; never spawn from the rejected snapshot.
+3. For every selected pending step, call `team_advance(runId, stepId, action: "start_coding", agent: "<role>")` **before** spawning. The `agent` label must always be a fixed dashboard roster name (`planner`, `coder`, `reviewer`, `researcher`, `documentation`) — never a generic or invented label; the dashboard's agent status panel only lights cards for roster names. For work that fits no specialist exactly, use the closest specialist (almost always `coder`) as both the roster label and the spawned role. `team_advance` is authoritative admission control. If it rejects the action, treat the snapshot as stale: refresh `team_status` and reschedule from the beginning; never spawn from the rejected snapshot.
 4. Only after admission succeeds, relay and spawn the selected role (coder, researcher, or documentation) with the full per-step context. If native spawning fails after admission, call `team_submit_result` with `result.status='blocked'` and the spawn error, then immediately refresh `team_status` and relay the failure; never pretend the worker was spawned or advance the step. Refill capacity whenever a worker returns or a lifecycle action completes.
 
 ### Review and revision lifecycle
@@ -269,6 +251,14 @@ mcp__software-development-team__team_advance(runId, stepId, action: "mark_review
 ```
 
 `mark_reviewed` moves a `coding` (or `reviewing`) step straight to `complete` with a synthetic `done` result — no fabricated coder submission needed. Use it **only** for steps with no code changes to verify; steps that produce edits must still go through the normal coder → reviewer → `approve` flow.
+
+### Worker returned but step still `coding` → close it (safety net)
+
+After ANY spawned worker returns, refresh `team_status` before scheduling anything else. If that worker's step is still `coding`, the worker failed to submit its result (crashed, ran out of context, or never called `team_submit_result`). Never leave the step open:
+
+- **Read-only work** (findings only, no edits): close it with `mark_reviewed` as described above.
+- **Code work with usable output**: if the worker's return text and the step worktree (`git -C .worktrees/{runId}/step-{N} status`) show completed work, call `team_submit_result` on the worker's behalf (`status: "done"`, summary taken from the worker's return text) so the step moves to `reviewing`, then spawn the reviewer as normal.
+- **No usable output**: call `team_submit_result` with `status: "blocked"` and the failure details, then follow Stuck Detection.
 
 ## Spawn Context Checklist
 

@@ -10,7 +10,8 @@
 #
 # The MCP server is the SAME host-agnostic server the Claude Code plugin uses;
 # it builds itself on first launch into a writable data dir. Nothing here touches
-# or disables the Claude Code plugin — the two hosts coexist.
+# or disables the Claude Code plugin — the two hosts coexist (run them
+# sequentially on a given project: concurrent sessions race on .team/ state).
 #
 # Usage: sh codex/install.sh
 set -eu

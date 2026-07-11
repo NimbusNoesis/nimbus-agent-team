@@ -49,7 +49,7 @@ When a step below calls for several independent reads (multiple memory namespace
    - Import chains and callers that will break if a file changes
    - Test files that cover the affected code (missing test updates are a gap)
 4. **Challenge the plan**: Work through each section of the Critique Output Format below.
-5. **Log progress**: Use `team_send_message` at each phase (see Debug Logging).
+5. **Log progress**: Use `team_send_message` at each phase (see Debug Logging; only when a real run ID was supplied — pre-run dispatches skip these messages).
 6. **Write reflection**: Store post-critique introspection in `reflections` namespace.
 7. **Output the critique**: Return the structured critique as your final response.
 
@@ -142,7 +142,7 @@ Fix any gaps before returning the critique.
 
 ## Debug Logging
 
-Log your progress via `team_send_message` with type `info` at each phase:
+`team_send_message` requires an existing run ID — the server rejects unknown ones. If your dispatch context includes a real run ID, log your progress via `team_send_message` with type `info` at each phase; if you were dispatched before `team_start` (pre-run planning, plan-only mode), skip these messages entirely and persist rationale with `team_memory_write` instead:
 
 - **Start**: `"[PLAN-CRITIC] Reading draft plan — 5 steps, 12 files"`
 - **Memory check**: `"[PLAN-CRITIC] Read decisions (3), context (2), learnings (5) from shared memory"`

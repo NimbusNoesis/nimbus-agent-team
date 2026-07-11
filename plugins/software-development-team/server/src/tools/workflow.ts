@@ -1,7 +1,21 @@
 import { z } from 'zod';
+import os from 'node:os';
 import type { StateMachine } from '../state/machine.js';
 
 const positiveInt = z.number().int().positive();
+
+// Worker-slot capacity of this host, reported to coordinators via team_status.
+// Both hosts' coordinator instructions size their worker pool from this value
+// (maxParallel = hostCapacity - 1, one slot reserved for the coordinator).
+function hostCapacity(): number {
+  try {
+    return typeof os.availableParallelism === 'function'
+      ? os.availableParallelism()
+      : os.cpus().length;
+  } catch {
+    return 1;
+  }
+}
 
 const PlanStepSchema = z.object({
   id: positiveInt,
@@ -41,6 +55,7 @@ export function handleTeamStatus(sm: StateMachine, args: unknown) {
   return {
     runId: run.id,
     status: run.status,
+    hostCapacity: hostCapacity(),
     steps: run.steps.map((s) => ({
       id: s.step.id,
       description: s.step.description,
@@ -50,11 +65,11 @@ export function handleTeamStatus(sm: StateMachine, args: unknown) {
       result: s.result,
       claimedFiles: s.claimedFiles,
       consecutiveSameError: s.consecutiveSameError,
-      fileConflicts: sm.getFileConflicts(parsed.runId, s.step.id),
+      fileConflicts: sm.fileConflictsFor(run, s.step.id),
       startedAt: s.startedAt,
       completedAt: s.completedAt,
       blockingReasons: s.status === 'pending'
-        ? sm.getBlockingReasons(parsed.runId, s.step.id)
+        ? sm.blockingReasonsFor(run, s.step.id)
         : [],
       dependsOn: s.step.dependsOn,
     })),

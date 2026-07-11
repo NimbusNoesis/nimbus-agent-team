@@ -30,6 +30,14 @@ export class MemoryStore extends EventEmitter {
     return entry;
   }
 
+  // Startup restore path: writes the entry exactly as persisted — preserving
+  // its original updatedAt — and emits no event. Using write() here would
+  // re-stamp every restored entry to boot time, diverging the DB from disk and
+  // scrambling updated_at ordering after every restart.
+  restore(entry: MemoryEntry): void {
+    this.db.writeMemoryEntry(entry);
+  }
+
   read(namespace: MemoryNamespace, key: string): MemoryEntry | undefined;
   read(namespace: MemoryNamespace): MemoryEntry[];
   read(namespace: MemoryNamespace, key?: string): MemoryEntry | MemoryEntry[] | undefined {

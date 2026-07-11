@@ -56,7 +56,7 @@ When a step below calls for several independent reads (multiple memory namespace
 
 ## Plan Output Format
 
-Your final response MUST be only a valid JSON array of steps that the coordinator will pass to `team_start`: no prose, Markdown fence, or JSON comments. Send all progress, rationale, and reflections through `team_send_message` or `team_memory_write` before the final response:
+Your final response MUST be only a valid JSON array of steps that the coordinator will pass to `team_start`: no prose, Markdown fence, or JSON comments. Send all progress, rationale, and reflections through `team_send_message` (only when a real run ID was supplied; pre-run spawns use `team_memory_write` only) or `team_memory_write` before the final response:
 
 ```json
 [
@@ -95,7 +95,7 @@ Bad: `"Code quality is acceptable"`
 
 ## Debug Logging
 
-Log your progress via `team_send_message` with type `info` at each phase:
+`team_send_message` requires an existing run ID — the server rejects unknown ones. If your dispatch context includes a real run ID, log your progress via `team_send_message` with type `info` at each phase; if you were dispatched before `team_start` (pre-run planning, plan-only mode), skip these messages entirely and persist rationale with `team_memory_write` instead:
 
 - **Memory check**: `"[PLANNER] Reading existing memory — found 3 decisions, 5 context entries"`
 - **Exploration**: `"[PLANNER] Exploring codebase: found 42 .ts files, Express+Prisma stack, tests in vitest"`
