@@ -288,6 +288,68 @@ describe('StateMachine', () => {
       expect(updated.steps[0].status).toBe('coding');
       expect(updated.status).toBe('in_progress');
     });
+
+    it('restores claimedFiles to the planned files so conflicts are visible again', () => {
+      const run = sm.createRun([
+        makeStep(1, [], ['shared.ts', 'other.ts']),
+        makeStep(2, [], ['shared.ts']),
+      ]);
+      sm.startStep(run.id, 1, 'coder');
+      sm.submitResult(run.id, 1, { status: 'blocked', summary: 'stuck' });
+      // Escalation clears claims
+      expect(sm.getRun(run.id)!.steps[0].claimedFiles).toEqual([]);
+
+      sm.resolveEscalation(run.id, 1);
+
+      const updated = sm.getRun(run.id)!;
+      expect(updated.steps[0].claimedFiles).toEqual(['shared.ts', 'other.ts']);
+      // The resumed step's claims must block an overlapping startStep
+      expect(() => sm.startStep(run.id, 2, 'coder-2')).toThrow(
+        'Step 2 has file conflicts: shared.ts (also claimed by step 1)'
+      );
+    });
+
+    it('throws when another active step claims an overlapping file, without side effects', () => {
+      const run = sm.createRun([
+        makeStep(1, [], ['shared.ts']),
+        makeStep(2, [], ['shared.ts']),
+      ]);
+      // Step 1 escalates, releasing its claim on shared.ts
+      sm.startStep(run.id, 1, 'coder-1');
+      sm.submitResult(run.id, 1, { status: 'blocked', summary: 'stuck' });
+      // Step 2 starts coding and claims shared.ts
+      sm.startStep(run.id, 2, 'coder-2');
+
+      const before = sm.getRun(run.id)!;
+      const events: RunState[] = [];
+      sm.on('state_update', (state: RunState) => events.push(state));
+
+      expect(() => sm.resolveEscalation(run.id, 1)).toThrow(
+        'Step 1 cannot resume from escalation — file conflicts: shared.ts (also claimed by step 2)'
+      );
+
+      const after = sm.getRun(run.id)!;
+      expect(after).toEqual(before);
+      expect(after.steps[0].status).toBe('escalated');
+      expect(after.steps[0].claimedFiles).toEqual([]);
+      expect(after.updatedAt).toBe(before.updatedAt);
+      expect(events).toHaveLength(0);
+    });
+
+    it('rejects overlaps with reviewing steps as well', () => {
+      const run = sm.createRun([
+        makeStep(1, [], ['shared.ts']),
+        makeStep(2, [], ['shared.ts']),
+      ]);
+      sm.startStep(run.id, 1, 'coder-1');
+      sm.submitResult(run.id, 1, { status: 'blocked', summary: 'stuck' });
+      sm.startStep(run.id, 2, 'coder-2');
+      sm.submitResult(run.id, 2, { status: 'done', summary: 'done' });
+      // Step 2 is reviewing and still holds shared.ts
+
+      expect(() => sm.resolveEscalation(run.id, 1)).toThrow('shared.ts (also claimed by step 2)');
+      expect(sm.getRun(run.id)!.steps[0].status).toBe('escalated');
+    });
   });
 
   describe('markReviewed', () => {
@@ -317,6 +379,26 @@ describe('StateMachine', () => {
       sm.submitResult(run.id, 1, { status: 'done', summary: 'implemented' });
       sm.markReviewed(run.id, 1, 'reviewed');
       expect(sm.getRun(run.id)!.steps[0].status).toBe('complete');
+    });
+
+    it('preserves a previously submitted result in resultHistory', () => {
+      const run = sm.createRun([makeStep(1)]);
+      sm.startStep(run.id, 1, 'coder');
+      sm.submitResult(run.id, 1, { status: 'done', summary: 'coder finished' });
+      sm.markReviewed(run.id, 1, 'reviewed and closed');
+
+      const step = sm.getRun(run.id)!.steps[0];
+      expect(step.result?.status).toBe('done');
+      expect(step.result?.summary).toBe('reviewed and closed');
+      expect(step.resultHistory).toHaveLength(1);
+      expect(step.resultHistory![0]).toEqual({ status: 'done', summary: 'coder finished' });
+    });
+
+    it('does not create resultHistory when no result was ever submitted', () => {
+      const run = sm.createRun([makeStep(1)]);
+      sm.startStep(run.id, 1, 'reviewer');
+      sm.markReviewed(run.id, 1);
+      expect(sm.getRun(run.id)!.steps[0].resultHistory).toBeUndefined();
     });
 
     it('rejects marking a pending step as reviewed', () => {
