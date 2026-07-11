@@ -12,7 +12,7 @@ export function StepCard({ stepState: s }: Props) {
   const colorVar = STATUS_COLOR_MAP[s.status] || 'active';
 
   return (
-    <div class={`step ${safeStatus}${isExpanded ? ' expanded' : ''}`} style="cursor:pointer">
+    <div class={`step ${safeStatus}${isExpanded ? ' expanded' : ''}`}>
       <div class="step-header" onClick={() => toggleStep(s.step.id)}>
         <div class="step-label" style={{ color: `var(--${colorVar})` }}>
           {icon} Step {s.step.id} — {s.status.toUpperCase()}

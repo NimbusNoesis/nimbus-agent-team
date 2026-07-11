@@ -30,8 +30,15 @@ export function AgentCard({ agentName }: Props) {
       break;
     }
   }
-  // Agent is "in-flight" if their last message is a start (info) not a completion (result/review)
-  const isInFlight = lastMsg !== null && lastMsg.type === 'info';
+  // Agent is "in-flight" if their last message is a start (info) not a completion
+  // (result/review) — but only while that message is recent. Without a cutoff a
+  // final info message would keep the card ACTIVE (and its 1s interval running)
+  // forever. `now` is the ticking state below, so once the message crosses the
+  // cutoff the interval's own re-render flips this to false and the interval
+  // effect's cleanup stops the timer without any user interaction.
+  const INFO_STALENESS_MS = 10 * 60 * 1000;
+  const isInFlight = lastMsg !== null && lastMsg.type === 'info' &&
+    now - new Date(lastMsg.timestamp).getTime() < INFO_STALENESS_MS;
 
   const isActive = activeStep !== null ||
     (agentName === 'coordinator' && run?.status === 'in_progress') ||

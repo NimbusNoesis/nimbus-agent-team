@@ -31,7 +31,7 @@ export interface StepState {
 export interface RunState {
   id: string;
   task?: string;
-  status: 'planning' | 'ready' | 'in_progress' | 'escalated' | 'complete';
+  status: 'ready' | 'in_progress' | 'escalated' | 'complete';
   steps: StepState[];
   createdAt: string;
   updatedAt: string;

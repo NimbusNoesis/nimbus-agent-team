@@ -141,7 +141,6 @@ header {
 .run-tab[data-status="in_progress"] .run-tab-dot { background: var(--active); box-shadow: 0 0 6px var(--active); animation: pulse 1.6s var(--ease) infinite; }
 .run-tab[data-status="complete"] .run-tab-dot { background: var(--complete); }
 .run-tab[data-status="escalated"] .run-tab-dot { background: var(--reviewer); box-shadow: 0 0 6px rgba(248,113,113,0.6); }
-.run-tab[data-status="planning"] .run-tab-dot,
 .run-tab[data-status="ready"] .run-tab-dot { background: var(--accent); }
 .run-tab-num { font-weight: 700; font-variant-numeric: tabular-nums; }
 .run-tab-task { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -335,3 +334,4 @@ h3 {
 }
 .input-row button:hover { filter: brightness(1.1); }
 .input-row button:active { filter: brightness(0.95); }
+.guidance-error { margin-top: 6px; font-size: 11px; color: var(--reviewer); }

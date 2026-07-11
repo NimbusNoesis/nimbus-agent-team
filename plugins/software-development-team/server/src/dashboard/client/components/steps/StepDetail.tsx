@@ -29,6 +29,17 @@ export function StepDetail({ stepState: s }: Props) {
         }
       });
     }
+    // Mirror the server's blockingReasonsFor: files claimed by another
+    // in-flight (coding/reviewing) step also block a pending step.
+    run.steps.forEach(other => {
+      if (other.step.id === s.step.id) return;
+      if (other.status !== 'coding' && other.status !== 'reviewing') return;
+      (s.step.files || []).forEach(file => {
+        if (other.claimedFiles?.includes(file)) {
+          blockingReasons.push(`File conflict: ${file} is claimed by step ${other.step.id}`);
+        }
+      });
+    });
   }
 
   // Compute file conflicts for active steps

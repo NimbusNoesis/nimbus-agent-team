@@ -12,7 +12,7 @@ vi.mock('../src/dashboard/client/state/api', () => ({
   fetchRuns: vi.fn().mockResolvedValue([]),
   fetchMessages: vi.fn().mockResolvedValue([]),
   fetchMemory: vi.fn().mockResolvedValue([]),
-  sendGuidance: vi.fn(),
+  sendGuidance: vi.fn().mockResolvedValue(true),
 }));
 vi.mock('../src/dashboard/client/state/websocket', () => ({
   connectWebSocket: vi.fn(),
@@ -200,6 +200,56 @@ describe('AgentCard', () => {
 
     vi.useRealTimers();
   });
+
+  it('recent info message (1 min ago) marks agent active (in-flight)', () => {
+    currentRun.value = makeRun({ steps: [] });
+    messages.value = [{
+      id: 'msg-1', runId: 'run-1', from: 'coder', to: 'coordinator',
+      type: 'info', body: 'Working on it',
+      timestamp: new Date(Date.now() - 60_000).toISOString(),
+    }];
+    const { container } = render(<AgentCard agentName="coder" />);
+    expect(container.querySelector('.agent-card')!.className).toContain('active');
+    expect(screen.getByText('ACTIVE')).toBeTruthy();
+  });
+
+  it('stale info message (11 min ago) does NOT mark agent active', () => {
+    currentRun.value = makeRun({ steps: [] });
+    messages.value = [{
+      id: 'msg-1', runId: 'run-1', from: 'coder', to: 'coordinator',
+      type: 'info', body: 'Working on it',
+      timestamp: new Date(Date.now() - 11 * 60_000).toISOString(),
+    }];
+    const { container } = render(<AgentCard agentName="coder" />);
+    expect(container.querySelector('.agent-card')!.className).toContain('idle');
+    expect(screen.getByText('IDLE')).toBeTruthy();
+  });
+
+  it('flips from active to idle (and stops its interval) once the info message crosses the 10 min cutoff', () => {
+    vi.useFakeTimers();
+    currentRun.value = makeRun({ steps: [] });
+    // Message is 9m55s old — 5s away from the staleness cutoff.
+    messages.value = [{
+      id: 'msg-1', runId: 'run-1', from: 'coder', to: 'coordinator',
+      type: 'info', body: 'Working on it',
+      timestamp: new Date(Date.now() - (10 * 60_000 - 5_000)).toISOString(),
+    }];
+    const { container } = render(<AgentCard agentName="coder" />);
+    expect(container.querySelector('.agent-card')!.className).toContain('active');
+    expect(vi.getTimerCount()).toBe(1);
+
+    // Advance past the cutoff — the ticking interval's setNow re-render must
+    // flip the card to idle without any user interaction.
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+
+    expect(container.querySelector('.agent-card')!.className).toContain('idle');
+    // The interval effect's cleanup must have stopped the timer.
+    expect(vi.getTimerCount()).toBe(0);
+
+    vi.useRealTimers();
+  });
 });
 
 // --- MemoryPanel ---
@@ -359,7 +409,7 @@ describe('GuidanceInput', () => {
     expect(sendGuidance).not.toHaveBeenCalled();
   });
 
-  it('calls sendGuidance with runId and body on button click, clears input', () => {
+  it('calls sendGuidance with runId and body on button click, clears input', async () => {
     currentRun.value = makeRun({ id: 'run-abc' });
     const { container } = render(<GuidanceInput />);
     const input = container.querySelector('input[type="text"]') as HTMLInputElement;
@@ -369,10 +419,11 @@ describe('GuidanceInput', () => {
     fireEvent.click(button);
 
     expect(sendGuidance).toHaveBeenCalledWith('run-abc', 'help the team');
-    expect(input.value).toBe('');
+    await waitFor(() => expect(input.value).toBe(''));
+    expect(container.querySelector('.guidance-error')).toBeNull();
   });
 
-  it('calls sendGuidance on Enter keypress', () => {
+  it('calls sendGuidance on Enter keypress', async () => {
     currentRun.value = makeRun({ id: 'run-xyz' });
     const { container } = render(<GuidanceInput />);
     const input = container.querySelector('input[type="text"]') as HTMLInputElement;
@@ -381,6 +432,51 @@ describe('GuidanceInput', () => {
     fireEvent.keyDown(input, { key: 'Enter' });
 
     expect(sendGuidance).toHaveBeenCalledWith('run-xyz', 'enter guidance');
+    await waitFor(() => expect(input.value).toBe(''));
+  });
+
+  it('shows guidance-error and preserves input text when send fails', async () => {
+    vi.mocked(sendGuidance).mockResolvedValueOnce(false);
+    currentRun.value = makeRun({ id: 'run-abc' });
+    const { container } = render(<GuidanceInput />);
+    const input = container.querySelector('input[type="text"]') as HTMLInputElement;
+
+    fireEvent.change(input, { target: { value: 'do not lose me' } });
+    fireEvent.click(screen.getByText('Send'));
+
+    await waitFor(() => expect(container.querySelector('.guidance-error')).toBeTruthy());
+    // Input must NOT be cleared on failure — the user keeps their text.
+    expect(input.value).toBe('do not lose me');
+  });
+
+  it('clears guidance-error on next typing', async () => {
+    vi.mocked(sendGuidance).mockResolvedValueOnce(false);
+    currentRun.value = makeRun({ id: 'run-abc' });
+    const { container } = render(<GuidanceInput />);
+    const input = container.querySelector('input[type="text"]') as HTMLInputElement;
+
+    fireEvent.change(input, { target: { value: 'first try' } });
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(container.querySelector('.guidance-error')).toBeTruthy());
+
+    fireEvent.input(input, { target: { value: 'first try again' } });
+    await waitFor(() => expect(container.querySelector('.guidance-error')).toBeNull());
+  });
+
+  it('clears guidance-error on next successful send', async () => {
+    vi.mocked(sendGuidance).mockResolvedValueOnce(false);
+    currentRun.value = makeRun({ id: 'run-abc' });
+    const { container } = render(<GuidanceInput />);
+    const input = container.querySelector('input[type="text"]') as HTMLInputElement;
+
+    fireEvent.change(input, { target: { value: 'retry me' } });
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(container.querySelector('.guidance-error')).toBeTruthy());
+
+    // Second send succeeds (default mockResolvedValue(true)).
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(container.querySelector('.guidance-error')).toBeNull());
+    expect(input.value).toBe('');
   });
 });
 
