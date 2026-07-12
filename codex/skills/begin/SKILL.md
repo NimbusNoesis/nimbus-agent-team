@@ -11,17 +11,17 @@ The user's task is whatever they described in the message that invoked this skil
 
 ## Tool Names
 
-The team's MCP tools are namespaced. When this skill says `team_X`, call `mcp__software-development-team__team_X`. The mapping:
+The team's MCP tools are namespaced. When this skill says `team_X`, call `mcp__software_development_team__team_X`. The mapping:
 
-- `team_start` → `mcp__software-development-team__team_start`
-- `team_status` → `mcp__software-development-team__team_status`
-- `team_advance` → `mcp__software-development-team__team_advance`
-- `team_send_message` → `mcp__software-development-team__team_send_message`
-- `team_get_messages` → `mcp__software-development-team__team_get_messages`
-- `team_memory_read` → `mcp__software-development-team__team_memory_read`
-- `team_memory_write` → `mcp__software-development-team__team_memory_write`
-- `team_memory_delete` → `mcp__software-development-team__team_memory_delete`
-- `team_dashboard_url` → `mcp__software-development-team__team_dashboard_url`
+- `team_start` → `mcp__software_development_team__team_start`
+- `team_status` → `mcp__software_development_team__team_status`
+- `team_advance` → `mcp__software_development_team__team_advance`
+- `team_send_message` → `mcp__software_development_team__team_send_message`
+- `team_get_messages` → `mcp__software_development_team__team_get_messages`
+- `team_memory_read` → `mcp__software_development_team__team_memory_read`
+- `team_memory_write` → `mcp__software_development_team__team_memory_write`
+- `team_memory_delete` → `mcp__software_development_team__team_memory_delete`
+- `team_dashboard_url` → `mcp__software_development_team__team_dashboard_url`
 
 ## MCP Availability Preflight
 
@@ -43,7 +43,7 @@ not invent an availability API or attempt an unavailable call.
 
 You have TWO different mechanisms. Do not confuse them:
 
-1. **MCP tools** (`mcp__software-development-team__team_*`) — These update STATE in the MCP server. They track which step is coding/reviewing/complete. They do NOT execute any work.
+1. **MCP tools** (`mcp__software_development_team__team_*`) — These update STATE in the MCP server. They track which step is coding/reviewing/complete. They do NOT execute any work.
 
 2. **Subagent spawning** — Codex spawns specialized subagents (planner, plan-critic, coder, reviewer, researcher, documentation) on your request. A subagent runs in its own context with its own model/tool work, then returns its result to you. The role templates live in `${CODEX_HOME:-$HOME/.codex}/agents/*.toml`.
 
@@ -113,7 +113,7 @@ When the user's task is to **review existing code** (not build something), the r
    - runId: {runId}
    - stepId: {stepId}
    - Run ID prefix (for reflection/review memory keys): {runId-short}
-   - Tool name mapping: team_X means mcp__software-development-team__team_X
+   - Tool name mapping: team_X means mcp__software_development_team__team_X
 
    ## Task goal
    {paste the user's complete review goal}
@@ -248,7 +248,7 @@ Print the issue. Wait for user guidance. When received, `team_advance(resolve_es
 Some steps are dispatched to **read-only agents** that only deliver findings and never call `team_submit_result` (e.g., a security/code review or an investigation that produces no edits). Such a step stays in `coding` forever and shows as "stuck" on the dashboard, even though its work is done. After the read-only agent returns with its findings, close the step with:
 
 ```
-mcp__software-development-team__team_advance(runId, stepId, action: "mark_reviewed", summary: "<one-line summary of what the review delivered>")
+mcp__software_development_team__team_advance(runId, stepId, action: "mark_reviewed", summary: "<one-line summary of what the review delivered>")
 ```
 
 `mark_reviewed` moves a `coding` (or `reviewing`) step straight to `complete` with a synthetic `done` result — no fabricated coder submission needed. Use it **only** for steps with no code changes to verify; steps that produce edits must still go through the normal coder → reviewer → `approve` flow.
@@ -272,7 +272,7 @@ Every subagent spawn request needs all of these — subagents have no inherited 
 5. **Relevant memory** — read `team_memory_read` for `decisions`, `context`, and `learnings` namespaces, paste relevant entries
 6. **Run ID and step ID** — so the subagent can call `team_submit_result`
 7. **Prior context** — any review feedback (for revisions) or user guidance
-8. **Tool name mapping** — remind the subagent that `team_X` means `mcp__software-development-team__team_X`
+8. **Tool name mapping** — remind the subagent that `team_X` means `mcp__software_development_team__team_X`
 9. **Run ID key prefix** — remind the subagent to use the first 8 characters of the run ID as a prefix for reflection and review memory keys (e.g., `{runId-short}-step-{N}-reflection`). Include the actual 8-char prefix value so the agent doesn't have to compute it.
 
 ## Pipeline Parallelism

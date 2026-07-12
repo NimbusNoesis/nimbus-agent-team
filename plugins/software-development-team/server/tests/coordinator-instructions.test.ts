@@ -64,6 +64,19 @@ describe('coordinator instruction contract', () => {
     }
   });
 
+  it('uses Codex-sanitized MCP callable namespaces', () => {
+    const expectedNamespace = 'mcp__software_development_team__';
+    const invalidRawNamespace = 'mcp__software-development-team__';
+    const mcpSkills = codexSkills.filter(({ file }) => !file.endsWith('/review/SKILL.md'));
+
+    for (const { file, content } of [...mcpSkills, ...codexAgents]) {
+      expect(content, `${file} must use the sanitized MCP namespace`).toContain(expectedNamespace);
+    }
+    for (const { file, content } of [...codexSkills, ...codexAgents]) {
+      expect(content, `${file} must not use the raw hyphenated MCP namespace`).not.toContain(invalidRawNamespace);
+    }
+  });
+
   it('uses native-compatible literal task labels and an explicit role mapping', () => {
     const taskLabels = codexSkills.flatMap(({ file, content }) =>
       [...content.matchAll(/task_name\s*:\s*["'`]([^"'`]+)["'`]/g)].map((match) => ({ file, label: match[1] })),

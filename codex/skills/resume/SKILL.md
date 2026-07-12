@@ -11,16 +11,16 @@ The run ID to resume is whatever the user provided in the message that invoked t
 
 ## Tool Names
 
-The team's MCP tools are namespaced. When this skill says `team_X`, call `mcp__software-development-team__team_X`. The mapping:
+The team's MCP tools are namespaced. When this skill says `team_X`, call `mcp__software_development_team__team_X`. The mapping:
 
-- `team_status` → `mcp__software-development-team__team_status`
-- `team_advance` → `mcp__software-development-team__team_advance`
-- `team_send_message` → `mcp__software-development-team__team_send_message`
-- `team_get_messages` → `mcp__software-development-team__team_get_messages`
-- `team_memory_read` → `mcp__software-development-team__team_memory_read`
-- `team_memory_write` → `mcp__software-development-team__team_memory_write`
-- `team_submit_result` → `mcp__software-development-team__team_submit_result`
-- `team_dashboard_url` → `mcp__software-development-team__team_dashboard_url`
+- `team_status` → `mcp__software_development_team__team_status`
+- `team_advance` → `mcp__software_development_team__team_advance`
+- `team_send_message` → `mcp__software_development_team__team_send_message`
+- `team_get_messages` → `mcp__software_development_team__team_get_messages`
+- `team_memory_read` → `mcp__software_development_team__team_memory_read`
+- `team_memory_write` → `mcp__software_development_team__team_memory_write`
+- `team_submit_result` → `mcp__software_development_team__team_submit_result`
+- `team_dashboard_url` → `mcp__software_development_team__team_dashboard_url`
 
 ## MCP Availability Preflight
 
@@ -42,7 +42,7 @@ not invent an availability API or attempt an unavailable call.
 
 You have TWO different mechanisms. Do not confuse them:
 
-1. **MCP tools** (`mcp__software-development-team__team_*`) — These update STATE in the MCP server. They track which step is coding/reviewing/complete. They do NOT execute any work.
+1. **MCP tools** (`mcp__software_development_team__team_*`) — These update STATE in the MCP server. They track which step is coding/reviewing/complete. They do NOT execute any work.
 
 2. **Subagent spawning** — Codex spawns specialized subagents (coder, reviewer, etc.) on your request, each running in its own context. The role templates live in `${CODEX_HOME:-$HOME/.codex}/agents/*.toml`; read the relevant template and include its `developer_instructions` with the full step context in a native `spawn_agent` call. `task_name` is a unique invocation label and never loads or selects a TOML template. It MUST match `^[a-z0-9_]+$` and remain unique among all paths from the resumed session, including completed agents.
 
@@ -119,7 +119,7 @@ Every subagent spawn request needs all of these — subagents have no inherited 
 8. **Run ID and step ID** — actual values so the subagent can call `team_submit_result`
 9. **Actual reflection prefix** — the first 8 characters of the real run ID, supplied as a resolved value for reflection/review keys
 10. **Prior context** — all persisted review feedback, previous worker result/error, user guidance, retry/escalation history, and relevant team messages; use "none" only after checking each source
-11. **Tool name mapping** — the complete mapping needed by the role template, with `team_X` meaning `mcp__software-development-team__team_X`
+11. **Tool name mapping** — the complete mapping needed by the role template, with `team_X` meaning `mcp__software_development_team__team_X`
 12. **Persisted worktree lifecycle** — the actual `{targetBranch, targetCommit, path, branch}` values created at initial admission, plus the role and location rules below. Verify that path and branch are present and consistent before spawning; never recapture or recreate them during resume.
 
 ## Pipeline Parallelism

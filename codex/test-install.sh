@@ -100,6 +100,15 @@ status_skill = skill_texts["status"]
 research_skill = skill_texts["research"]
 review_skill = skill_texts["review"]
 
+expected_mcp_namespace = "mcp__software_development_team__"
+invalid_raw_mcp_namespace = "mcp__software-development-team__"
+for name in ("begin", "plan", "resume", "status", "memory", "research"):
+    assert expected_mcp_namespace in skill_texts[name], name
+for name, text in agent_texts.items():
+    assert expected_mcp_namespace in text, name
+for name, text in (*skill_texts.items(), *agent_texts.items()):
+    assert invalid_raw_mcp_namespace not in text, name
+
 plan_critic = tomllib.loads(agent_texts["plan-critic.toml"])
 assert plan_critic["name"] == "plan-critic"
 assert "current planning workflow's unique grammar-safe `plan_critic_<W>`" in agent_texts["plan-critic.toml"]

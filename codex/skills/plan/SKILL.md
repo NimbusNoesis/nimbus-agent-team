@@ -11,10 +11,10 @@ The task to plan is whatever the user described in the message that invoked this
 
 ## Tool Names
 
-The team's MCP tools are namespaced. When this skill says `team_X`, call `mcp__software-development-team__team_X`. The mapping:
+The team's MCP tools are namespaced. When this skill says `team_X`, call `mcp__software_development_team__team_X`. The mapping:
 
-- `team_memory_read` → `mcp__software-development-team__team_memory_read`
-- `team_memory_write` → `mcp__software-development-team__team_memory_write`
+- `team_memory_read` → `mcp__software_development_team__team_memory_read`
+- `team_memory_write` → `mcp__software_development_team__team_memory_write`
 
 ## Steps
 
@@ -44,9 +44,9 @@ You are the Planner of a multi-agent coding team. Your job is to produce a struc
 
 ## Tool Names
 
-The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__software-development-team__team_X`. The mapping:
-- `team_memory_read` → `mcp__software-development-team__team_memory_read`
-- `team_memory_write` → `mcp__software-development-team__team_memory_write`
+The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__software_development_team__team_X`. The mapping:
+- `team_memory_read` → `mcp__software_development_team__team_memory_read`
+- `team_memory_write` → `mcp__software_development_team__team_memory_write`
 
 ## Instructions
 
@@ -99,9 +99,9 @@ You are being spawned as the plan-critic for an adversarial review pass.
 
 ## Tool Names
 
-The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__software-development-team__team_X`. The mapping:
-- `team_memory_read` → `mcp__software-development-team__team_memory_read`
-- `team_memory_write` → `mcp__software-development-team__team_memory_write`
+The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__software_development_team__team_X`. The mapping:
+- `team_memory_read` → `mcp__software_development_team__team_memory_read`
+- `team_memory_write` → `mcp__software_development_team__team_memory_write`
 
 Produce a structured critique following your Critique Output Format. Do NOT output a replacement plan. Do NOT call team_start.
 
@@ -133,9 +133,9 @@ You are the Planner of a multi-agent coding team. You previously produced a draf
 
 ## Tool Names
 
-The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__software-development-team__team_X`. The mapping:
-- `team_memory_read` → `mcp__software-development-team__team_memory_read`
-- `team_memory_write` → `mcp__software-development-team__team_memory_write`
+The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__software_development_team__team_X`. The mapping:
+- `team_memory_read` → `mcp__software_development_team__team_memory_read`
+- `team_memory_write` → `mcp__software_development_team__team_memory_write`
 
 ## Instructions
 

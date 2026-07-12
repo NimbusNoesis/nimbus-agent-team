@@ -73,7 +73,7 @@ The skills spawn six role-specific subagents. Role identities and TOML template 
 appropriate template and includes its instructions plus the full per-step context in
 the native `spawn_agent` request. Subagents inherit no conversation context. When the
 team MCP server and a role's required tools are registered in the current Codex
-session, subagents can call the mapped `mcp__software-development-team__team_*`
+session, subagents can call the mapped `mcp__software_development_team__team_*`
 tools directly; skills must run their MCP availability preflight and must not assume
 that every MCP tool is present.
 
@@ -94,7 +94,7 @@ that every MCP tool is present.
                   Dashboard (WebSocket)
 ```
 
-- **MCP tools** (`mcp__software-development-team__team_*`) track run STATE — which step
+- **MCP tools** (`mcp__software_development_team__team_*`) track run STATE — which step
   is coding/reviewing/complete, the message bus, and shared memory across five
   namespaces (`decisions`, `context`, `learnings`, `reviews`, `reflections`). They do
   not perform work.

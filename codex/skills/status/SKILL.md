@@ -11,10 +11,10 @@ If the user named a run ID in the message that invoked this skill, use it. Other
 
 ## Tool Names
 
-The team's MCP tools are namespaced. When this skill says `team_X`, call `mcp__software-development-team__team_X`. The mapping:
+The team's MCP tools are namespaced. When this skill says `team_X`, call `mcp__software_development_team__team_X`. The mapping:
 
-- `team_status` → `mcp__software-development-team__team_status`
-- `team_dashboard_url` → `mcp__software-development-team__team_dashboard_url`
+- `team_status` → `mcp__software_development_team__team_status`
+- `team_dashboard_url` → `mcp__software_development_team__team_dashboard_url`
 
 ## MCP Availability Preflight
 

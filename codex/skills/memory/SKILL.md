@@ -11,9 +11,9 @@ If the user included a search query in the message that invoked this skill, trea
 
 ## Tool Names
 
-The team's MCP tools are namespaced. When this skill says `team_X`, call `mcp__software-development-team__team_X`. The mapping:
+The team's MCP tools are namespaced. When this skill says `team_X`, call `mcp__software_development_team__team_X`. The mapping:
 
-- `team_memory_read` → `mcp__software-development-team__team_memory_read`
+- `team_memory_read` → `mcp__software_development_team__team_memory_read`
 
 ## Steps
 
