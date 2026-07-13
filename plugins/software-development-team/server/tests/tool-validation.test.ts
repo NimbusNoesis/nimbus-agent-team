@@ -1,12 +1,15 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { z, ZodError } from 'zod';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
   handleTeamStart,
   handleTeamStatus,
   handleTeamAdvance,
   handleTeamControl,
   teamAdvanceShape,
-  teamControlShape,
+  teamControlSchema,
 } from '../src/tools/workflow.js';
 import { handleTeamSubmitResult } from '../src/tools/results.js';
 import { handleTeamSendMessage, handleTeamGetMessages, teamGetMessagesShape } from '../src/tools/messages.js';
@@ -174,10 +177,39 @@ describe('Zod schema validation', () => {
       })).toThrow(ZodError);
     });
 
-    it('exports an MCP-layer shape that rejects invalid primitive fields', () => {
-      const schema = z.object(teamControlShape);
-      expect(() => schema.parse({ runId: 'r', ...valid, expectedRevision: -1 })).toThrow(ZodError);
-      expect(schema.parse({ runId: 'r', ...valid })).toMatchObject({ commandId: 'pause-1' });
+    it('enforces the complete schema at the MCP SDK boundary before dispatch', async () => {
+      const dispatches: unknown[] = [];
+      const server = new McpServer({ name: 'validation-test-server', version: '1.0.0' });
+      server.registerTool('team_control', { inputSchema: teamControlSchema }, async (args) => {
+        dispatches.push(args);
+        return { content: [{ type: 'text' as const, text: 'ok' }] };
+      });
+
+      const client = new Client({ name: 'validation-test-client', version: '1.0.0' });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+
+      const call = (args: Record<string, unknown>) => client.callTool({ name: 'team_control', arguments: args });
+      await expect(call({ runId: 'r', ...valid, unexpected: true })).resolves.toMatchObject({
+        isError: true,
+        content: [{ text: expect.stringMatching(/Input validation error.*Unrecognized key/s) }],
+      });
+      await expect(call({
+        runId: 'r', ...valid, action: 'retry_step', target: { kind: 'run' },
+      })).resolves.toMatchObject({
+        isError: true,
+        content: [{ text: expect.stringMatching(/Input validation error.*requires a step target/s) }],
+      });
+      expect(dispatches).toEqual([]);
+
+      await expect(call({ runId: 'r', ...valid })).resolves.toMatchObject({
+        content: [{ type: 'text', text: 'ok' }],
+      });
+      expect(dispatches).toEqual([{ runId: 'r', ...valid }]);
+
+      await client.close();
+      await server.close();
     });
   });
 

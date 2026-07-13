@@ -141,7 +141,9 @@ describe('ToolRegistry', () => {
 
   it('registers team_control exactly once in the MCP entry point', () => {
     const source = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8');
-    expect(source.match(/server\.tool\(\s*'team_control'/g)).toHaveLength(1);
+    expect(source.match(/server\.registerTool\(\s*'team_control'/g)).toHaveLength(1);
+    expect(source).toMatch(/inputSchema:\s*teamControlSchema/);
+    expect(source).not.toMatch(/team_control'[\s\S]{0,300}teamControlShape/);
   });
 
   it('team_advance with resolve_escalation works on escalated step', async () => {

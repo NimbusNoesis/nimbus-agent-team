@@ -26,10 +26,10 @@ const PlanStepSchema = z.object({
   dependsOn: z.array(positiveInt),
 });
 
-// Raw shapes are exported for MCP registration: server.tool() takes a
-// ZodRawShape (plain object of validators), not a ZodObject. index.ts spreads
-// these same shapes into its registrations and the handlers below parse
-// z.object(shape), so both validation layers derive from one definition.
+// Raw shapes are exported for the legacy server.tool() registrations. Schemas
+// with object-level refinements must instead be registered through
+// server.registerTool({ inputSchema }) so the SDK enforces the complete schema
+// at the public MCP boundary.
 export const teamStartShape = {
   task: z.string().optional().describe('Human-readable task description shown in the dashboard'),
   steps: z.array(PlanStepSchema).min(1),
@@ -73,7 +73,7 @@ const RUN_TARGET_ACTIONS = new Set<ExecutionControlAction>([
 ]);
 const STEP_TARGET_ACTIONS = new Set<ExecutionControlAction>(['cancel_step', 'retry_step']);
 
-const TeamControlSchema = z.object(teamControlShape).strict().superRefine((value, ctx) => {
+export const teamControlSchema = z.object(teamControlShape).strict().superRefine((value, ctx) => {
   if (RUN_TARGET_ACTIONS.has(value.action) && value.target.kind !== 'run') {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['target'], message: `${value.action} requires a run target` });
   }
@@ -248,7 +248,7 @@ function stepActionAvailability(
 }
 
 export function handleTeamControl(sm: StateMachine, args: unknown) {
-  const parsed = TeamControlSchema.parse(args);
+  const parsed = teamControlSchema.parse(args);
   const before = sm.getRun(parsed.runId);
   if (!before) throw new Error(`Run ${parsed.runId} not found`);
   const receipt = sm.executeControl(parsed.runId, {
