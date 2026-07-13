@@ -1,6 +1,6 @@
 import { signal, computed } from '@preact/signals';
 
-export type StepStatus =
+type StepStatus =
   | 'pending'
   | 'coding'
   | 'reviewing'
@@ -8,7 +8,7 @@ export type StepStatus =
   | 'escalated'
   | 'cancelling'
   | 'cancelled';
-export type RunStatus = 'ready' | 'in_progress' | 'escalated' | 'complete' | 'cancelled';
+type RunStatus = 'ready' | 'in_progress' | 'escalated' | 'complete' | 'cancelled';
 export type RunControlPhase = 'none' | 'pausing' | 'paused' | 'cancelling' | 'cancelled';
 export type ExecutionControlAction =
   | 'pause_run'
@@ -53,7 +53,7 @@ export interface StepState {
   cancelledAt?: string;
 }
 
-export interface LifecycleCommandOutcome {
+interface LifecycleCommandOutcome {
   controlPhase: RunControlPhase;
   runStatus: RunStatus;
   stepStatus?: StepStatus;
@@ -81,7 +81,7 @@ export interface LifecycleHistoryEntry {
   summary?: string;
 }
 
-export interface RunLifecycle {
+interface RunLifecycle {
   version: number;
   capabilities: ExecutionControlCapabilities;
   controlPhase: RunControlPhase;
@@ -124,7 +124,7 @@ export interface MemoryEntry {
 
 export type ConnectionStatus = 'connecting' | 'online' | 'offline';
 export type DataFreshness = 'loading' | 'fresh' | 'stale';
-export type ControlOperationStatus = 'idle' | 'pending' | 'success' | 'error' | 'conflict' | 'recovering';
+type ControlOperationStatus = 'idle' | 'pending' | 'success' | 'error' | 'conflict' | 'recovering';
 
 export interface ControlError {
   status: number;
@@ -263,7 +263,7 @@ export function applyRunSnapshots(incoming: RunState[]): RunState[] {
   return allRuns.value;
 }
 
-export function controlTargetKey(runId: string, target: ExecutionControlTarget): string {
+function controlTargetKey(runId: string, target: ExecutionControlTarget): string {
   return target.kind === 'run' ? `${runId}:run` : `${runId}:step:${target.stepId}`;
 }
 
@@ -280,12 +280,6 @@ export function setControlOperation(
     ...controlOperations.value,
     [controlTargetKey(runId, target)]: operation,
   };
-}
-
-export function clearControlOperation(runId: string, target: ExecutionControlTarget): void {
-  const next = { ...controlOperations.value };
-  delete next[controlTargetKey(runId, target)];
-  controlOperations.value = next;
 }
 
 /** Derives both capability support and current lifecycle/action preconditions. */

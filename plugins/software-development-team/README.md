@@ -13,7 +13,7 @@ A [Claude Code](https://claude.ai/claude-code) plugin that orchestrates a multi-
 - **In-memory SQLite database** -- all stateful storage (runs, messages, memory) backed by sql.js in-memory SQLite
 - **Shared memory** -- agents share decisions, context, learnings, and reflections via a persistent key-value store
 - **Message bus** -- typed messages (info, review, escalation, guidance, result) between agents and the user
-- **Real-time dashboard** -- web UI showing live progress, step details, agent activity, and shared memory
+- **Operator dashboard** -- responsive, accessible live UI for plan truth, execution controls, activity audit, agents, memory, and guidance
 - **Pipeline parallelism** -- a deterministic scheduler runs independent work concurrently within the host worker capacity; lifecycle work is prioritized and conflicting file claims are serialized
 - **Stuck detection** -- automatic escalation when agents repeat the same error or exhaust retries
 - **File conflict detection** -- prevents two steps from editing the same file concurrently
@@ -21,15 +21,62 @@ A [Claude Code](https://claude.ai/claude-code) plugin that orchestrates a multi-
 
 ## Dashboard
 
-The dashboard provides real-time awareness of what the team is doing:
+The dashboard is a local operator console for observing and controlling a team run. The server prints its loopback URL when a run starts (for example, `http://localhost:<port>`). It presents aggregate run status separately from the lifecycle control phase so a run can truthfully remain `in_progress` while a pause or cancellation is draining.
 
 - **Run tab bar** for switching between every run — a scrollable row of tabs across the top, each showing the run number, task, live status, and step progress (the active run's tab auto-scrolls into view)
-- **Step list** with expandable detail panels showing acceptance criteria, files, dependencies, blocking reasons, results, and timing
-- **Progress bar** showing completed steps out of total
+- **Step list** with expandable details for criteria, file claims, worktree identity, dependencies, blockers, attempts, results, and timing
+- **Execution controls** for pause, resume, run or step cancellation, and eligible escalated-step retry, with target-specific confirmations for destructive actions
+- **Progress and health** showing completed work, cancellation, active workers, blockers, escalations, lifecycle revision, connection state, and data freshness
 - **Agent status cards** for all 6 agents (coordinator, planner, coder, reviewer, researcher, documentation) with live elapsed timers
 - **Shared memory panel** displaying team decisions and learnings grouped by namespace
-- **Activity feed** with message type filtering (info, review, escalation, guidance, result) and count badges
-- **Guidance input** for sending instructions to the team mid-run
+- **Activity audit** merging messages and control history with filters, stable ordering, deduplication, reconnect state, unseen counts, and a return-to-live action
+- **Guidance input** for sending single-flight, run-targeted instructions without losing a draft on failure or run switches
+
+The UI uses one semantic DOM and adapts from three workspaces on wide screens to an anchor-navigable vertical workspace on tablets and phones. It has a skip link, visible keyboard focus, modal focus isolation/restoration, text status cues in addition to color, 44px minimum controls, safe wrapping for long paths and messages, reduced-motion support, and forced-colors fallbacks. It uses only local system fonts and assets.
+
+### Lifecycle v2 and control contracts
+
+Release 1.8.0 is the semver-minor lifecycle-v2/dashboard release; its marketplace, plugin, server package, and lockfile versions are synchronized. Control support is advertised by `lifecycleVersion: 2` and the run's `capabilities` map rather than inferred from the package version. Clients must hide unsupported actions and treat an absent lifecycle or capability map as read-only, which permits a new read-only dashboard to observe an older server safely. `RunStatus` remains the aggregate plan outcome; `controlPhase` independently reports `none`, `pausing`, `paused`, `cancelling`, or `cancelled`.
+
+- **Pause:** `pause_run` immediately freezes new admissions and spawns. If workers are active, the phase is `pausing` while they drain naturally; they are not force-killed and their file claims remain held. The coordinator polls for quiescence and sends `acknowledge_pause`, producing `paused`. `resume_run` then clears the freeze and recomputes eligible work.
+- **Cancel a run:** inactive targets cancel immediately. Active targets enter `cancelling`; workers drain naturally, claims remain held, and late results are rejected. Only the coordinator sends `acknowledge_cancel` after quiescence, at which point the run becomes terminal `cancelled` and claims are released.
+- **Cancel a step:** the same drain-and-ack rules apply to an active step. Its dependents stay pending with explicit cancelled-dependency blockers, while dependency-independent steps may continue. Cancelling an inactive step is immediate. Completed and cancelled targets are immutable.
+- **Retry:** `retry_step` is available only for an escalated step in an eligible run. Dependencies, exact file claims, and the persisted worktree are rechecked. The server preserves prior results and lifecycle history, increments the manual-attempt counter, resets per-attempt review counters, reclaims files, and returns the step to coding. The ordinary coder/reviewer revision loop remains bounded to three attempts; exhausted work escalates for an explicit operator decision. `resolve_escalation` is a deprecated compatibility alias.
+
+Every mutation carries a unique `commandId` and the caller's `expectedRevision`. A successful command increments the monotonic lifecycle revision once and appends one bounded receipt/history entry. Repeating the same command ID and fingerprint returns the stored result without another write; reusing it for a different command is rejected. A stale expected revision returns `409 revision_conflict`. The dashboard never automatically replays destructive requests: it refreshes the run and requires the operator to reconsider and confirm again. Control history is restored with the run and appears in the activity audit after reconnect or restart.
+
+### Local security model
+
+The dashboard is intentionally local and is not an authenticated multi-user service. Bind it only to loopback. Browser mutation requests must have a loopback `Host` and an exact same-origin HTTP `Origin`. Non-browser/local clients may omit `Origin`, but they still require a loopback host; an omitted Origin is not permission to expose the service remotely. WebSocket upgrades accept local no-Origin clients and explicitly allowed localhost/127.0.0.1 origins. Mutation JSON is size-bounded and strict, destructive controls require an exact target phrase, and the response uses structured `200`, `400`, `404`, or `409` outcomes. The dashboard also sends a restrictive local Content Security Policy and does not load remote scripts, fonts, styles, or images.
+
+### Operator troubleshooting
+
+- **Controls are missing:** verify the selected run reports lifecycle version 2 and the corresponding capability. A v1/absent lifecycle is deliberately read-only.
+- **Control is disabled:** read the adjacent reason. Offline, connecting, loading, stale data, a terminal target, incompatible phase, missing worktree, unmet dependency, or held file claim can make an action unsafe.
+- **Revision conflict:** allow the dashboard to refresh, inspect the latest phase and target, then open a new confirmation. Do not replay the old request.
+- **Stuck in `pausing` or `cancelling`:** inspect active workers, held claims, recent messages, coordinator health, and control audit revision. The coordinator must observe quiescence and acknowledge; do not release claims or edit persisted state manually.
+- **Reconnect or stale data:** retain the visible last-known state for context, but wait for `Online` and `Current` before mutating. Activity history is deduplicated after reconnect.
+- **Restart recovery:** restart the same or newer compatible server against the existing `.team/` directory. Runs, receipts, history, results, claims, and worktree metadata are persisted. A future lifecycle version fails closed rather than being rewritten.
+
+### Release verification matrix
+
+Automated release gates cover server tests, type checking, bundling, dead-code/dependency checks, static breakpoints, overflow constraints, focus, touch targets, modal layering, reduced motion, forced colors, local assets, and CSP. They do not substitute for the following required human release sign-off; record results rather than assuming them from automation.
+
+| Required manual check | Release sign-off |
+| --- | --- |
+| 1440x900 and 1024x768 desktop: three-workspace density, no page-level horizontal overflow | Pending manual verification |
+| 768x1024 tablet, 390x844 phone, and 320px width: semantic reflow, anchored workspace navigation, long paths/messages | Pending manual verification |
+| Keyboard-only: skip link, workspace/context tabs, all controls, dialog trap/Escape, opener focus restoration | Pending manual verification |
+| 200% and 400% zoom: reflow, readable content, reachable modal actions, no clipped control status | Pending manual verification |
+| OS forced colors/high contrast and reduced motion | Pending manual verification |
+| Screen reader: landmarks, progress, status/live announcements, control consequences, disabled reasons | Pending manual verification |
+| Reconnect/stale/revision-conflict/control flow and activity audit recovery | Pending manual verification |
+
+### Backend-first rollout and rollback
+
+Release lifecycle v2 server/coordinator support before the dashboard client, observe it through one canary run, then broaden rollout. Monitor command success/conflict/replay rates, lifecycle revision progression, time spent in `pausing`/`cancelling`, worker/claim drain time, rejected late outputs, acknowledgement latency, WebSocket reconnects, and stale-client duration. Alert on a control phase with no revision or worker/claim change beyond the normal worker timeout.
+
+Rollback is state-preserving. Do not start an older binary while any run is `pausing`, `paused`, or `cancelling`; first resume it or let it drain and finish the required acknowledgement using the compatible coordinator. Stop new controls, preserve the `.team/` database plus results/history and every run worktree/branch, and roll the server/client back together. Lifecycle v2 uses the existing persisted run payload and requires no SQL DDL downgrade. Old readers can safely open absent/v1 runs, but must not rewrite lifecycle-v2 state. If a rollback is needed after a v2 command, retain the v2 data and return to a compatible binary to continue rather than deleting receipts, history, claims, or worktrees.
 
 ## Quick Start
 
@@ -156,6 +203,7 @@ dashboard card or execution/worktree role; the controller owns recursion and lif
 | `team_start` | Initialize a run with plan steps |
 | `team_status` | Get current run state with timing, blocking reasons, and conflicts |
 | `team_advance` | Advance a step: start coding, approve, request revision, or resolve escalation |
+| `team_control` | Apply lifecycle-v2 pause, resume, cancellation, acknowledgement, or retry commands with idempotency and revision checks |
 | `team_submit_result` | Submit coder/reviewer results for a step |
 | `team_send_message` | Post a message to the team bus |
 | `team_get_messages` | Read messages, with filtering by type and timestamp |
@@ -166,7 +214,7 @@ dashboard card or execution/worktree role; the controller owns recursion and lif
 
 ### State Machine
 
-Steps follow this lifecycle:
+Steps follow this execution lifecycle (the run-level lifecycle-v2 control phase is independent):
 
 ```
 pending --> coding --> reviewing --> complete
@@ -175,6 +223,8 @@ pending --> coding --> reviewing --> complete
               +--- needs_revision (up to 3 retries)
               
               coding/reviewing --> escalated (on stuck detection or retry exhaustion)
+              pending ---------> cancelled
+              coding/reviewing -> cancelling -> cancelled (after worker drain and acknowledgement)
 ```
 
 ### Git Worktree Isolation
@@ -225,9 +275,9 @@ npx vitest
 npm run knip
 ```
 
-The current development stack uses the TypeScript 7 native CLI, Vitest 4, and
-jsdom 29. TypeScript 6 is retained under the `typescript` package name solely
-to provide the compiler API that tsup uses for declaration generation.
+The current development stack uses the TypeScript 6 compiler, Vitest 4, and
+jsdom 29. The same TypeScript package provides the compiler API used by tsup
+for declaration generation.
 
 ## Project Structure
 

@@ -36,7 +36,7 @@ export interface ControlCommand {
   expectedRevision?: number;
 }
 
-export interface ControlSuccessResponse {
+interface ControlSuccessResponse {
   success: true;
   replayed: boolean;
   receipt: LifecycleCommandReceipt;
@@ -240,9 +240,6 @@ export async function executeControl(runId: string, command: ControlCommand): Pr
     return { ok: false, error };
   }
 }
-
-/** Alias that reads naturally in event handlers. */
-export const sendControlCommand = executeControl;
 
 function mergeMessages(history: Message[], live: Message[]): Message[] {
   const byId = new Map<string, Message>();
