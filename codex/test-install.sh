@@ -63,7 +63,7 @@ assert pathlib.Path(server["args"][2]) == codex_home / "data" / "software-develo
 
 expected_roles = {
     "coder.toml", "documentation.toml", "plan-critic.toml", "planner.toml",
-    "researcher.toml", "reviewer.toml",
+    "recursive-planner.toml", "researcher.toml", "reviewer.toml",
 }
 installed_agents = sorted((codex_home / "agents").glob("*.toml"))
 assert {path.name for path in installed_agents} == expected_roles
@@ -75,7 +75,7 @@ for role_path in installed_agents:
     assert role["name"] == role_path.stem
     assert role["developer_instructions"].strip()
 
-expected_skills = {"begin", "memory", "plan", "research", "resume", "review", "status"}
+expected_skills = {"begin", "deep-plan", "memory", "plan", "research", "resume", "review", "status"}
 assert {path.name for path in (codex_home / "skills").iterdir() if path.is_dir()} == expected_skills
 skill_paths = [codex_home / "skills" / name / "SKILL.md" for name in sorted(expected_skills)]
 assert all(path.is_file() for path in skill_paths)
@@ -94,6 +94,7 @@ assert task_names
 assert all(re.fullmatch(r"[a-z0-9_]+", name) for name in task_names), task_names
 
 begin_skill = skill_texts["begin"]
+deep_plan_skill = skill_texts["deep-plan"]
 plan_skill = skill_texts["plan"]
 resume_skill = skill_texts["resume"]
 status_skill = skill_texts["status"]
@@ -102,7 +103,7 @@ review_skill = skill_texts["review"]
 
 expected_mcp_namespace = "mcp__software_development_team__"
 invalid_raw_mcp_namespace = "mcp__software-development-team__"
-for name in ("begin", "plan", "resume", "status", "memory", "research"):
+for name in ("begin", "deep-plan", "plan", "resume", "status", "memory", "research"):
     assert expected_mcp_namespace in skill_texts[name], name
 for name, text in agent_texts.items():
     assert expected_mcp_namespace in text, name
@@ -110,7 +111,16 @@ for name, text in (*skill_texts.items(), *agent_texts.items()):
     assert invalid_raw_mcp_namespace not in text, name
 
 plan_critic = tomllib.loads(agent_texts["plan-critic.toml"])
+recursive_planner = tomllib.loads(agent_texts["recursive-planner.toml"])
 assert plan_critic["name"] == "plan-critic"
+assert recursive_planner["name"] == "recursive-planner"
+assert recursive_planner["sandbox_mode"] == "read-only"
+assert "pre-run, pre-approval, read-only specialist" in recursive_planner["developer_instructions"]
+assert "never recurse or dispatch another agent yourself" in recursive_planner["developer_instructions"]
+assert "protocolVersion" in recursive_planner["developer_instructions"]
+assert "dossierSignature" in recursive_planner["developer_instructions"]
+assert "compactState" in recursive_planner["developer_instructions"]
+assert "team_start-Compatible Appendix" in recursive_planner["developer_instructions"]
 assert "current planning workflow's unique grammar-safe `plan_critic_<W>`" in agent_texts["plan-critic.toml"]
 assert 'task_name: "plan_critic_1"' in agent_texts["plan-critic.toml"]
 assert 'MUST use task_name: "plan_critic"' not in agent_texts["plan-critic.toml"]
@@ -132,6 +142,37 @@ assert "parallel same-role workers" in begin_skill
 assert "coder_step_2_attempt_1" in resume_skill
 assert "reviewer_step_2_attempt_1" in resume_skill
 assert "existing agent path is never reused" in resume_skill
+
+deep_plan_labels = [
+    "recursive_planner_<W>_round_1",
+    "recursive_planner_<W>_round_2",
+    "recursive_planner_<W>_round_3",
+    "deep_plan_research_<W>_probe_1",
+    "deep_plan_research_<W>_probe_2",
+    "deep_plan_critic_<W>",
+    "recursive_planner_<W>_synthesis",
+]
+assert all(label in deep_plan_skill for label in deep_plan_labels)
+resolved_deep_plan_labels = [
+    "recursive_planner_1_round_1",
+    "recursive_planner_1_round_2",
+    "recursive_planner_1_round_3",
+    "deep_plan_research_1_probe_1",
+    "deep_plan_research_1_probe_2",
+    "deep_plan_critic_1",
+    "recursive_planner_1_synthesis",
+]
+assert len(resolved_deep_plan_labels) == len(set(resolved_deep_plan_labels)) == 7
+assert all(re.fullmatch(r"[a-z0-9_]+", label) for label in resolved_deep_plan_labels)
+assert all(label in deep_plan_skill for label in resolved_deep_plan_labels)
+assert "complete seven-label set is unused" in deep_plan_skill
+assert "Reserve/check the complete set before the first spawn" in deep_plan_skill
+assert "A later deep-plan invocation in the same session MUST allocate another `<W>`" in deep_plan_skill
+assert "task labels never select role templates" in deep_plan_skill
+assert "Recover the original `<W>`" in deep_plan_skill
+assert "prerun-deep-plan-<D>-synthesis-reflection" in deep_plan_skill
+assert "team_start({ steps: appendix })" in deep_plan_skill
+assert "MUST NOT call `team_start`" in deep_plan_skill
 
 assert "pre-approval, read-only role" in agent_texts["planner.toml"]
 assert "pre-approval, read-only role" in agent_texts["plan-critic.toml"]
@@ -157,7 +198,7 @@ assert "STANDALONE-review prompt overrides the reviewer role's normal result-sub
 assert "do NOT call `team_submit_result`" in begin_skill
 assert "final response must be only a valid JSON array" in begin_skill
 assert "final response MUST be only a valid JSON array" in plan_skill
-for skill_text in (begin_skill, plan_skill, resume_skill, status_skill, research_skill, review_skill):
+for skill_text in (begin_skill, deep_plan_skill, plan_skill, resume_skill, status_skill, research_skill, review_skill):
     assert "${CODEX_HOME:-$HOME/.codex}" in skill_text
     assert "$CODEX_BIN" not in skill_text
 for skill_text in (begin_skill, resume_skill, status_skill):
@@ -175,6 +216,8 @@ CODEX_HOME="$TEST_HOME" "$CODEX_BIN" --strict-config --help >/dev/null
 CODEX_HOME="$TEST_HOME" "$CODEX_BIN" mcp get software-development-team >/dev/null
 CODEX_HOME="$TEST_HOME" "$CODEX_BIN" debug prompt-input 'Start the coding team.' > "$TEST_HOME/prompt-input.json"
 grep -F -- '- begin:' "$TEST_HOME/prompt-input.json" >/dev/null
+CODEX_HOME="$TEST_HOME" "$CODEX_BIN" debug prompt-input 'Develop an exhaustive recursive software plan without implementing it.' > "$TEST_HOME/deep-plan-prompt-input.json"
+grep -F -- '- deep-plan:' "$TEST_HOME/deep-plan-prompt-input.json" >/dev/null
 
 # install.sh derives its server path from its own checkout. Copy that complete
 # sibling topology into paths containing characters that must be TOML-escaped.

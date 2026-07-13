@@ -145,7 +145,8 @@ cat <<EOF
 Next:
   1. Start a fresh Codex session:  codex
   2. Confirm MCP registration:     codex mcp get software-development-team
-  3. Kick off a run:               \$begin <task description>
+  3. Develop a deep plan:          \$deep-plan <task description>
+  4. Kick off a run:               \$begin <task description>
 
 First launch compiles the server; the startup_timeout_sec = 120 setting gives it
 room. If the team tools do not appear, inspect $CONFIG_FILE, run the MCP check
@@ -153,6 +154,8 @@ above, and start a fresh Codex session. A server log URL alone does not register
 MCP tools into an already-running Codex session.
 
 To uninstall: remove the [mcp_servers.$SERVER_NAME] block from $CONFIG_FILE and
-delete the copied agent files from $AGENTS_DIR and the skill directories
-(begin, status, memory, resume, plan, research, review) from $SKILLS_DIR.
+delete the copied agent templates (coder, documentation, plan-critic, planner,
+recursive-planner, researcher, reviewer) from $AGENTS_DIR and the skill
+directories (begin, deep-plan, status, memory, resume, plan, research, review)
+from $SKILLS_DIR.
 EOF
