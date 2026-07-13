@@ -3,6 +3,7 @@ import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-libra
 import {
   allRuns, currentRun, expandedStepId, memoryEntries,
   expandedMemoryKeys, currentFilter, messages, loadingRunId,
+  connectionStatus, dataFreshness, lastSyncedAt,
 } from '../src/dashboard/client/state/store';
 import type { RunState, StepState, MemoryEntry } from '../src/dashboard/client/state/store';
 
@@ -39,7 +40,11 @@ beforeEach(() => {
   currentFilter.value = 'all';
   messages.value = [];
   loadingRunId.value = null;
+  connectionStatus.value = 'online';
+  dataFreshness.value = 'fresh';
+  lastSyncedAt.value = new Date().toISOString();
   vi.clearAllMocks();
+  vi.mocked(sendGuidance).mockReset().mockResolvedValue(true);
 });
 
 function makeStep(overrides: Partial<StepState> = {}): StepState {
@@ -76,6 +81,12 @@ function makeMemoryEntry(overrides: Partial<MemoryEntry> = {}): MemoryEntry {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(resolver => { resolve = resolver; });
+  return { promise, resolve };
+}
+
 // --- StatusPanel ---
 describe('StatusPanel', () => {
   it('renders 6 agent cards (one for each agent)', () => {
@@ -92,6 +103,31 @@ describe('StatusPanel', () => {
   it('renders GuidanceInput', () => {
     const { container } = render(<StatusPanel />);
     expect(container.querySelector('#guidance-input')).toBeTruthy();
+  });
+
+  it('provides keyboard-safe segmented navigation with active tab semantics', () => {
+    currentRun.value = makeRun();
+    render(<StatusPanel />);
+    const agents = screen.getByRole('tab', { name: 'Agents' });
+    const memory = screen.getByRole('tab', { name: 'Memory' });
+
+    agents.focus();
+    fireEvent.keyDown(agents, { key: 'ArrowRight' });
+
+    expect(memory.getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(memory);
+    expect(screen.getByRole('tabpanel', { name: 'Memory' }).hidden).toBe(false);
+  });
+
+  it('does not move focus when selected-run state changes', () => {
+    currentRun.value = makeRun({ id: 'run-a' });
+    render(<StatusPanel />);
+    const agents = screen.getByRole('tab', { name: 'Agents' });
+    agents.focus();
+
+    currentRun.value = makeRun({ id: 'run-b' });
+
+    expect(document.activeElement).toBe(agents);
   });
 });
 
@@ -138,7 +174,7 @@ describe('AgentCard', () => {
     const { container } = render(<AgentCard agentName="coordinator" />);
     const stepInfo = container.querySelector('.agent-step-info');
     expect(stepInfo).toBeTruthy();
-    expect(stepInfo!.textContent).toContain('Orchestrating run');
+    expect(stepInfo!.textContent).toContain('Orchestrating selected run');
   });
 
   it('shows elapsed timer when active step has startedAt', () => {
@@ -155,6 +191,7 @@ describe('AgentCard', () => {
   });
 
   it('shows last active time from messages', () => {
+    currentRun.value = makeRun({ id: 'run-1' });
     messages.value = [
       {
         id: 'msg-1',
@@ -167,7 +204,7 @@ describe('AgentCard', () => {
       },
     ];
     render(<AgentCard agentName="coder" />);
-    expect(screen.getByText(/Last active:/)).toBeTruthy();
+    expect(screen.getByText(/Last recorded activity:/)).toBeTruthy();
   });
 
   it('timer ticks with fake timers — elapsed updates after 1000ms', () => {
@@ -201,7 +238,7 @@ describe('AgentCard', () => {
     vi.useRealTimers();
   });
 
-  it('recent info message (1 min ago) marks agent active (in-flight)', () => {
+  it('does not fabricate an active worker from a recent info message', () => {
     currentRun.value = makeRun({ steps: [] });
     messages.value = [{
       id: 'msg-1', runId: 'run-1', from: 'coder', to: 'coordinator',
@@ -209,8 +246,9 @@ describe('AgentCard', () => {
       timestamp: new Date(Date.now() - 60_000).toISOString(),
     }];
     const { container } = render(<AgentCard agentName="coder" />);
-    expect(container.querySelector('.agent-card')!.className).toContain('active');
-    expect(screen.getByText('ACTIVE')).toBeTruthy();
+    expect(container.querySelector('.agent-card')!.className).toContain('idle');
+    expect(screen.getByText('IDLE')).toBeTruthy();
+    expect(screen.getByText(/Last recorded activity:/)).toBeTruthy();
   });
 
   it('stale info message (11 min ago) does NOT mark agent active', () => {
@@ -225,27 +263,36 @@ describe('AgentCard', () => {
     expect(screen.getByText('IDLE')).toBeTruthy();
   });
 
-  it('flips from active to idle (and stops its interval) once the info message crosses the 10 min cutoff', () => {
+  it('ignores messages from another run when reporting last activity', () => {
+    currentRun.value = makeRun({ id: 'selected-run' });
+    messages.value = [{
+      id: 'msg-other', runId: 'other-run', from: 'coder', to: 'coordinator',
+      type: 'info', body: 'Old work', timestamp: new Date().toISOString(),
+    }];
+    render(<AgentCard agentName="coder" />);
+    expect(screen.queryByText(/Last recorded activity:/)).toBeNull();
+    expect(screen.getByText('IDLE')).toBeTruthy();
+  });
+
+  it('uses semantic roster cards and lifecycle text as a non-color cue', () => {
+    currentRun.value = makeRun({
+      steps: [makeStep({ assignedAgent: 'researcher', status: 'coding' })],
+    });
+    render(<AgentCard agentName="researcher" />);
+    expect(screen.getByRole('listitem', { name: 'researcher, coding' })).toBeTruthy();
+    expect(screen.getByText('CODING')).toBeTruthy();
+  });
+
+  it('does not start a timer for message-only activity', () => {
     vi.useFakeTimers();
     currentRun.value = makeRun({ steps: [] });
-    // Message is 9m55s old — 5s away from the staleness cutoff.
     messages.value = [{
       id: 'msg-1', runId: 'run-1', from: 'coder', to: 'coordinator',
       type: 'info', body: 'Working on it',
       timestamp: new Date(Date.now() - (10 * 60_000 - 5_000)).toISOString(),
     }];
     const { container } = render(<AgentCard agentName="coder" />);
-    expect(container.querySelector('.agent-card')!.className).toContain('active');
-    expect(vi.getTimerCount()).toBe(1);
-
-    // Advance past the cutoff — the ticking interval's setNow re-render must
-    // flip the card to idle without any user interaction.
-    act(() => {
-      vi.advanceTimersByTime(10_000);
-    });
-
     expect(container.querySelector('.agent-card')!.className).toContain('idle');
-    // The interval effect's cleanup must have stopped the timer.
     expect(vi.getTimerCount()).toBe(0);
 
     vi.useRealTimers();
@@ -257,7 +304,7 @@ describe('MemoryPanel', () => {
   it('shows "No shared memory entries yet" when empty', () => {
     memoryEntries.value = [];
     render(<MemoryPanel />);
-    expect(screen.getByText('No shared memory entries yet')).toBeTruthy();
+    expect(screen.getByText(/No shared memory entries yet/)).toBeTruthy();
   });
 
   it('groups entries by namespace', () => {
@@ -296,6 +343,23 @@ describe('MemoryPanel', () => {
     // decisions (known) should come before custom-ns (unknown)
     expect(namespaces.indexOf('decisions')).toBeLessThan(namespaces.indexOf('custom-ns'));
   });
+
+  it('renders loading, offline error, and stale-with-content resource states', () => {
+    dataFreshness.value = 'loading';
+    const { rerender } = render(<MemoryPanel />);
+    expect(screen.getByLabelText('Shared memory: loading')).toBeTruthy();
+
+    dataFreshness.value = 'fresh';
+    connectionStatus.value = 'offline';
+    rerender(<MemoryPanel />);
+    expect(screen.getByLabelText('Shared memory: error')).toBeTruthy();
+
+    memoryEntries.value = [makeMemoryEntry({ value: 'last known value' })];
+    dataFreshness.value = 'stale';
+    rerender(<MemoryPanel />);
+    expect(screen.getByText('last known value')).toBeTruthy();
+    expect(screen.getByText(/last-known shared memory/)).toBeTruthy();
+  });
 });
 
 // --- MemoryGroup ---
@@ -325,6 +389,13 @@ describe('MemoryGroup', () => {
     const { container } = render(<MemoryGroup namespace="decisions" entries={entries} />);
     const entryEls = container.querySelectorAll('.memory-entry');
     expect(entryEls.length).toBe(2);
+  });
+
+  it('labels each namespace as a section and exposes its count', () => {
+    const entries = [makeMemoryEntry({ key: 'one' }), makeMemoryEntry({ key: 'two' })];
+    render(<MemoryGroup namespace="decisions" entries={entries} />);
+    expect(screen.getByRole('region', { name: 'decisions' })).toBeTruthy();
+    expect(screen.getByLabelText('2 entries')).toBeTruthy();
   });
 });
 
@@ -359,14 +430,12 @@ describe('MemoryEntryCard', () => {
     const entry = makeMemoryEntry({ key: 'expand-key', value: longValue, namespace: 'decisions' });
     expandedMemoryKeys.value = new Set();
 
-    const { container } = render(<MemoryEntryCard entry={entry} namespace="decisions" borderColor="red" />);
-    const card = container.querySelector('.memory-entry')!;
+    render(<MemoryEntryCard entry={entry} namespace="decisions" borderColor="red" />);
 
     // Initially collapsed
     expect(expandedMemoryKeys.value.has('decisions:expand-key')).toBe(false);
 
-    // Click to expand
-    fireEvent.click(card);
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
     expect(expandedMemoryKeys.value.has('decisions:expand-key')).toBe(true);
     expect(screen.getByText(longValue)).toBeTruthy();
   });
@@ -378,6 +447,20 @@ describe('MemoryEntryCard', () => {
 
     render(<MemoryEntryCard entry={entry} namespace="decisions" borderColor="red" />);
     expect(screen.getByText('Show less')).toBeTruthy();
+  });
+
+  it('renders memory as text and exposes native expand/copy controls', () => {
+    const unsafeText = '<img src=x onerror=alert(1)>' + 'x'.repeat(100);
+    const { container } = render(
+      <MemoryEntryCard
+        entry={makeMemoryEntry({ value: unsafeText })}
+        namespace="decisions"
+        borderColor="red"
+      />,
+    );
+    expect(container.querySelector('img')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Show more' }).getAttribute('aria-expanded')).toBe('false');
+    expect(screen.getByRole('button', { name: 'Copy value' })).toBeTruthy();
   });
 });
 
@@ -414,7 +497,7 @@ describe('GuidanceInput', () => {
     const { container } = render(<GuidanceInput />);
     const input = container.querySelector('input[type="text"]') as HTMLInputElement;
 
-    fireEvent.change(input, { target: { value: 'help the team' } });
+    fireEvent.input(input, { target: { value: 'help the team' } });
     const button = screen.getByText('Send');
     fireEvent.click(button);
 
@@ -428,8 +511,8 @@ describe('GuidanceInput', () => {
     const { container } = render(<GuidanceInput />);
     const input = container.querySelector('input[type="text"]') as HTMLInputElement;
 
-    fireEvent.change(input, { target: { value: 'enter guidance' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.input(input, { target: { value: 'enter guidance' } });
+    fireEvent.submit(input.closest('form')!);
 
     expect(sendGuidance).toHaveBeenCalledWith('run-xyz', 'enter guidance');
     await waitFor(() => expect(input.value).toBe(''));
@@ -441,7 +524,7 @@ describe('GuidanceInput', () => {
     const { container } = render(<GuidanceInput />);
     const input = container.querySelector('input[type="text"]') as HTMLInputElement;
 
-    fireEvent.change(input, { target: { value: 'do not lose me' } });
+    fireEvent.input(input, { target: { value: 'do not lose me' } });
     fireEvent.click(screen.getByText('Send'));
 
     await waitFor(() => expect(container.querySelector('.guidance-error')).toBeTruthy());
@@ -455,7 +538,7 @@ describe('GuidanceInput', () => {
     const { container } = render(<GuidanceInput />);
     const input = container.querySelector('input[type="text"]') as HTMLInputElement;
 
-    fireEvent.change(input, { target: { value: 'first try' } });
+    fireEvent.input(input, { target: { value: 'first try' } });
     fireEvent.click(screen.getByText('Send'));
     await waitFor(() => expect(container.querySelector('.guidance-error')).toBeTruthy());
 
@@ -469,14 +552,99 @@ describe('GuidanceInput', () => {
     const { container } = render(<GuidanceInput />);
     const input = container.querySelector('input[type="text"]') as HTMLInputElement;
 
-    fireEvent.change(input, { target: { value: 'retry me' } });
+    fireEvent.input(input, { target: { value: 'retry me' } });
     fireEvent.click(screen.getByText('Send'));
     await waitFor(() => expect(container.querySelector('.guidance-error')).toBeTruthy());
 
     // Second send succeeds (default mockResolvedValue(true)).
-    fireEvent.click(screen.getByText('Send'));
+    fireEvent.click(screen.getByText('Try again'));
     await waitFor(() => expect(container.querySelector('.guidance-error')).toBeNull());
     expect(input.value).toBe('');
+  });
+
+  it('names the exact target run and explains offline/loading/stale disabled states', () => {
+    currentRun.value = makeRun({ id: 'run-target', task: 'Upgrade dashboard' });
+    connectionStatus.value = 'offline';
+    const { rerender } = render(<GuidanceInput />);
+    expect(screen.getByText('run-target')).toBeTruthy();
+    expect(screen.getByText(/offline/)).toBeTruthy();
+    expect((screen.getByRole('textbox') as HTMLInputElement).disabled).toBe(true);
+
+    connectionStatus.value = 'online';
+    dataFreshness.value = 'loading';
+    rerender(<GuidanceInput />);
+    expect(screen.getByText(/data loads/)).toBeTruthy();
+
+    dataFreshness.value = 'stale';
+    rerender(<GuidanceInput />);
+    expect(screen.getByText(/Refresh stale run data/)).toBeTruthy();
+  });
+
+  it('keeps separate drafts when the selected run changes and retains focus', () => {
+    currentRun.value = makeRun({ id: 'run-a' });
+    render(<GuidanceInput />);
+    const input = screen.getByRole('textbox') as HTMLInputElement;
+    input.focus();
+    fireEvent.input(input, { target: { value: 'draft for A' } });
+
+    act(() => { currentRun.value = makeRun({ id: 'run-b' }); });
+    expect(input.value).toBe('');
+    expect(document.activeElement).toBe(input);
+    fireEvent.input(input, { target: { value: 'draft for B' } });
+
+    act(() => { currentRun.value = makeRun({ id: 'run-a' }); });
+    expect(input.value).toBe('draft for A');
+    act(() => { currentRun.value = makeRun({ id: 'run-b' }); });
+    expect(input.value).toBe('draft for B');
+  });
+
+  it('enforces single-flight submission without clearing edits made while pending', async () => {
+    const request = deferred<boolean>();
+    vi.mocked(sendGuidance).mockReturnValueOnce(request.promise);
+    currentRun.value = makeRun({ id: 'run-one' });
+    render(<GuidanceInput />);
+    const input = screen.getByRole('textbox') as HTMLInputElement;
+    input.focus();
+    fireEvent.input(input, { target: { value: 'first draft' } });
+    const form = input.closest('form')!;
+
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    expect(sendGuidance).toHaveBeenCalledTimes(1);
+    fireEvent.input(input, { target: { value: 'newer draft' } });
+    await act(async () => {
+      request.resolve(true);
+      await request.promise;
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Guidance sent'));
+    expect(input.value).toBe('newer draft');
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('does not apply a completed response to a newly selected run', async () => {
+    const request = deferred<boolean>();
+    vi.mocked(sendGuidance).mockReturnValueOnce(request.promise);
+    currentRun.value = makeRun({ id: 'run-a' });
+    render(<GuidanceInput />);
+    const input = screen.getByRole('textbox') as HTMLInputElement;
+    fireEvent.input(input, { target: { value: 'send A' } });
+    fireEvent.submit(input.closest('form')!);
+
+    act(() => { currentRun.value = makeRun({ id: 'run-b' }); });
+    fireEvent.input(input, { target: { value: 'keep B' } });
+    await act(async () => {
+      request.resolve(true);
+      await request.promise;
+      await Promise.resolve();
+    });
+
+    expect(input.value).toBe('keep B');
+    expect(screen.queryByText(/Guidance sent to run run-a/)).toBeNull();
+    act(() => { currentRun.value = makeRun({ id: 'run-a' }); });
+    expect(input.value).toBe('');
+    expect(screen.getByText(/Guidance sent to run run-a/)).toBeTruthy();
   });
 });
 
