@@ -1,6 +1,16 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { z, ZodError } from 'zod';
-import { handleTeamStart, handleTeamStatus, handleTeamAdvance, teamAdvanceShape } from '../src/tools/workflow.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import {
+  handleTeamStart,
+  handleTeamStatus,
+  handleTeamAdvance,
+  handleTeamControl,
+  teamAdvanceShape,
+  teamControlSchema,
+} from '../src/tools/workflow.js';
 import { handleTeamSubmitResult } from '../src/tools/results.js';
 import { handleTeamSendMessage, handleTeamGetMessages, teamGetMessagesShape } from '../src/tools/messages.js';
 import { handleTeamMemoryWrite, handleTeamMemoryRead, handleTeamMemoryDelete } from '../src/tools/memory.js';
@@ -128,6 +138,78 @@ describe('Zod schema validation', () => {
       expect(() => handleTeamAdvance(sm, {
         runId: 'r1', stepId: 1, action: 'mark_reviewed', summary: '',
       })).toThrow(ZodError);
+    });
+  });
+
+  describe('TeamControlSchema', () => {
+    const valid = {
+      action: 'pause_run', target: { kind: 'run' }, commandId: 'pause-1', expectedRevision: 0,
+    };
+
+    it.each([
+      ['invalid action', { ...valid, action: 'kill_run' }],
+      ['empty commandId', { ...valid, commandId: '' }],
+      ['negative revision', { ...valid, expectedRevision: -1 }],
+      ['fractional revision', { ...valid, expectedRevision: 1.5 }],
+      ['invalid target kind', { ...valid, target: { kind: 'worker' } }],
+      ['invalid step id', { ...valid, action: 'cancel_step', target: { kind: 'step', stepId: 0 }, confirmation: true }],
+      ['unknown field', { ...valid, unexpected: true }],
+      ['long reason', { ...valid, reason: 'x'.repeat(501) }],
+    ])('rejects %s', (_label, args) => {
+      expect(() => handleTeamControl(sm, { runId: 'run', ...args })).toThrow(ZodError);
+    });
+
+    it('rejects action/target mismatches', () => {
+      expect(() => handleTeamControl(sm, {
+        runId: 'run', ...valid, target: { kind: 'step', stepId: 1 },
+      })).toThrow(ZodError);
+      expect(() => handleTeamControl(sm, {
+        runId: 'run', ...valid, action: 'retry_step', target: { kind: 'run' },
+      })).toThrow(ZodError);
+    });
+
+    it('requires confirmation=true for cancellation actions', () => {
+      expect(() => handleTeamControl(sm, {
+        runId: 'run', ...valid, action: 'cancel_run',
+      })).toThrow(ZodError);
+      expect(() => handleTeamControl(sm, {
+        runId: 'run', ...valid, action: 'cancel_step', target: { kind: 'step', stepId: 1 },
+      })).toThrow(ZodError);
+    });
+
+    it('enforces the complete schema at the MCP SDK boundary before dispatch', async () => {
+      const dispatches: unknown[] = [];
+      const server = new McpServer({ name: 'validation-test-server', version: '1.0.0' });
+      server.registerTool('team_control', { inputSchema: teamControlSchema }, async (args) => {
+        dispatches.push(args);
+        return { content: [{ type: 'text' as const, text: 'ok' }] };
+      });
+
+      const client = new Client({ name: 'validation-test-client', version: '1.0.0' });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+
+      const call = (args: Record<string, unknown>) => client.callTool({ name: 'team_control', arguments: args });
+      await expect(call({ runId: 'r', ...valid, unexpected: true })).resolves.toMatchObject({
+        isError: true,
+        content: [{ text: expect.stringMatching(/Input validation error.*Unrecognized key/s) }],
+      });
+      await expect(call({
+        runId: 'r', ...valid, action: 'retry_step', target: { kind: 'run' },
+      })).resolves.toMatchObject({
+        isError: true,
+        content: [{ text: expect.stringMatching(/Input validation error.*requires a step target/s) }],
+      });
+      expect(dispatches).toEqual([]);
+
+      await expect(call({ runId: 'r', ...valid })).resolves.toMatchObject({
+        content: [{ type: 'text', text: 'ok' }],
+      });
+      expect(dispatches).toEqual([{ runId: 'r', ...valid }]);
+
+      await client.close();
+      await server.close();
     });
   });
 

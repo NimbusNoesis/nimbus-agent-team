@@ -1,7 +1,7 @@
 import type { StateMachine } from '../state/machine.js';
 import type { MessageBus } from '../bus/message-bus.js';
 import type { MemoryStore } from '../memory/store.js';
-import { handleTeamStart, handleTeamStatus, handleTeamAdvance } from './workflow.js';
+import { handleTeamStart, handleTeamStatus, handleTeamAdvance, handleTeamControl } from './workflow.js';
 import { handleTeamSubmitResult } from './results.js';
 import { handleTeamSendMessage, handleTeamGetMessages } from './messages.js';
 import { handleTeamMemoryWrite, handleTeamMemoryRead, handleTeamMemoryDelete } from './memory.js';
@@ -53,6 +53,8 @@ export class ToolRegistry {
         return handleTeamStatus(this.sm, args);
       case 'team_advance':
         return handleTeamAdvance(this.sm, args);
+      case 'team_control':
+        return handleTeamControl(this.sm, args);
       case 'team_submit_result':
         return handleTeamSubmitResult(this.sm, args);
       case 'team_send_message':
