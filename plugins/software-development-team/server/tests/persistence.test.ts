@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { Persistence } from '../src/state/persistence.js';
+import { Persistence, normalizeRunState } from '../src/state/persistence.js';
 import { MAX_MESSAGES_PER_RUN } from '../src/bus/message-bus.js';
 import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -25,6 +25,27 @@ describe('Persistence', () => {
     await rm(tmpDir, { recursive: true });
   });
 
+  it('uses the approved bounded lifecycle retention budgets', () => {
+    expect(MAX_COMMAND_RECEIPTS).toBe(256);
+    expect(MAX_LIFECYCLE_HISTORY).toBe(128);
+  });
+
+  it.each(['none', 'pausing', 'paused', 'cancelling', 'cancelled'] as const)(
+    'restores the canonical %s control phase for version 2',
+    (controlPhase) => {
+      const restored = normalizeRunState({
+        id: `phase-${controlPhase}`, status: 'in_progress', steps: [],
+        createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+        lifecycle: {
+          version: 2, capabilities: EXECUTION_CONTROL_CAPABILITIES,
+          controlPhase, revision: 0, commandReceipts: [], history: [],
+        },
+      });
+
+      expect(restored.lifecycle.controlPhase).toBe(controlPhase);
+    },
+  );
+
   it('saves and loads run state', async () => {
     const run: RunState = {
       id: 'r1',
@@ -41,7 +62,7 @@ describe('Persistence', () => {
       lifecycle: {
         version: RUN_LIFECYCLE_VERSION,
         capabilities: EXECUTION_CONTROL_CAPABILITIES,
-        controlPhase: 'running',
+        controlPhase: 'none',
         revision: 0,
         commandReceipts: [],
         history: [],
@@ -55,6 +76,12 @@ describe('Persistence', () => {
     const raw = JSON.stringify({
       id: 'legacy-missing', status: 'ready', steps: [],
       createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      lifecycle: {
+        controlPhase: 'cancelling', revision: 12,
+        commandReceipts: [{ commandId: 'unversioned-receipt' }],
+        history: [{ commandId: 'unversioned-history' }],
+        cancelRequestedAt: '2026-01-01T00:00:01.000Z',
+      },
     }, null, 2);
     const file = join(dir, 'state.json');
     await writeFile(file, raw);
@@ -63,7 +90,7 @@ describe('Persistence', () => {
 
     expect(loaded?.lifecycle).toEqual({
       version: 2, capabilities: EXECUTION_CONTROL_CAPABILITIES,
-      controlPhase: 'running', revision: 0,
+      controlPhase: 'none', revision: 0,
       commandReceipts: [], history: [],
     });
     expect(await readFile(file, 'utf-8')).toBe(raw);
@@ -77,10 +104,22 @@ describe('Persistence', () => {
       steps: [{
         step: { id: 1, description: 'legacy', files: [], acceptanceCriteria: [], dependsOn: [] },
         status: 'coding', retryCount: 0, assignedAgent: 'coder', result: null,
-        claimedFiles: [], consecutiveSameError: 0,
+        claimedFiles: [], consecutiveSameError: 0, manualAttempt: 9,
+        cancelRequestedAt: '2026-01-01T00:00:02.000Z',
+        cancelledAt: '2026-01-01T00:00:03.000Z',
       }],
       createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
-      lifecycle: { version: 1, controlPhase: 'pausing', revision: 4 },
+      lifecycle: {
+        version: 1,
+        capabilities: { pause_run: false },
+        controlPhase: 'pausing',
+        revision: 4,
+        commandReceipts: [{ commandId: 'untrusted-v1-receipt' }],
+        history: [{ commandId: 'untrusted-v1-history' }],
+        pauseRequestedAt: '2026-01-01T00:00:04.000Z',
+        pausedAt: '2026-01-01T00:00:05.000Z',
+        cancelRequestedAt: '2026-01-01T00:00:06.000Z',
+      },
     };
     const raw = JSON.stringify(legacy, null, 2);
     const file = join(dir, 'state.json');
@@ -90,16 +129,18 @@ describe('Persistence', () => {
 
     expect(loaded?.lifecycle).toEqual({
       version: 2, capabilities: EXECUTION_CONTROL_CAPABILITIES,
-      controlPhase: 'pausing', revision: 4,
+      controlPhase: 'none', revision: 0,
       commandReceipts: [], history: [],
     });
     expect(loaded?.steps[0].manualAttempt).toBe(0);
+    expect(loaded?.steps[0]).not.toHaveProperty('cancelRequestedAt');
+    expect(loaded?.steps[0]).not.toHaveProperty('cancelledAt');
     expect(await readFile(file, 'utf-8')).toBe(raw);
   });
 
   it('round-trips all version-2 lifecycle fields', async () => {
     const run: RunState = {
-      id: 'v2', status: 'in_progress', steps: [{
+      id: 'v2', status: 'cancelled', steps: [{
         step: {
           id: 1, description: 'draining cancellation', files: ['src/active.ts'],
           acceptanceCriteria: [], dependsOn: [],
@@ -121,21 +162,21 @@ describe('Persistence', () => {
       lifecycle: {
         version: 2,
         capabilities: { ...EXECUTION_CONTROL_CAPABILITIES },
-        controlPhase: 'paused',
+        controlPhase: 'cancelled',
         revision: 7,
         pauseRequestedAt: '2026-01-01T00:00:02.000Z',
         pausedAt: '2026-01-01T00:00:03.000Z',
         cancelRequestedAt: '2026-01-01T00:00:04.000Z',
         commandReceipts: [{
-          commandId: 'cmd-1', fingerprint: 'pause:run', action: 'pause_run',
+          commandId: 'cmd-1', fingerprint: 'cancel:run', action: 'cancel_run',
           target: { kind: 'run' }, expectedRevision: 6, revision: 7,
           recordedAt: '2026-01-01T00:00:02.000Z',
-          outcome: { controlPhase: 'paused', runStatus: 'in_progress' },
+          outcome: { controlPhase: 'cancelled', runStatus: 'cancelled' },
         }],
         history: [{
-          commandId: 'cmd-1', action: 'pause_run', target: { kind: 'run' },
+          commandId: 'cmd-1', action: 'cancel_run', target: { kind: 'run' },
           revision: 7, recordedAt: '2026-01-01T00:00:02.000Z',
-          fromPhase: 'running', toPhase: 'pausing', summary: 'Pause requested',
+          fromPhase: 'cancelling', toPhase: 'cancelled', summary: 'Cancellation acknowledged',
         }],
       },
     };
@@ -150,20 +191,20 @@ describe('Persistence', () => {
       action: 'pause_run' as const, target: { kind: 'run' as const },
       expectedRevision: revision, revision: revision + 1,
       recordedAt: '2026-01-01T00:00:00.000Z',
-      outcome: { controlPhase: 'running' as const, runStatus: 'in_progress' as const },
+      outcome: { controlPhase: 'none' as const, runStatus: 'in_progress' as const },
     }));
     const history = Array.from({ length: MAX_LIFECYCLE_HISTORY + 5 }, (_, revision) => ({
       commandId: `command-${revision}`, action: 'pause_run' as const,
       target: { kind: 'run' as const }, revision: revision + 1,
       recordedAt: '2026-01-01T00:00:00.000Z',
-      fromPhase: 'running' as const, toPhase: 'pausing' as const,
+      fromPhase: 'none' as const, toPhase: 'pausing' as const,
     }));
     const run: RunState = {
       id: 'bounded', status: 'in_progress', steps: [],
       createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
       lifecycle: {
         version: 2, capabilities: { ...EXECUTION_CONTROL_CAPABILITIES },
-        controlPhase: 'running', revision: 999, commandReceipts: receipts, history,
+        controlPhase: 'none', revision: 999, commandReceipts: receipts, history,
       },
     };
     await persistence.saveRunState(run);

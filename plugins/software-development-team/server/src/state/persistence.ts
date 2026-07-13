@@ -21,7 +21,13 @@ const SAFE_KEY_RE = /^[a-zA-Z0-9_\-]+$/;
 // on-disk jsonl from growing without bound (the DB is capped separately).
 const COMPACT_INTERVAL = 2_000;
 
-const CONTROL_PHASES = new Set<RunControlPhase>(['running', 'pausing', 'paused', 'cancelling']);
+const CONTROL_PHASES = new Set<RunControlPhase>([
+  'none',
+  'pausing',
+  'paused',
+  'cancelling',
+  'cancelled',
+]);
 
 export class UnsupportedLifecycleVersionError extends Error {
   constructor(version: number) {
@@ -58,7 +64,7 @@ function lifecycleVersion(run: Record<string, unknown>, lifecycle: Record<string
 }
 
 function controlPhase(value: unknown): RunControlPhase {
-  if (value === undefined) return 'running';
+  if (value === undefined) return 'none';
   if (typeof value !== 'string' || !CONTROL_PHASES.has(value as RunControlPhase)) {
     throw new Error(`Invalid persisted run state: unknown lifecycle control phase ${JSON.stringify(value)}`);
   }
@@ -91,9 +97,11 @@ export function normalizeRunState(value: unknown): RestoredRunState {
     throw new UnsupportedLifecycleVersionError(version);
   }
 
-  // Version 1 never had command receipts. Known additive fields are retained
-  // when present so an experimental v1 control phase/revision is not lost.
-  const lifecycle: RunLifecycleV2 = {
+  // Only an explicitly versioned v2 record may supply lifecycle control data.
+  // Missing-version and v1 records predate this contract, so lifecycle-looking
+  // fields in them are untrusted and must not freeze admissions, invent a
+  // revision, or replay an operator command after restore.
+  const lifecycle: RunLifecycleV2 = version === RUN_LIFECYCLE_VERSION ? {
     version: RUN_LIFECYCLE_VERSION,
     // Capabilities describe this binary's v2 contract, not persisted action
     // availability. Deriving them here gives legacy runs a safe canonical
@@ -114,17 +122,28 @@ export function normalizeRunState(value: unknown): RestoredRunState {
     ...(typeof rawLifecycle?.cancelRequestedAt === 'string'
       ? { cancelRequestedAt: rawLifecycle.cancelRequestedAt }
       : {}),
+  } : {
+    version: RUN_LIFECYCLE_VERSION,
+    capabilities: { ...EXECUTION_CONTROL_CAPABILITIES },
+    controlPhase: 'none',
+    revision: 0,
+    commandReceipts: [],
+    history: [],
   };
 
   const steps = raw.steps.map((step, index) => {
     const restored = requireRecord(step, `steps[${index}]`);
+    const {
+      manualAttempt: _manualAttempt,
+      cancelRequestedAt: _cancelRequestedAt,
+      cancelledAt: _cancelledAt,
+      ...legacySafeStep
+    } = restored;
     return {
-      ...restored,
-      manualAttempt: nonNegativeInteger(
-        restored.manualAttempt,
-        0,
-        `steps[${index}].manualAttempt`,
-      ),
+      ...(version === RUN_LIFECYCLE_VERSION ? restored : legacySafeStep),
+      manualAttempt: version === RUN_LIFECYCLE_VERSION
+        ? nonNegativeInteger(restored.manualAttempt, 0, `steps[${index}].manualAttempt`)
+        : 0,
     };
   });
 

@@ -56,14 +56,14 @@ export interface StepResult {
 // --- Run State ---
 
 export const RUN_LIFECYCLE_VERSION = 2 as const;
-export const MAX_COMMAND_RECEIPTS = 128;
-export const MAX_LIFECYCLE_HISTORY = 256;
+export const MAX_COMMAND_RECEIPTS = 256;
+export const MAX_LIFECYCLE_HISTORY = 128;
 
 /**
  * RunStatus remains the aggregate plan outcome. This phase independently
  * describes whether the coordinator may admit or spawn execution work.
  */
-export type RunControlPhase = 'running' | 'pausing' | 'paused' | 'cancelling';
+export type RunControlPhase = 'none' | 'pausing' | 'paused' | 'cancelling' | 'cancelled';
 
 export type ExecutionControlAction =
   | 'pause_run'
