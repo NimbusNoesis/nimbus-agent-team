@@ -1,4 +1,5 @@
 import { currentRun } from '../../state/store';
+import { RunControls } from '../controls/RunControls';
 import { StepCard } from './StepCard';
 
 export function StepsPanel() {
@@ -7,6 +8,7 @@ export function StepsPanel() {
 
   return (
     <div id="steps-list">
+      <RunControls />
       {run.steps.map(s => (
         <StepCard key={s.step.id} stepState={s} />
       ))}

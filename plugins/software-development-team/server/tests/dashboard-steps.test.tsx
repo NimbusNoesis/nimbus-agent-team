@@ -162,6 +162,20 @@ describe('StepCard', () => {
     expect(expandedStepId.value).toBe(42);
   });
 
+  it('uses a keyboard-operable disclosure with truthful cancelling language', () => {
+    const stepState = makeStep({
+      status: 'cancelling',
+      step: { id: 42, description: 'Drain me', files: [], acceptanceCriteria: [], dependsOn: [] },
+    });
+    const { container } = render(<StepCard stepState={stepState} />);
+    const disclosure = screen.getByRole('button', { name: /Step 42.*CANCELLING.*DRAINING/i });
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.keyDown(disclosure, { key: 'Enter' });
+    fireEvent.click(disclosure);
+    expect(expandedStepId.value).toBe(42);
+    expect(container.querySelector('#step-42-detail')).toBeTruthy();
+  });
+
   it('clicking header again collapses the step (clears expandedStepId)', () => {
     const stepState = makeStep({ step: { id: 42, description: 'Expand me', files: [], acceptanceCriteria: [], dependsOn: [] } });
     expandedStepId.value = 42;
@@ -198,6 +212,15 @@ describe('StepDetail', () => {
     currentRun.value = makeRun({ steps: [dep, s] });
     render(<StepDetail stepState={s} />);
     expect(screen.getByText(/Waiting on step 1/)).toBeTruthy();
+  });
+
+  it('identifies a cancelled dependency as a persistent blocker', () => {
+    const dep = makeStep({ step: { id: 1, description: 'Cancelled dependency', files: [], acceptanceCriteria: [], dependsOn: [] }, status: 'cancelled' });
+    const s = makeStep({ step: { id: 2, description: 'Blocked step', files: [], acceptanceCriteria: [], dependsOn: [1] }, status: 'pending' });
+    currentRun.value = makeRun({ steps: [dep, s] });
+    render(<StepDetail stepState={s} />);
+    expect(screen.getByText(/dependency step 1 was cancelled/i)).toBeTruthy();
+    expect(screen.getByText(/remains pending unless the plan changes/i)).toBeTruthy();
   });
 
   it('shows file-conflict blocking reason for pending step whose file is claimed by a coding step', () => {
@@ -258,6 +281,20 @@ describe('StepDetail', () => {
     currentRun.value = makeRun({ steps: [s] });
     render(<StepDetail stepState={s} />);
     expect(screen.getByText('Extra detail info')).toBeTruthy();
+  });
+
+  it('renders untrusted result and file text as text rather than markup', () => {
+    const unsafe = '<img src=x onerror="globalThis.pwned=true">';
+    const s = makeStep({
+      status: 'complete',
+      result: { status: 'done', summary: unsafe, details: '<script>globalThis.pwned=true</script>' },
+      step: { id: 1, description: 'Safe rendering', files: [unsafe], acceptanceCriteria: [], dependsOn: [] },
+    });
+    currentRun.value = makeRun({ steps: [s] });
+    const { container } = render(<StepDetail stepState={s} />);
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('script')).toBeNull();
+    expect(container.textContent).toContain(unsafe);
   });
 
   it('shows acceptance criteria with check marks when complete', () => {
@@ -357,5 +394,35 @@ describe('StepDetail', () => {
     const { container } = render(<StepDetail stepState={s} />);
     expect(container.textContent).toContain('(running)');
     vi.useRealTimers();
+  });
+
+  it('shows manual attempts, claims, reviewer truth, and persisted worktree context', () => {
+    const s = makeStep({
+      status: 'reviewing', assignedAgent: 'reviewer', retryCount: 2, manualAttempt: 1,
+      claimedFiles: ['src/safe.ts'],
+      worktree: { branch: 'team-run-step-1', path: '/repo/.worktrees/run/step-1', targetBranch: 'main', targetCommit: 'abc123' },
+    });
+    currentRun.value = makeRun({ steps: [s] });
+    const { container } = render(<StepDetail stepState={s} />);
+    expect(container.textContent).toContain('Awaiting reviewer verdict');
+    expect(container.textContent).toContain('src/safe.ts');
+    expect(container.textContent).toContain('team-run-step-1');
+    expect(container.textContent).toContain('/repo/.worktrees/run/step-1');
+    expect(container.textContent).toContain('abc123');
+  });
+
+  it.each(['complete', 'cancelled'] as const)('marks %s steps as terminal and immutable', status => {
+    const s = makeStep({ status });
+    currentRun.value = makeRun({ steps: [s] });
+    render(<StepDetail stepState={s} />);
+    expect(screen.getByText(new RegExp(`${status} and immutable`, 'i'))).toBeTruthy();
+  });
+
+  it('explains active cancellation as draining without force-kill while claims remain held', () => {
+    const s = makeStep({ status: 'cancelling', claimedFiles: ['src/claimed.ts'] });
+    currentRun.value = makeRun({ steps: [s] });
+    const { container } = render(<StepDetail stepState={s} />);
+    expect(container.textContent).toMatch(/draining without force-kill/i);
+    expect(container.textContent).toMatch(/claims remain held/i);
   });
 });
