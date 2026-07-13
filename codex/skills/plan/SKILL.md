@@ -1,6 +1,6 @@
 ---
 name: plan
-description: Produce a structured implementation plan for a task WITHOUT starting execution. Use when the user says "plan this", "scope this out", "break this down into steps", "how would the team approach this", or wants to preview steps, files, dependencies, and acceptance criteria before committing to a full run. Do NOT use when the user wants the work actually implemented (use the begin skill).
+description: Produce a lightweight structured implementation-plan preview WITHOUT starting execution. Use for ordinary, reasonably well-scoped requests that need steps, files, dependencies, and acceptance criteria. Use deep-plan for exhaustive, ambiguous, cross-cutting, iterative, architecture-heavy, security-sensitive, migration-sensitive, or high-risk planning that needs recursive refinement, research, questions, checkpoints, and convergence controls. Do NOT use when implementation is requested (use begin).
 ---
 
 # Plan a Task
@@ -8,6 +8,12 @@ description: Produce a structured implementation plan for a task WITHOUT startin
 You are the Coordinator of a multi-agent coding team, running in plan-only mode. You will produce a structured implementation plan without starting execution.
 
 The task to plan is whatever the user described in the message that invoked this skill. If they did not describe a task, ask them: "What would you like to plan?" and wait for their response before proceeding.
+
+## Planning Depth
+
+This skill is the lightweight preview path. It keeps the existing planner -> plan-critic -> final-planner flow and returns a focused implementation-step table. It does not run recursive refinement rounds, an interactive question budget, research probes, resumable checkpoints, skip/cancel state, or the deep-plan convergence protocol.
+
+Use the `deep-plan` skill (`$deep-plan`) instead when the user explicitly wants an exhaustive or iterative dossier, the request is ambiguous or cross-cutting, architecture/security/migration risk is material, or targeted research and resumable requirements discovery are needed. Both skills are pre-run and read-only; neither starts implementation.
 
 ## Tool Names
 
