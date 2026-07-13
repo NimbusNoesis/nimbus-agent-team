@@ -6,6 +6,9 @@ researcher, and documentation subagents that work through a structured plan with
 shared memory, a message bus, quality-gated review loops, and a real-time web
 dashboard — all backed by an MCP server.
 
+The distribution also includes a standalone, pre-run `recursive-planner` template
+and `deep-plan` skill for exhaustive, resumable planning without starting execution.
+
 ## Prerequisites
 
 - [OpenAI Codex CLI](https://developers.openai.com/codex/cli) installed
@@ -38,6 +41,7 @@ Start Codex and invoke the `begin` skill with your task:
 ```bash
 codex
 > $begin Implement a REST API for user management with CRUD endpoints
+> $deep-plan Design a zero-downtime multi-tenant data migration
 ```
 
 Skills can be invoked two ways in Codex:
@@ -62,13 +66,14 @@ The coordinator will:
 | `status` | Check current run status and step progress |
 | `memory` | Browse and search team memory across namespaces |
 | `resume` | Resume an interrupted run (needs a run ID) |
-| `plan` | Produce a plan without starting execution |
+| `plan` | Produce a lightweight plan preview without starting execution |
+| `deep-plan` | Produce an exhaustive, resumable planning dossier through bounded recursive refinement |
 | `research` | Research a topic, API, or codebase pattern |
 | `review` | Review uncommitted changes or specific files |
 
 ### Agents
 
-The skills spawn six role-specific subagents. Role identities and TOML template filenames are `planner`, `plan-critic`, `coder`, `reviewer`, `researcher`, and `documentation`. Native `spawn_agent.task_name` is instead a unique invocation label; it never loads a template, must match `^[a-z0-9_]+$`, and must not reuse any live or previously created agent path in the coordinator session. Before each pre-run planning workflow, the coordinator allocates the smallest fresh positive integer `<W>` for which all three phase labels are unused, then reuses it in `planner_draft_<W>`, `plan_critic_<W>`, and `planner_final_<W>`. This coordinator-session sequence does not depend on a run ID and advances for every later plan or begin invocation. Execution uses `<role>_step_<N>_attempt_<A>` (for example, `coder_step_2_attempt_1` and `reviewer_step_2_attempt_1`), incrementing the per-role/phase attempt for revisions, recovery, interrupted re-dispatches, and repeated reviews. The step number keeps parallel same-role dispatches distinct. The TOML files in
+The distribution installs seven role templates. The six established team roles are `planner`, `plan-critic`, `coder`, `reviewer`, `researcher`, and `documentation`; `recursive-planner` is a separate one-pass, pre-run planning helper and is not an execution worker or dashboard card. Native `spawn_agent.task_name` is a unique invocation label, never a template selector: it must match `^[a-z0-9_]+$` and must not reuse any live or previously created agent path in the coordinator session. Before each ordinary planning workflow, the coordinator allocates the smallest fresh positive integer `<W>` for which `planner_draft_<W>`, `plan_critic_<W>`, and `planner_final_<W>` are unused. Deep-plan reserves its complete seven-label set (three recursive rounds, two research probes, one critic, one synthesis) before its first spawn and allocates a fresh set for every later workflow. Execution uses `<role>_step_<N>_attempt_<A>` (for example, `coder_step_2_attempt_1` and `reviewer_step_2_attempt_1`), incrementing the per-role/phase attempt for revisions, recovery, interrupted re-dispatches, and repeated reviews. The step number keeps parallel same-role dispatches distinct. The TOML files in
 `~/.codex/agents/` are role templates: before each spawn, the coordinator reads the
 appropriate template and includes its instructions plus the full per-step context in
 the native `spawn_agent` request. Subagents inherit no conversation context. When the
@@ -76,6 +81,31 @@ team MCP server and a role's required tools are registered in the current Codex
 session, subagents can call the mapped `mcp__software_development_team__team_*`
 tools directly; skills must run their MCP availability preflight and must not assume
 that every MCP tool is present.
+
+### Deep planning
+
+Use `$plan` for an ordinary, reasonably well-scoped preview. Use `$deep-plan` for
+ambiguous, cross-cutting, iterative, architecture-heavy, security-sensitive,
+migration-sensitive, or otherwise high-risk work. The main Codex session owns the
+bounded controller: at most three `recursive-planner` refinement responses, five
+one-at-a-time material questions, and two deduplicated researcher probes. Every
+non-cancel path then receives exactly one plan-critic pass and one non-interactive
+recursive-planner synthesis pass.
+
+The controller checkpoints only compact canonical state. Continue a paused workflow
+with `resume <workflow-id>`; answer the pending question, use `skip` to preserve it as
+an assumption/open question, or use `cancel` to return the latest partial artifact
+without critic or synthesis. Codex reserves a complete grammar-safe native label set
+before the first spawn; a resumed workflow recovers the original workflow number and
+uses only its not-yet-created labels. Every spawn rereads the installed TOML template
+and includes its complete instructions because `task_name` never selects a role.
+
+The final dossier covers requirements/assumptions, goals/non-goals, current state,
+architecture/data flow, ordered file-level implementation, risks/security, testing,
+rollout/rollback, observability, documentation, acceptance criteria, and open
+questions. Its appendix is the validated JSON array that may later be supplied as
+`team_start.steps` through the normal begin/approval workflow. `$deep-plan` itself
+never calls `team_start`, starts a run, creates a worktree, or modifies the repository.
 
 ## How it works
 
@@ -115,7 +145,7 @@ On every fresh status snapshot, the scheduler gives eligible review/revision lif
 
 ### Mandatory run-scoped worktrees
 
-Every execution step has one mandatory worktree at `.worktrees/{runId}/step-{N}` on branch `team-{runId}-step-{N}`. Planner and plan-critic are pre-approval, read-only roles in the primary workspace. Coder and documentation are mutating roles that read, write, verify, and commit only in the supplied worktree. Reviewer and researcher use the supplied worktree only for read-only inspection and verification. Worktrees do not relax exact-claim serialization: two steps whose declared file strings overlap exactly must not run concurrently.
+Every execution step has one mandatory worktree at `.worktrees/{runId}/step-{N}` on branch `team-{runId}-step-{N}`. Planner, plan-critic, and recursive-planner are pre-run/pre-approval, read-only roles in the primary workspace and never receive execution worktrees. Coder and documentation are mutating roles that read, write, verify, and commit only in the supplied worktree. Reviewer and researcher use the supplied worktree only for read-only inspection and verification. Worktrees do not relax exact-claim serialization: two steps whose declared file strings overlap exactly must not run concurrently.
 
 When a pending execution step is first admitted, the coordinator captures its current target branch and exact commit, creates the worktree from that commit, and persists `{targetBranch, targetCommit, path, branch}` before `start_coding`. That capture and creation happen once; reviewer, revision-coder, researcher, documentation, and interrupted-worker dispatches reuse the same persisted context. Missing or inconsistent context blocks or escalates the step rather than creating a replacement worktree.
 
@@ -179,12 +209,14 @@ codex/
 ├── agents/                Role templates used in spawn prompts (TOML)
 │   ├── planner.toml
 │   ├── plan-critic.toml
+│   ├── recursive-planner.toml
 │   ├── coder.toml
 │   ├── reviewer.toml
 │   ├── researcher.toml
 │   └── documentation.toml
 └── skills/                Skills (one folder per skill, each with SKILL.md)
     ├── begin/
+    ├── deep-plan/
     ├── status/
     ├── memory/
     ├── resume/
@@ -202,8 +234,8 @@ not duplicated here.
 2. Delete the copied files:
 
    ```bash
-   rm -f  ~/.codex/agents/{coder,planner,plan-critic,reviewer,researcher,documentation}.toml
-   rm -rf ~/.codex/skills/{begin,status,memory,resume,plan,research,review}
+   rm -f  ~/.codex/agents/{coder,planner,plan-critic,recursive-planner,reviewer,researcher,documentation}.toml
+   rm -rf ~/.codex/skills/{begin,deep-plan,status,memory,resume,plan,research,review}
    ```
 
 3. Optionally delete the build dir: `rm -rf ~/.codex/data/software-development-team`.

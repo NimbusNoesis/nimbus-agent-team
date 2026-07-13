@@ -1,6 +1,6 @@
 # Claude Coding Team
 
-A [Claude Code](https://claude.ai/claude-code) plugin that orchestrates a multi-agent coding team. A coordinator dispatches planner, coder, reviewer, researcher, and documentation agents that work autonomously through a structured plan with shared memory, a real-time dashboard, and built-in quality gates.
+A [Claude Code](https://claude.ai/claude-code) plugin that orchestrates a multi-agent coding team. A coordinator dispatches planner, plan-critic, coder, reviewer, researcher, and documentation agents that work autonomously through a structured plan with shared memory, a real-time dashboard, and built-in quality gates. A separate pre-run `recursive-planner` supports exhaustive deep planning without entering the execution lifecycle.
 
 > **Running in OpenAI Codex CLI?** The same team runs on Codex too — see [`../../codex/README.md`](../../codex/README.md). The Codex port reuses this plugin's `server/` unchanged; the two hosts coexist. Use them **sequentially** on a given project: each session runs its own server instance against the same `.team/` state, and concurrent instances race on it (the server logs a warning via `.team/server.lock` when it detects another live instance). Launch sessions from the project root — team state lands in `.team/` relative to the working directory.
 
@@ -8,6 +8,7 @@ A [Claude Code](https://claude.ai/claude-code) plugin that orchestrates a multi-
 
 - **Multi-agent orchestration** -- coordinator manages a pipeline of planner, coder, reviewer, researcher, and documentation agents
 - **Structured planning** -- tasks are broken into ordered steps with dependencies, file ownership, and acceptance criteria
+- **Bounded deep planning** -- `/deep-plan` uses resumable recursive refinement, focused questions/research, adversarial critique, and final synthesis without starting execution
 - **Code review loop** -- every step is reviewed before approval; reviewers can request revisions (up to 3 retries)
 - **In-memory SQLite database** -- all stateful storage (runs, messages, memory) backed by sql.js in-memory SQLite
 - **Shared memory** -- agents share decisions, context, learnings, and reflections via a persistent key-value store
@@ -61,6 +62,9 @@ From any project directory with Claude Code:
 claude
 > /begin Implement a REST API for user management with CRUD endpoints
 
+# Develop an exhaustive plan without starting a run
+> /deep-plan Design a zero-downtime multi-tenant data migration
+
 # The coordinator will:
 # 1. Assess scope and dispatch the planner (or plan directly for small tasks)
 # 2. Present the plan for your approval
@@ -79,9 +83,40 @@ In addition to the main `/begin` command, the plugin provides focused commands:
 | `/status` | Check current run status and step progress |
 | `/memory` | Browse and search team memory across all namespaces |
 | `/resume <run-id>` | Resume an interrupted run |
-| `/plan <task>` | Plan a task without starting execution |
+| `/plan <task>` | Produce a lightweight plan preview without starting execution |
+| `/deep-plan <task>` | Produce an exhaustive, resumable planning dossier through bounded recursive refinement |
 | `/research <query>` | Research a topic, API, or codebase pattern |
 | `/review [files]` | Review uncommitted changes or specific files |
+
+### Deep planning
+
+Choose `/plan` for an ordinary, reasonably well-scoped preview. Choose `/deep-plan`
+for ambiguous, cross-cutting, iterative, architecture-heavy, security-sensitive,
+migration-sensitive, or otherwise high-risk work. The main Claude session owns the
+control loop and explicitly dispatches `software-development-team:recursive-planner`
+for at most three refinement responses, asks at most five material questions one at
+a time, and runs at most two deduplicated `software-development-team:researcher`
+probes. Every non-cancel refinement exit then runs exactly one
+`software-development-team:plan-critic` pass and one non-interactive recursive-planner
+synthesis pass.
+
+Before yielding for an answer, the controller checkpoints a compact canonical brief,
+the latest validated dossier/appendix, decisions, evidence capsules, open questions,
+counters, and signatures. Continue with `resume <workflow-id>`, reply `skip` to keep
+the pending question as an explicit assumption/open question, or reply `cancel` to
+return the latest partial artifact without critic or synthesis. Superseded drafts and
+raw transcripts are not checkpointed.
+
+The result is a readable dossier covering requirements/assumptions, goals/non-goals,
+current state, architecture/data flow, ordered file-level implementation, risks and
+security, testing, rollout/rollback, observability, documentation, acceptance criteria,
+and open questions. Its JSON appendix is validated as the array that may later be
+passed as `team_start.steps`. `/deep-plan` never calls `team_start`, starts a run,
+creates a worktree, or modifies repository files.
+
+`recursive-planner` performs exactly one pre-run, primary-workspace, read-only pass.
+It never self-spawns or interacts with the user directly and intentionally has no
+dashboard card or execution/worktree role; the controller owns recursion and lifecycle.
 
 ## Architecture
 
@@ -105,6 +140,8 @@ In addition to the main `/begin` command, the plugin provides focused commands:
 |-----------|-------------|
 | **Coordinator** | Runs in the main session. Assesses scope, manages the plan, dispatches agents, handles escalations |
 | **Planner** | Explores the codebase and produces structured implementation plans with ordered steps |
+| **Plan-Critic** | Adversarially checks a draft plan for risks, gaps, hidden assumptions, conflicts, and sizing problems |
+| **Recursive Planner** | Performs one pre-run read-only deep-plan refinement or synthesis pass; not an execution/dashboard role |
 | **Coder** | Implements plan steps by writing code, running tests, and submitting results |
 | **Reviewer** | Reviews code against acceptance criteria, approves or requests revisions |
 | **Researcher** | Searches online for relevant information, assists other agents with research queries |
@@ -146,7 +183,7 @@ Every execution step receives one mandatory run-scoped worktree, `.worktrees/{ru
 
 | Role | Repository location and authority |
 | --- | --- |
-| Planner / plan-critic | Pre-approval and read-only in the primary workspace; no execution worktree. |
+| Planner / plan-critic / recursive-planner | Pre-run or pre-approval and read-only in the primary workspace; no execution worktree. |
 | Coder / documentation | Read, write, verify, and commit only in the supplied worktree. |
 | Reviewer / researcher | Read-only inspection and verification only in the supplied worktree. |
 
@@ -195,6 +232,7 @@ software-development-team/
   agents/                    Agent definitions
     planner.md               Planner agent
     plan-critic.md           Plan critic agent (read-only critique)
+    recursive-planner.md     One-pass deep-plan refinement/synthesis agent (read-only)
     coder.md                 Coder agent
     reviewer.md              Reviewer agent
     researcher.md            Researcher agent
@@ -205,6 +243,7 @@ software-development-team/
     memory.md                Browse and search team memory
     resume.md                Resume an interrupted run
     plan.md                  Plan-only mode (no execution)
+    deep-plan.md             Bounded recursive planning dossier (no execution)
     research.md              Standalone research queries
     review.md                Standalone code review
   hooks/
