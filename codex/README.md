@@ -12,7 +12,7 @@ and `deep-plan` skill for exhaustive, resumable planning without starting execut
 ## Prerequisites
 
 - [OpenAI Codex CLI](https://developers.openai.com/codex/cli) installed
-- Node.js 18+ with `npm` on `PATH` (the MCP server is a Node process)
+- Node.js 20.19+ with `npm` on `PATH` (the MCP server and its current toolchain require it)
 
 ## Install
 
