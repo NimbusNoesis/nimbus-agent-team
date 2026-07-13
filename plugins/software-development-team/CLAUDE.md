@@ -38,12 +38,17 @@ server/src/
 ```bash
 cd server
 npm install          # install dependencies
-npx tsc --noEmit     # type check
-npx tsup             # build (ESM output to dist/)
-npx vitest run       # run tests (442 tests across 20 files)
+npm run typecheck    # type check with the TypeScript 7 native CLI
+npm run build        # build (ESM output to dist/)
+npm test             # run tests (442 tests across 20 files)
 npx vitest           # watch mode
 npm run knip         # find unused files, exports, and dependencies
 ```
+
+Local development requires Node.js 20.19+. The test stack is Vitest 4 with
+jsdom 29. `@typescript/native` provides the TypeScript 7 `tsc` CLI; the
+`typescript` dependency intentionally aliases TypeScript 6 because tsup still
+needs its compiler API to emit declarations.
 
 The commands above are for local development. When installed as a plugin, the server **builds itself on launch** — see "Self-building MCP server" below.
 

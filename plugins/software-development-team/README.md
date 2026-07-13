@@ -36,7 +36,7 @@ The dashboard provides real-time awareness of what the team is doing:
 ### Prerequisites
 
 - [Claude Code](https://claude.ai/claude-code) CLI installed
-- Node.js 18+ with `npm` on `PATH`
+- Node.js 20.19+ with `npm` on `PATH`
 
 ### Installation
 
@@ -210,13 +210,13 @@ Each fresh scheduling pass prioritizes eligible review and revision lifecycle wo
 cd server
 
 # Type check
-npx tsc --noEmit
+npm run typecheck
 
 # Build
-npx tsup
+npm run build
 
 # Run tests
-npx vitest run
+npm test
 
 # Watch mode
 npx vitest
@@ -224,6 +224,10 @@ npx vitest
 # Find unused files, exports, and dependencies
 npm run knip
 ```
+
+The current development stack uses the TypeScript 7 native CLI, Vitest 4, and
+jsdom 29. TypeScript 6 is retained under the `typescript` package name solely
+to provide the compiler API that tsup uses for declaration generation.
 
 ## Project Structure
 
