@@ -5,14 +5,17 @@ import { MessageBus } from '../src/bus/message-bus.js';
 import { MemoryStore } from '../src/memory/store.js';
 import { Database } from '../src/db/database.js';
 import { logger } from '../src/logger.js';
+import { readFileSync } from 'node:fs';
 
 describe('ToolRegistry', () => {
   let registry: ToolRegistry;
+  let sm: StateMachine;
 
   beforeEach(async () => {
     const db = await Database.create();
+    sm = new StateMachine(db);
     registry = new ToolRegistry(
-      new StateMachine(db),
+      sm,
       new MessageBus(db),
       new MemoryStore(db),
     );
@@ -136,9 +139,18 @@ describe('ToolRegistry', () => {
     await expect(registry.handle('nonexistent_tool', {})).rejects.toThrow('Unknown tool');
   });
 
+  it('registers team_control exactly once in the MCP entry point', () => {
+    const source = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8');
+    expect(source.match(/server\.tool\(\s*'team_control'/g)).toHaveLength(1);
+  });
+
   it('team_advance with resolve_escalation works on escalated step', async () => {
     const { runId } = await registry.handle('team_start', {
       steps: [{ id: 1, description: 'S1', files: [], acceptanceCriteria: [], dependsOn: [] }],
+    });
+    await registry.handle('team_advance', {
+      runId, stepId: 1, action: 'set_worktree',
+      worktree: { targetBranch: 'main', targetCommit: 'abc', path: '.worktrees/run/step-1', branch: 'team-run-step-1' },
     });
     await registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding' });
     await registry.handle('team_submit_result', {
@@ -148,6 +160,111 @@ describe('ToolRegistry', () => {
       runId, stepId: 1, action: 'resolve_escalation',
     });
     expect(result.stepStatus).toBe('coding');
+  });
+
+  it('team_status exposes lifecycle, worker truth, capabilities, and per-target availability', async () => {
+    const { runId } = await registry.handle('team_start', {
+      steps: [{ id: 1, description: 'S1', files: ['a.ts'], acceptanceCriteria: [], dependsOn: [] }],
+    });
+    let status = await registry.handle('team_status', { runId });
+    expect(status).toMatchObject({
+      lifecycleVersion: 2,
+      revision: 0,
+      phase: 'none',
+      capabilities: { pause_run: true, retry_step: true },
+      workers: {
+        truthSource: 'lifecycle_assignments', nativeProcessState: 'not_observed',
+        activeCount: 0, active: [], admissionsFrozen: false,
+      },
+      actionAvailability: { pause_run: { available: true } },
+    });
+    expect(status.steps[0].actionAvailability.cancel_step.available).toBe(true);
+    expect(status.steps[0].actionAvailability.retry_step).toMatchObject({
+      available: false,
+      reason: 'Step is not escalated',
+    });
+
+    await registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'coder-one' });
+    status = await registry.handle('team_status', { runId });
+    expect(status.workers).toMatchObject({ activeCount: 1, admissionsFrozen: false });
+    expect(status.workers.active[0]).toMatchObject({ stepId: 1, agent: 'coder-one', status: 'coding' });
+  });
+
+  it('team_control pauses idempotently, freezes admissions, and resumes with monotonic status', async () => {
+    const { runId } = await registry.handle('team_start', {
+      steps: [
+        { id: 1, description: 'Active', files: ['a.ts'], acceptanceCriteria: [], dependsOn: [] },
+        { id: 2, description: 'Waiting', files: ['b.ts'], acceptanceCriteria: [], dependsOn: [] },
+      ],
+    });
+    await registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'coder' });
+    const execute = vi.spyOn(sm, 'executeControl');
+    const pause = {
+      runId, action: 'pause_run', target: { kind: 'run' }, commandId: 'pause-1', expectedRevision: 0,
+    };
+    const first = await registry.handle('team_control', pause);
+    expect(execute).toHaveBeenCalledTimes(1);
+    const replay = await registry.handle('team_control', pause);
+    expect(first).toMatchObject({ success: true, replayed: false, revision: 1, phase: 'pausing' });
+    expect(replay).toMatchObject({ success: true, replayed: true, revision: 1, phase: 'pausing' });
+    expect(execute).toHaveBeenCalledTimes(2);
+    await expect(registry.handle('team_advance', {
+      runId, stepId: 2, action: 'start_coding', agent: 'other',
+    })).rejects.toThrow("not admitting work while control phase is 'pausing'");
+
+    await registry.handle('team_submit_result', {
+      runId, stepId: 1, result: { status: 'done', summary: 'drained' },
+    });
+    await registry.handle('team_control', {
+      runId, action: 'acknowledge_pause', target: { kind: 'run' }, commandId: 'pause-ack', expectedRevision: 1,
+    });
+    const resumed = await registry.handle('team_control', {
+      runId, action: 'resume_run', target: { kind: 'run' }, commandId: 'resume-1', expectedRevision: 2,
+    });
+    expect(resumed).toMatchObject({ revision: 3, phase: 'none' });
+    const status = await registry.handle('team_status', { runId });
+    expect(status.controlHistory).toHaveLength(3);
+    expect(status.controlReceipts).toHaveLength(3);
+    expect(status.controlReceipts[0]).not.toHaveProperty('fingerprint');
+  });
+
+  it('team_control rejects stale and mismatched commands without changing revision', async () => {
+    const { runId } = await registry.handle('team_start', {
+      steps: [{ id: 1, description: 'S1', files: [], acceptanceCriteria: [], dependsOn: [] }],
+    });
+    await registry.handle('team_control', {
+      runId, action: 'pause_run', target: { kind: 'run' }, commandId: 'pause-1', expectedRevision: 0,
+    });
+    await expect(registry.handle('team_control', {
+      runId, action: 'pause_run', target: { kind: 'run' }, commandId: 'pause-1', expectedRevision: 0,
+      reason: 'changed fingerprint',
+    })).rejects.toThrow('different payload');
+    await expect(registry.handle('team_control', {
+      runId, action: 'resume_run', target: { kind: 'run' }, commandId: 'stale-resume', expectedRevision: 0,
+    })).rejects.toThrow('revision conflict');
+    const status = await registry.handle('team_status', { runId });
+    expect(status.revision).toBe(1);
+    expect(status.controlHistory).toHaveLength(1);
+  });
+
+  it('team_control requires explicit cancellation confirmation without side effects', async () => {
+    const { runId } = await registry.handle('team_start', {
+      steps: [{ id: 1, description: 'S1', files: [], acceptanceCriteria: [], dependsOn: [] }],
+    });
+    await expect(registry.handle('team_control', {
+      runId, action: 'cancel_step', target: { kind: 'step', stepId: 1 }, commandId: 'cancel-1', expectedRevision: 0,
+    })).rejects.toThrow();
+    expect((await registry.handle('team_status', { runId })).revision).toBe(0);
+
+    const cancelled = await registry.handle('team_control', {
+      runId, action: 'cancel_step', target: { kind: 'step', stepId: 1 }, commandId: 'cancel-1', expectedRevision: 0,
+      confirmation: true, reason: 'No longer needed',
+    });
+    expect(cancelled).toMatchObject({ stepStatus: 'cancelled', revision: 1 });
+    expect(cancelled).not.toHaveProperty('fingerprint');
+    const status = await registry.handle('team_status', { runId });
+    expect(status.status).toBe('escalated');
+    expect(status.steps[0].status).toBe('cancelled');
   });
 
   it('team_advance with mark_reviewed closes a read-only review step', async () => {

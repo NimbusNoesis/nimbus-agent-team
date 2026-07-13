@@ -4,7 +4,7 @@ import { StateMachine } from './state/machine.js';
 import { MessageBus } from './bus/message-bus.js';
 import { MemoryStore } from './memory/store.js';
 import { ToolRegistry } from './tools/registry.js';
-import { teamStartShape, teamStatusShape, teamAdvanceShape } from './tools/workflow.js';
+import { teamStartShape, teamStatusShape, teamAdvanceShape, teamControlShape } from './tools/workflow.js';
 import { teamSubmitResultShape } from './tools/results.js';
 import { teamSendMessageShape, teamGetMessagesShape } from './tools/messages.js';
 import { teamMemoryWriteShape, teamMemoryReadShape, teamMemoryDeleteShape } from './tools/memory.js';
@@ -119,6 +119,16 @@ async function main() {
     { ...teamAdvanceShape },
     async (args) => {
       const result = await registry.handle('team_advance', args);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+    }
+  );
+
+  server.tool(
+    'team_control',
+    'Pause, resume, cancel, acknowledge, or retry execution using optimistic concurrency and idempotency.',
+    { ...teamControlShape },
+    async (args) => {
+      const result = await registry.handle('team_control', args);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
     }
   );

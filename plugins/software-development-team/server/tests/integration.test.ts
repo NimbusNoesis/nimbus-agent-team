@@ -77,6 +77,11 @@ describe('Integration: Full workflow', () => {
       ],
     });
 
+    await registry.handle('team_advance', {
+      runId, stepId: 1, action: 'set_worktree',
+      worktree: { targetBranch: 'main', targetCommit: 'abc', path: '.worktrees/run/step-1', branch: 'team-run-step-1' },
+    });
+
     // First attempt: start from pending
     await registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'coder' });
 
@@ -113,6 +118,47 @@ describe('Integration: Full workflow', () => {
     status = await registry.handle('team_status', { runId });
     expect(status.steps[0].status).toBe('coding');
     expect(status.status).toBe('in_progress');
+  });
+
+  it('cancels an active run cooperatively and retries an escalated step through team_control', async () => {
+    const { runId } = await registry.handle('team_start', {
+      steps: [{ id: 1, description: 'Active', files: ['active.ts'], acceptanceCriteria: [], dependsOn: [] }],
+    });
+    await registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'coder' });
+    const requested = await registry.handle('team_control', {
+      runId, action: 'cancel_run', target: { kind: 'run' }, commandId: 'cancel-run', expectedRevision: 0,
+      confirmation: true, reason: 'Operator stopped the run',
+    });
+    expect(requested).toMatchObject({ phase: 'cancelling', revision: 1 });
+    expect(requested).not.toHaveProperty('stepStatus');
+    await expect(registry.handle('team_submit_result', {
+      runId, stepId: 1, result: { status: 'done', summary: 'late output' },
+    })).rejects.toThrow("status 'cancelling'");
+    const acknowledged = await registry.handle('team_control', {
+      runId, action: 'acknowledge_cancel', target: { kind: 'run' }, commandId: 'cancel-run-ack', expectedRevision: 1,
+    });
+    expect(acknowledged).toMatchObject({ phase: 'cancelled', status: 'cancelled', revision: 2 });
+    const cancelledStatus = await registry.handle('team_status', { runId });
+    expect(cancelledStatus.steps[0]).toMatchObject({ status: 'cancelled', claimedFiles: [] });
+
+    const { runId: retryRunId } = await registry.handle('team_start', {
+      steps: [{ id: 1, description: 'Retryable', files: ['retry.ts'], acceptanceCriteria: [], dependsOn: [] }],
+    });
+    await registry.handle('team_advance', {
+      runId: retryRunId, stepId: 1, action: 'set_worktree',
+      worktree: { targetBranch: 'main', targetCommit: 'abc', path: '.worktrees/retry/step-1', branch: 'team-retry-step-1' },
+    });
+    await registry.handle('team_advance', { runId: retryRunId, stepId: 1, action: 'start_coding', agent: 'coder' });
+    await registry.handle('team_submit_result', {
+      runId: retryRunId, stepId: 1, result: { status: 'blocked', summary: 'needs operator retry' },
+    });
+    const retried = await registry.handle('team_control', {
+      runId: retryRunId, action: 'retry_step', target: { kind: 'step', stepId: 1 },
+      commandId: 'retry-step', expectedRevision: 0, reason: 'Issue resolved',
+    });
+    expect(retried).toMatchObject({ stepStatus: 'coding', revision: 1 });
+    const retryStatus = await registry.handle('team_status', { runId: retryRunId });
+    expect(retryStatus.steps[0]).toMatchObject({ manualAttempt: 1, retryCount: 0, status: 'coding' });
   });
 
   it('prevents approving a step with needs_revision result', async () => {
