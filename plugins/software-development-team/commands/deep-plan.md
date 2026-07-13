@@ -140,7 +140,7 @@ If validation fails, the response is malformed for control-flow purposes even wh
 
 If `$ARGUMENTS` is empty, ask exactly: "What would you like to deep-plan?" and wait. This bootstrap happens before allocating `<D>` or initializing counters and does not consume the five-question budget.
 
-If the invocation is `resume <D>`, read `deep-plan-<D>-checkpoint` from `context`. If it is missing, malformed, complete, or cancelled, report that exact condition and stop. Otherwise reconstruct from it. Treat any additional user text as the answer to `pendingRequest`; reject an answer when no request is pending.
+If the invocation is `resume <D>`, read `deep-plan-<D>-checkpoint` from `context`. If it is missing, malformed, complete, or cancelled, report that exact condition and stop. Otherwise reconstruct from it. Treat any additional user text as the response to `pendingRequest`; reject a response when no request is pending. If the response is `cancel`, take the cancellation branch below. If it is `skip`, record the pending question as an explicit assumption and open question, then clear `pendingRequest`. Otherwise append the exact question, answer, timestamp/provenance, and affected decision to `decisionLedger`, clear `pendingRequest`, checkpoint, and continue. Never treat an unrelated new request as an answer.
 
 For a new task, allocate `<D>`, initialize the checkpoint, and read relevant `decisions`, `context`, and `learnings` memory. Compact only decision-relevant prior knowledge into the canonical brief or evidence ledger.
 
@@ -160,8 +160,8 @@ The prompt MUST include mode `refinement`, round, canonical brief, latest valida
 
 After validation and authoritative signature calculation:
 
-- `cancel`: if the user sends `cancel` while answering a pending question, mark cancelled and return the latest partial dossier, appendix if valid, and `<D>`. Do not dispatch critic or synthesis.
-- `skip`: record the skipped request as an explicit assumption and open question, clear `pendingRequest`, and continue if a refinement round remains.
+- user `cancel`: if the user sends `cancel` while answering a pending question, mark cancelled and return the latest partial dossier, appendix if valid, and `<D>`. Do not dispatch critic or synthesis.
+- user `skip`: record the skipped request as an explicit assumption and open question, clear `pendingRequest`, and continue if a refinement round remains.
 - question request: reject a repeated signature. If unique and within the five-question cap, increment `materialQuestionsUsed`, set `pendingRequest`, checkpoint, ask only that question, show `<D>`, and wait. If repeated or out of budget, exit refinement as bounded-incomplete.
 - research request: reject a repeated signature. If unique and within the two-probe cap, increment `researchProbesUsed`, persist the signature, run the standalone research override below, compact its result into `evidenceLedger`, clear the request, and continue if a round remains. If repeated or out of budget, exit refinement as bounded-incomplete.
 - ready: accept only if the controller confirms a valid appendix, no blocking critical unknown, and either a material first artifact or a non-repeated authoritative dossier signature. Then exit refinement.
@@ -177,7 +177,7 @@ Dispatch with explicit type `software-development-team:researcher`. The prompt o
 - remain read-only in the primary workspace and on the web; do not edit, stage, commit, install, or mutate external state;
 - do not call `team_submit_result`, `team_send_message`, `team_start`, `team_advance`, or write `context`, `decisions`, `learnings`, or `reviews`;
 - the only permitted team write is one `reflections` entry using the exact key `prerun-deep-plan-<D>-probe-<N>-reflection`; do not fabricate an ID or another key;
-- return exactly one compact evidence capsule with `query`, `summary`, `findings`, `sources`, and `caveats`; do not send a lifecycle result.
+- return only one valid JSON evidence capsule with exactly `query`, `summary`, `findings`, `sources`, and `caveats`; emit no Markdown wrapper or lifecycle result.
 
 Pass the atomic research query, rationale, request signature, canonical brief, and relevant compact evidence. A malformed or failed probe consumes the probe and becomes a validation defect; never redispatch the same probe.
 
