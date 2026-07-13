@@ -24,9 +24,9 @@ import {
 } from '../src/dashboard/client/components/activity/MessageList';
 import { ActivityPanel } from '../src/dashboard/client/components/activity/ActivityPanel';
 
-function makeRun(history: LifecycleHistoryEntry[] = []): RunState {
+function makeRun(history: LifecycleHistoryEntry[] = [], id = 'r1'): RunState {
   return {
-    id: 'r1',
+    id,
     task: 'Improve the dashboard',
     status: 'in_progress',
     steps: [],
@@ -89,6 +89,23 @@ function makeActivity(id: string, timestamp: string, type: ActivityItem['type'] 
     body: id,
     timestamp,
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function jsonResponse(value: unknown): Response {
+  return new Response(JSON.stringify(value), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
 }
 
 beforeEach(() => {
@@ -271,6 +288,34 @@ describe('MessageList', () => {
     expect((screen.getByRole('button', { name: 'Following live activity' }) as HTMLButtonElement).disabled).toBe(true);
     focusAnchor.remove();
   });
+
+  it('resets all timeline-local state when the selected run changes', async () => {
+    let height = 200;
+    const runA = [makeActivity('a-one', '2026-01-01T00:00:00Z')];
+    const { rerender } = render(<MessageList runId="r1" items={runA} />);
+    const feedA = screen.getByRole('log') as HTMLDivElement;
+    Object.defineProperty(feedA, 'scrollHeight', { configurable: true, get: () => height });
+    Object.defineProperty(feedA, 'clientHeight', { configurable: true, value: 50 });
+    feedA.scrollTop = 20;
+    fireEvent.scroll(feedA);
+
+    height = 320;
+    const runB = [
+      { ...makeActivity('b-one', '2026-01-01T00:00:00Z'), runId: 'r2' },
+      { ...makeActivity('b-two', '2026-01-01T00:01:00Z'), runId: 'r2' },
+    ];
+    rerender(<MessageList runId="r2" items={runB} />);
+
+    const feedB = screen.getByRole('log') as HTMLDivElement;
+    expect(feedB).not.toBe(feedA);
+    expect(feedB.scrollTop).toBe(0);
+    expect(screen.queryByText('a-one')).toBeNull();
+    expect(screen.getByText('b-one')).toBeTruthy();
+    await waitFor(() => {
+      expect((screen.getByRole('button', { name: 'Following live activity' }) as HTMLButtonElement).disabled).toBe(true);
+    });
+    expect(screen.queryByRole('button', { name: /new entries? — return to live/ })).toBeNull();
+  });
 });
 
 describe('ActivityPanel resources and connection truth', () => {
@@ -319,5 +364,68 @@ describe('ActivityPanel resources and connection truth', () => {
     expect(screen.getByRole('button', { name: 'All activity, 2' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'control activity, 1' })).toBeTruthy();
     expect(screen.queryByText(/secret cancellation reason/)).toBeNull();
+  });
+
+  it('does not let a late failed retry from run A affect run B or block its retry', async () => {
+    const runA = makeRun([], 'r1');
+    const runB = makeRun([], 'r2');
+    allRuns.value = [runA, runB];
+    currentRun.value = runA;
+    dataFreshness.value = 'stale';
+    messages.value = [makeMessage({ body: 'run A history' })];
+    const runAMessages = deferred<Response>();
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      if (url === '/api/runs') return Promise.resolve(jsonResponse([runA, runB]));
+      if (url.endsWith('/r1/messages')) return runAMessages.promise;
+      if (url.endsWith('/r2/messages')) {
+        return Promise.resolve(jsonResponse([makeMessage({ id: 'b-fetched', runId: 'r2', body: 'run B refreshed' })]));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<ActivityPanel />);
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    currentRun.value = runB;
+    messages.value = [makeMessage({ id: 'b-existing', runId: 'r2', body: 'run B history' })];
+    dataFreshness.value = 'stale';
+    await waitFor(() => expect(screen.getByText('run B history')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(screen.getByText('run B refreshed')).toBeTruthy());
+
+    runAMessages.reject(new Error('late run A failure'));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(screen.getByText('run B refreshed')).toBeTruthy();
+    expect(screen.queryByText(/activity refresh failed/)).toBeNull();
+  });
+
+  it('ignores a late successful retry payload from the previously selected run', async () => {
+    const runA = makeRun([], 'r1');
+    const runB = makeRun([], 'r2');
+    allRuns.value = [runA, runB];
+    currentRun.value = runA;
+    dataFreshness.value = 'stale';
+    messages.value = [makeMessage({ body: 'run A history' })];
+    const runAMessages = deferred<Response>();
+    vi.stubGlobal('fetch', vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      if (url === '/api/runs') return Promise.resolve(jsonResponse([runA, runB]));
+      if (url.endsWith('/r1/messages')) return runAMessages.promise;
+      throw new Error(`Unexpected request: ${url}`);
+    }));
+    render(<ActivityPanel />);
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    currentRun.value = runB;
+    messages.value = [makeMessage({ id: 'b-existing', runId: 'r2', body: 'run B history' })];
+    dataFreshness.value = 'fresh';
+    await waitFor(() => expect(screen.getByText('run B history')).toBeTruthy());
+    runAMessages.resolve(jsonResponse([makeMessage({ id: 'a-late', body: 'late run A payload' })]));
+
+    await waitFor(() => expect(screen.queryByText('late run A payload')).toBeNull());
+    expect(screen.getByText('run B history')).toBeTruthy();
+    expect(document.querySelector('[data-state="error"]')).toBeNull();
   });
 });

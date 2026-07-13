@@ -97,6 +97,7 @@ export function selectedActivityItems(): ActivityItem[] {
 
 interface Props {
   items?: ActivityItem[];
+  runId?: string;
 }
 
 function selectedFilter(): ActivityType | 'all' {
@@ -106,7 +107,11 @@ function selectedFilter(): ActivityType | 'all' {
     : 'all';
 }
 
-export function MessageList({ items = selectedActivityItems() }: Props) {
+interface RunMessageListProps {
+  items: ActivityItem[];
+}
+
+function RunMessageList({ items }: RunMessageListProps) {
   const feedRef = useRef<HTMLDivElement>(null);
   const isAtLiveEdgeRef = useRef(true);
   const previousKeysRef = useRef<Set<string>>(new Set());
@@ -192,4 +197,13 @@ export function MessageList({ items = selectedActivityItems() }: Props) {
       </button>
     </div>
   );
+}
+
+/**
+ * Run identity is deliberately a component key. Switching workspaces remounts
+ * the timeline-local refs, unseen counter, live-edge state, and scroll node as
+ * one atomic unit, so the new run's existing history is an initial snapshot.
+ */
+export function MessageList({ items = selectedActivityItems(), runId = currentRun.value?.id }: Props) {
+  return <RunMessageList key={runId ?? 'no-selected-run'} items={items} />;
 }

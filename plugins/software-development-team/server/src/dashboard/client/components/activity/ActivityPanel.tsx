@@ -1,4 +1,4 @@
-import { useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import {
   connectionStatus,
   currentFilter,
@@ -34,7 +34,29 @@ async function refreshMessages(runId: string): Promise<Message[]> {
 }
 
 export function ActivityPanel() {
-  const [retryState, setRetryState] = useState<'idle' | 'loading' | 'error'>('idle');
+  const selectedRunId = currentRun.value?.id ?? null;
+  const selectedRunIdRef = useRef(selectedRunId);
+  const requestSequenceRef = useRef(0);
+  const [retryState, setRetryState] = useState<{
+    runId: string | null;
+    requestId: number;
+    status: 'idle' | 'loading' | 'error';
+  }>({ runId: selectedRunId, requestId: 0, status: 'idle' });
+
+  // Signals can switch the selected run while a request is in flight. Update
+  // the guard during render so even a promise settling before effects run is
+  // unable to publish state into the newly selected workspace.
+  if (selectedRunIdRef.current !== selectedRunId) {
+    selectedRunIdRef.current = selectedRunId;
+    requestSequenceRef.current += 1;
+  }
+  useEffect(() => {
+    setRetryState(previous => previous.runId === selectedRunId
+      ? previous
+      : { runId: selectedRunId, requestId: requestSequenceRef.current, status: 'idle' });
+  }, [selectedRunId]);
+
+  const visibleRetryState = retryState.runId === selectedRunId ? retryState.status : 'idle';
   const items = selectedActivityItems();
   const activeFilter = ACTIVITY_FILTER_TYPES.includes(currentFilter.value as typeof ACTIVITY_FILTER_TYPES[number])
     ? currentFilter.value
@@ -51,23 +73,29 @@ export function ActivityPanel() {
   const retry = async () => {
     const run = currentRun.value;
     if (!run) return;
-    setRetryState('loading');
+    const requestId = ++requestSequenceRef.current;
+    setRetryState({ runId: run.id, requestId, status: 'loading' });
+    const isCurrentRequest = () => selectedRunIdRef.current === run.id
+      && currentRun.value?.id === run.id
+      && requestSequenceRef.current === requestId;
     try {
       const [, history] = await Promise.all([refreshRuns(run.id), refreshMessages(run.id)]);
-      if (currentRun.value?.id === run.id) {
+      if (isCurrentRequest()) {
         messages.value = mergeMessagesForRun(history, messages.value);
+        setRetryState({ runId: run.id, requestId, status: 'idle' });
       }
-      setRetryState('idle');
     } catch (error) {
       console.warn('Failed to refresh activity:', error);
-      setRetryState('error');
+      if (isCurrentRequest()) {
+        setRetryState({ runId: run.id, requestId, status: 'error' });
+      }
     }
   };
 
-  const isLoading = retryState === 'loading'
+  const isLoading = visibleRetryState === 'loading'
     || dataFreshness.value === 'loading'
     || loadingRunId.value === currentRun.value?.id;
-  const asyncState = retryState === 'error'
+  const asyncState = visibleRetryState === 'error'
     ? 'error'
     : isLoading
       ? 'loading'
@@ -79,7 +107,7 @@ export function ActivityPanel() {
   const emptyMessage = items.length === 0
     ? 'No activity has been recorded for this run.'
     : `No ${activeFilter} activity matches this filter.`;
-  const activityFreshness = retryState === 'error' ? 'activity refresh failed' : dataFreshness.value;
+  const activityFreshness = visibleRetryState === 'error' ? 'activity refresh failed' : dataFreshness.value;
   const statusText = `${connectionStatus.value}. ${activityFreshness}. ${formattedSyncTime(lastSyncedAt.value)}.`;
 
   return (
@@ -100,7 +128,7 @@ export function ActivityPanel() {
         onRetry={() => void retry()}
         preserveContent={items.length > 0}
       >
-        <MessageList items={items} />
+        <MessageList runId={selectedRunId ?? undefined} items={items} />
       </AsyncState>
     </div>
   );
