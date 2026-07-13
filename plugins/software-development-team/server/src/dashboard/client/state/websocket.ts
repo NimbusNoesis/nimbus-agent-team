@@ -16,6 +16,10 @@ import { fetchRuns, fetchMemory } from './api';
 // parallel reconnect loops when app initialization is retried.
 let currentSocket: WebSocket | null = null;
 
+function isCurrentSocket(socket: WebSocket): boolean {
+  return currentSocket === socket;
+}
+
 function mergeMessages(current: Message[], incoming: Message): Message[] {
   const byId = new Map(current.map(message => [message.id, message]));
   byId.set(incoming.id, incoming);
@@ -40,27 +44,37 @@ export function connectWebSocket(): void {
   currentSocket = ws;
 
   ws.onopen = async () => {
+    if (!isCurrentSocket(ws)) return;
+    const selectedRunIdAtOpen = currentRun.value?.id;
     connectionStatus.value = 'online';
     dataFreshness.value = 'loading';
     try {
       const runs = await fetchRuns();
+      if (!isCurrentSocket(ws)) return;
       applyRunSnapshots(runs);
-      // The merge path preserves a newer state_update that raced this GET and
-      // unions equal-revision audit records reconstructed by the snapshot.
-      if (currentRun.value) {
-        const updated = allRuns.value.find(run => run.id === currentRun.value!.id);
-        if (updated) currentRun.value = applyRunSnapshot(updated);
+      const memory = await fetchMemory();
+      if (!isCurrentSocket(ws)) return;
+      memoryEntries.value = memory;
+
+      // A reconnect that began for run A must not certify run B after the
+      // operator changes selection. The collection GET is authoritative for
+      // the selected run only when it actually contained that run.
+      const selectionIsUnchanged = currentRun.value?.id === selectedRunIdAtOpen;
+      const selectedRunWasSynced = selectedRunIdAtOpen === undefined
+        || runs.some(run => run.id === selectedRunIdAtOpen);
+      if (selectionIsUnchanged && selectedRunWasSynced) {
+        dataFreshness.value = 'fresh';
+        lastSyncedAt.value = new Date().toISOString();
       }
-      memoryEntries.value = await fetchMemory();
-      dataFreshness.value = 'fresh';
-      lastSyncedAt.value = new Date().toISOString();
     } catch (e) {
-      dataFreshness.value = 'stale';
+      if (!isCurrentSocket(ws)) return;
+      if (currentRun.value?.id === selectedRunIdAtOpen) dataFreshness.value = 'stale';
       console.error('Failed to re-sync after WebSocket connect:', e);
     }
   };
 
   ws.onmessage = (event) => {
+    if (!isCurrentSocket(ws)) return;
     let data: unknown;
     try {
       data = JSON.parse(event.data);
@@ -72,9 +86,12 @@ export function connectWebSocket(): void {
     const dashboardEvent = data as Record<string, any>;
 
     if (dashboardEvent.type === 'state_update' && isRunState(dashboardEvent.run)) {
+      const selectedRunId = currentRun.value?.id;
       applyRunSnapshot(dashboardEvent.run);
-      dataFreshness.value = 'fresh';
-      lastSyncedAt.value = new Date().toISOString();
+      if (selectedRunId === dashboardEvent.run.id && currentRun.value?.id === selectedRunId) {
+        dataFreshness.value = 'fresh';
+        lastSyncedAt.value = new Date().toISOString();
+      }
     } else if (dashboardEvent.type === 'new_message' && dashboardEvent.message) {
       const message = dashboardEvent.message as Message;
       // Buffer live messages during history loading. selectRun uses the same
@@ -97,9 +114,13 @@ export function connectWebSocket(): void {
     }
   };
 
-  ws.onerror = () => ws.close();
+  ws.onerror = () => {
+    if (!isCurrentSocket(ws)) return;
+    ws.close();
+  };
   ws.onclose = () => {
-    if (currentSocket === ws) currentSocket = null;
+    if (!isCurrentSocket(ws)) return;
+    currentSocket = null;
     connectionStatus.value = 'offline';
     dataFreshness.value = 'stale';
     setTimeout(connectWebSocket, 2000);

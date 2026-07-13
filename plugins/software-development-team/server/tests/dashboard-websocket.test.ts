@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import NodeWebSocket from 'ws';
 import {
   allRuns, currentRun, messages, memoryEntries, loadingRunId,
-  connectionStatus, dataFreshness,
+  connectionStatus, dataFreshness, getControlAvailability,
 } from '../src/dashboard/client/state/store';
 import type { RunState, MemoryEntry } from '../src/dashboard/client/state/store';
 import { Database } from '../src/db/database.js';
@@ -341,6 +341,45 @@ describe('WebSocket error and reconnection', () => {
     expect(ws2).not.toBe(ws1);
     vi.useRealTimers();
   });
+
+  it('ignores delayed open from a superseded socket', () => {
+    const mockFetch = vi.fn();
+    vi.stubGlobal('fetch', mockFetch);
+    connectWebSocket();
+    const superseded = wsInstances[0];
+    superseded.readyState = MockWebSocket.CLOSED;
+    connectWebSocket();
+
+    connectionStatus.value = 'connecting';
+    dataFreshness.value = 'stale';
+    superseded.onopen?.();
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(connectionStatus.value).toBe('connecting');
+    expect(dataFreshness.value).toBe('stale');
+  });
+
+  it('ignores delayed error and close from a superseded socket', () => {
+    vi.useFakeTimers();
+    connectWebSocket();
+    const superseded = wsInstances[0];
+    superseded.readyState = MockWebSocket.CLOSED;
+    connectWebSocket();
+    const active = wsInstances[1];
+    active.readyState = MockWebSocket.OPEN;
+    connectionStatus.value = 'online';
+    dataFreshness.value = 'fresh';
+
+    superseded.onerror?.();
+    superseded.onclose?.();
+    vi.advanceTimersByTime(2000);
+
+    expect(superseded.closed).toBe(false);
+    expect(wsInstances).toHaveLength(2);
+    expect(connectionStatus.value).toBe('online');
+    expect(dataFreshness.value).toBe('fresh');
+    vi.useRealTimers();
+  });
 });
 
 describe('WebSocket single-flight guard', () => {
@@ -522,5 +561,70 @@ describe('WebSocket onopen sync', () => {
       expect(consoleSpy).toHaveBeenCalledWith('Failed to re-sync after WebSocket connect:', expect.any(Error));
     });
     consoleSpy.mockRestore();
+  });
+
+  it('does not let superseded async resync completion change active state', async () => {
+    const selected = controlledRun('r1', 0);
+    currentRun.value = selected;
+    allRuns.value = [selected];
+    let resolveRuns!: (value: unknown) => void;
+    const mockFetch = vi.fn()
+      .mockReturnValueOnce(new Promise(resolve => { resolveRuns = resolve; }));
+    vi.stubGlobal('fetch', mockFetch);
+
+    connectWebSocket();
+    const superseded = wsInstances[0];
+    superseded.onopen?.();
+    superseded.readyState = MockWebSocket.CLOSED;
+    connectWebSocket();
+    connectionStatus.value = 'connecting';
+    dataFreshness.value = 'stale';
+
+    resolveRuns({ ok: true, json: () => Promise.resolve([controlledRun('r1', 1)]) });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(currentRun.value?.lifecycle?.revision).toBe(0);
+    expect(connectionStatus.value).toBe('connecting');
+    expect(dataFreshness.value).toBe('stale');
+  });
+});
+
+describe('WebSocket run-scoped freshness', () => {
+  it.each(['loading', 'stale'] as const)(
+    'reconciles another run without changing selected-run %s freshness',
+    freshness => {
+      const selected = controlledRun('selected', 0);
+      currentRun.value = selected;
+      allRuns.value = [selected];
+      connectionStatus.value = 'online';
+      dataFreshness.value = freshness;
+      if (freshness === 'loading') loadingRunId.value = selected.id;
+      connectWebSocket();
+      const other = controlledRun('other', 2, 'complete');
+
+      wsInstances[0].simulateMessage({ type: 'state_update', run: other });
+
+      expect(allRuns.value.find(run => run.id === other.id)?.status).toBe('complete');
+      expect(currentRun.value?.id).toBe(selected.id);
+      expect(dataFreshness.value).toBe(freshness);
+      expect(getControlAvailability('pause_run', { kind: 'run' }, selected).available).toBe(false);
+    },
+  );
+
+  it('marks an active selected-run sync fresh and enables valid controls', () => {
+    const selected = controlledRun('selected', 0);
+    currentRun.value = selected;
+    allRuns.value = [selected];
+    loadingRunId.value = null;
+    dataFreshness.value = 'stale';
+    connectWebSocket();
+    connectionStatus.value = 'online';
+
+    wsInstances[0].simulateMessage({ type: 'state_update', run: controlledRun('selected', 1) });
+
+    expect(dataFreshness.value).toBe('fresh');
+    expect(getControlAvailability('pause_run', { kind: 'run' }).available).toBe(true);
   });
 });
