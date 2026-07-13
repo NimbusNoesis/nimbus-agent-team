@@ -5,7 +5,7 @@ import { positiveInt } from './schemas.js';
 // Worker-slot capacity of this host, reported to coordinators via team_status.
 // Both hosts' coordinator instructions size their worker pool from this value
 // (maxParallel = hostCapacity - 1, one slot reserved for the coordinator).
-export function hostCapacity(env: NodeJS.ProcessEnv = process.env): number | undefined {
+function hostCapacity(env: NodeJS.ProcessEnv = process.env): number | undefined {
   const raw = env.TEAM_HOST_CAPACITY;
   if (!raw || !/^\d+$/.test(raw)) return undefined;
   const parsed = Number(raw);
