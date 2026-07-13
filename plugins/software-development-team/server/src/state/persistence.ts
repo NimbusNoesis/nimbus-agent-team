@@ -1,6 +1,17 @@
 import { mkdir, readFile, writeFile, appendFile, readdir, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { RunState, Message, MemoryEntry } from '../types.js';
+import {
+  EXECUTION_CONTROL_CAPABILITIES,
+  MAX_COMMAND_RECEIPTS,
+  MAX_LIFECYCLE_HISTORY,
+  RUN_LIFECYCLE_VERSION,
+  type RunState,
+  type RestoredRunState,
+  type RunControlPhase,
+  type RunLifecycleV2,
+  type Message,
+  type MemoryEntry,
+} from '../types.js';
 import { MAX_MESSAGES_PER_RUN } from '../bus/message-bus.js';
 import { logger } from '../logger.js';
 
@@ -9,6 +20,140 @@ const SAFE_KEY_RE = /^[a-zA-Z0-9_\-]+$/;
 // Number of appends between opportunistic message-log compactions. Keeps the
 // on-disk jsonl from growing without bound (the DB is capped separately).
 const COMPACT_INTERVAL = 2_000;
+
+const CONTROL_PHASES = new Set<RunControlPhase>([
+  'none',
+  'pausing',
+  'paused',
+  'cancelling',
+  'cancelled',
+]);
+
+export class UnsupportedLifecycleVersionError extends Error {
+  constructor(version: number) {
+    super(
+      `Unsupported run lifecycle version ${version}; this server supports up to version ${RUN_LIFECYCLE_VERSION}. ` +
+      'Upgrade the software-development-team server before restoring this run.',
+    );
+    this.name = 'UnsupportedLifecycleVersionError';
+  }
+}
+
+function requireRecord(value: unknown, label: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`Invalid persisted run state: ${label} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function nonNegativeInteger(value: unknown, fallback: number, label: string): number {
+  if (value === undefined) return fallback;
+  if (!Number.isInteger(value) || (value as number) < 0) {
+    throw new Error(`Invalid persisted run state: ${label} must be a non-negative integer`);
+  }
+  return value as number;
+}
+
+function lifecycleVersion(run: Record<string, unknown>, lifecycle: Record<string, unknown> | undefined): number | undefined {
+  const value = lifecycle?.version ?? run.lifecycleVersion;
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) || (value as number) < 1) {
+    throw new Error('Invalid persisted run state: lifecycle version must be a positive integer');
+  }
+  return value as number;
+}
+
+function controlPhase(value: unknown): RunControlPhase {
+  if (value === undefined) return 'none';
+  if (typeof value !== 'string' || !CONTROL_PHASES.has(value as RunControlPhase)) {
+    throw new Error(`Invalid persisted run state: unknown lifecycle control phase ${JSON.stringify(value)}`);
+  }
+  return value as RunControlPhase;
+}
+
+function lifecycleArray<T>(value: unknown, limit: number, label: string): T[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`Invalid persisted run state: lifecycle ${label} must be an array`);
+  }
+  return value.slice(-limit) as T[];
+}
+
+/**
+ * The single JSON restore-boundary migration. It is deliberately pure: it
+ * neither persists the normalized value nor emits lifecycle/state events.
+ */
+export function normalizeRunState(value: unknown): RestoredRunState {
+  const raw = requireRecord(value, 'root');
+  if (!Array.isArray(raw.steps)) {
+    throw new Error('Invalid persisted run state: steps must be an array');
+  }
+
+  const rawLifecycle = raw.lifecycle === undefined
+    ? undefined
+    : requireRecord(raw.lifecycle, 'lifecycle');
+  const version = lifecycleVersion(raw, rawLifecycle);
+  if (version !== undefined && version > RUN_LIFECYCLE_VERSION) {
+    throw new UnsupportedLifecycleVersionError(version);
+  }
+
+  // Only an explicitly versioned v2 record may supply lifecycle control data.
+  // Missing-version and v1 records predate this contract, so lifecycle-looking
+  // fields in them are untrusted and must not freeze admissions, invent a
+  // revision, or replay an operator command after restore.
+  const lifecycle: RunLifecycleV2 = version === RUN_LIFECYCLE_VERSION ? {
+    version: RUN_LIFECYCLE_VERSION,
+    // Capabilities describe this binary's v2 contract, not persisted action
+    // availability. Deriving them here gives legacy runs a safe canonical
+    // support surface and prevents stale JSON from enabling unknown behavior.
+    capabilities: { ...EXECUTION_CONTROL_CAPABILITIES },
+    controlPhase: controlPhase(rawLifecycle?.controlPhase),
+    revision: nonNegativeInteger(rawLifecycle?.revision, 0, 'lifecycle revision'),
+    commandReceipts: lifecycleArray(
+      rawLifecycle?.commandReceipts,
+      MAX_COMMAND_RECEIPTS,
+      'commandReceipts',
+    ),
+    history: lifecycleArray(rawLifecycle?.history, MAX_LIFECYCLE_HISTORY, 'history'),
+    ...(typeof rawLifecycle?.pauseRequestedAt === 'string'
+      ? { pauseRequestedAt: rawLifecycle.pauseRequestedAt }
+      : {}),
+    ...(typeof rawLifecycle?.pausedAt === 'string' ? { pausedAt: rawLifecycle.pausedAt } : {}),
+    ...(typeof rawLifecycle?.cancelRequestedAt === 'string'
+      ? { cancelRequestedAt: rawLifecycle.cancelRequestedAt }
+      : {}),
+  } : {
+    version: RUN_LIFECYCLE_VERSION,
+    capabilities: { ...EXECUTION_CONTROL_CAPABILITIES },
+    controlPhase: 'none',
+    revision: 0,
+    commandReceipts: [],
+    history: [],
+  };
+
+  const steps = raw.steps.map((step, index) => {
+    const restored = requireRecord(step, `steps[${index}]`);
+    const {
+      manualAttempt: _manualAttempt,
+      cancelRequestedAt: _cancelRequestedAt,
+      cancelledAt: _cancelledAt,
+      ...legacySafeStep
+    } = restored;
+    return {
+      ...(version === RUN_LIFECYCLE_VERSION ? restored : legacySafeStep),
+      manualAttempt: version === RUN_LIFECYCLE_VERSION
+        ? nonNegativeInteger(restored.manualAttempt, 0, `steps[${index}].manualAttempt`)
+        : 0,
+    };
+  });
+
+  const { lifecycleVersion: _legacyVersion, ...withoutLegacyVersion } = raw;
+  return {
+    ...withoutLegacyVersion,
+    steps,
+    lifecycle,
+  } as unknown as RestoredRunState;
+}
 
 function sanitizeKey(key: string): string {
   if (!SAFE_KEY_RE.test(key)) {
@@ -40,7 +185,7 @@ export class Persistence {
     logger.debug('Persistence', `Saved run state`, { runId: run.id, status: run.status });
   }
 
-  async loadAllRunStates(): Promise<RunState[]> {
+  async loadAllRunStates(): Promise<RestoredRunState[]> {
     const runsDir = join(this.baseDir, 'runs');
     let runDirs: string[];
     try {
@@ -50,22 +195,23 @@ export class Persistence {
       if (err.code === 'ENOENT') return [];
       throw err;
     }
-    const states: RunState[] = [];
+    const states: RestoredRunState[] = [];
     for (const runId of runDirs) {
       try {
         const state = await this.loadRunState(runId);
         if (state) states.push(state);
       } catch (err) {
+        if (err instanceof UnsupportedLifecycleVersionError) throw err;
         logger.warn('Persistence', `Skipping malformed run state`, { runId, error: String(err) });
       }
     }
     return states;
   }
 
-  async loadRunState(runId: string): Promise<RunState | null> {
+  async loadRunState(runId: string): Promise<RestoredRunState | null> {
     try {
       const data = await readFile(join(this.runDir(runId), 'state.json'), 'utf-8');
-      return JSON.parse(data);
+      return normalizeRunState(JSON.parse(data));
     } catch (err: any) {
       if (err.code === 'ENOENT') return null;
       throw err;

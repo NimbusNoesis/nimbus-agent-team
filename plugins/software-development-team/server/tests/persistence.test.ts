@@ -1,10 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { Persistence } from '../src/state/persistence.js';
+import { Persistence, normalizeRunState } from '../src/state/persistence.js';
 import { MAX_MESSAGES_PER_RUN } from '../src/bus/message-bus.js';
 import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RunState, Message, MemoryEntry } from '../src/types.js';
+import {
+  EXECUTION_CONTROL_CAPABILITIES,
+  MAX_COMMAND_RECEIPTS,
+  MAX_LIFECYCLE_HISTORY,
+  RUN_LIFECYCLE_VERSION,
+} from '../src/types.js';
 
 describe('Persistence', () => {
   let tmpDir: string;
@@ -19,6 +25,27 @@ describe('Persistence', () => {
     await rm(tmpDir, { recursive: true });
   });
 
+  it('uses the approved bounded lifecycle retention budgets', () => {
+    expect(MAX_COMMAND_RECEIPTS).toBe(256);
+    expect(MAX_LIFECYCLE_HISTORY).toBe(128);
+  });
+
+  it.each(['none', 'pausing', 'paused', 'cancelling', 'cancelled'] as const)(
+    'restores the canonical %s control phase for version 2',
+    (controlPhase) => {
+      const restored = normalizeRunState({
+        id: `phase-${controlPhase}`, status: 'in_progress', steps: [],
+        createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+        lifecycle: {
+          version: 2, capabilities: EXECUTION_CONTROL_CAPABILITIES,
+          controlPhase, revision: 0, commandReceipts: [], history: [],
+        },
+      });
+
+      expect(restored.lifecycle.controlPhase).toBe(controlPhase);
+    },
+  );
+
   it('saves and loads run state', async () => {
     const run: RunState = {
       id: 'r1',
@@ -29,7 +56,180 @@ describe('Persistence', () => {
     };
     await persistence.saveRunState(run);
     const loaded = await persistence.loadRunState('r1');
-    expect(loaded).toEqual(run);
+    expect(loaded).toEqual({
+      ...run,
+      steps: [],
+      lifecycle: {
+        version: RUN_LIFECYCLE_VERSION,
+        capabilities: EXECUTION_CONTROL_CAPABILITIES,
+        controlPhase: 'none',
+        revision: 0,
+        commandReceipts: [],
+        history: [],
+      },
+    });
+  });
+
+  it('normalizes missing-version JSON in memory without rewriting the file', async () => {
+    const dir = join(tmpDir, 'runs', 'legacy-missing');
+    await mkdir(dir, { recursive: true });
+    const raw = JSON.stringify({
+      id: 'legacy-missing', status: 'ready', steps: [],
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      lifecycle: {
+        controlPhase: 'cancelling', revision: 12,
+        commandReceipts: [{ commandId: 'unversioned-receipt' }],
+        history: [{ commandId: 'unversioned-history' }],
+        cancelRequestedAt: '2026-01-01T00:00:01.000Z',
+      },
+    }, null, 2);
+    const file = join(dir, 'state.json');
+    await writeFile(file, raw);
+
+    const loaded = await persistence.loadRunState('legacy-missing');
+
+    expect(loaded?.lifecycle).toEqual({
+      version: 2, capabilities: EXECUTION_CONTROL_CAPABILITIES,
+      controlPhase: 'none', revision: 0,
+      commandReceipts: [], history: [],
+    });
+    expect(await readFile(file, 'utf-8')).toBe(raw);
+  });
+
+  it('normalizes version-1 lifecycle JSON without rewriting or emitting side effects', async () => {
+    const dir = join(tmpDir, 'runs', 'legacy-v1');
+    await mkdir(dir, { recursive: true });
+    const legacy = {
+      id: 'legacy-v1', status: 'in_progress',
+      steps: [{
+        step: { id: 1, description: 'legacy', files: [], acceptanceCriteria: [], dependsOn: [] },
+        status: 'coding', retryCount: 0, assignedAgent: 'coder', result: null,
+        claimedFiles: [], consecutiveSameError: 0, manualAttempt: 9,
+        cancelRequestedAt: '2026-01-01T00:00:02.000Z',
+        cancelledAt: '2026-01-01T00:00:03.000Z',
+      }],
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      lifecycle: {
+        version: 1,
+        capabilities: { pause_run: false },
+        controlPhase: 'pausing',
+        revision: 4,
+        commandReceipts: [{ commandId: 'untrusted-v1-receipt' }],
+        history: [{ commandId: 'untrusted-v1-history' }],
+        pauseRequestedAt: '2026-01-01T00:00:04.000Z',
+        pausedAt: '2026-01-01T00:00:05.000Z',
+        cancelRequestedAt: '2026-01-01T00:00:06.000Z',
+      },
+    };
+    const raw = JSON.stringify(legacy, null, 2);
+    const file = join(dir, 'state.json');
+    await writeFile(file, raw);
+
+    const loaded = await persistence.loadRunState('legacy-v1');
+
+    expect(loaded?.lifecycle).toEqual({
+      version: 2, capabilities: EXECUTION_CONTROL_CAPABILITIES,
+      controlPhase: 'none', revision: 0,
+      commandReceipts: [], history: [],
+    });
+    expect(loaded?.steps[0].manualAttempt).toBe(0);
+    expect(loaded?.steps[0]).not.toHaveProperty('cancelRequestedAt');
+    expect(loaded?.steps[0]).not.toHaveProperty('cancelledAt');
+    expect(await readFile(file, 'utf-8')).toBe(raw);
+  });
+
+  it('round-trips all version-2 lifecycle fields', async () => {
+    const run: RunState = {
+      id: 'v2', status: 'cancelled', steps: [{
+        step: {
+          id: 1, description: 'draining cancellation', files: ['src/active.ts'],
+          acceptanceCriteria: [], dependsOn: [],
+        },
+        status: 'cancelling', retryCount: 0, assignedAgent: 'coder', result: null,
+        claimedFiles: ['src/active.ts'], consecutiveSameError: 0, manualAttempt: 2,
+        cancelRequestedAt: '2026-01-01T00:00:04.000Z',
+      }, {
+        step: {
+          id: 2, description: 'acknowledged cancellation', files: ['src/inactive.ts'],
+          acceptanceCriteria: [], dependsOn: [],
+        },
+        status: 'cancelled', retryCount: 0, assignedAgent: null, result: null,
+        claimedFiles: [], consecutiveSameError: 0, manualAttempt: 0,
+        cancelRequestedAt: '2026-01-01T00:00:05.000Z',
+        cancelledAt: '2026-01-01T00:00:06.000Z',
+      }],
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:01.000Z',
+      lifecycle: {
+        version: 2,
+        capabilities: { ...EXECUTION_CONTROL_CAPABILITIES },
+        controlPhase: 'cancelled',
+        revision: 7,
+        pauseRequestedAt: '2026-01-01T00:00:02.000Z',
+        pausedAt: '2026-01-01T00:00:03.000Z',
+        cancelRequestedAt: '2026-01-01T00:00:04.000Z',
+        commandReceipts: [{
+          commandId: 'cmd-1', fingerprint: 'cancel:run', action: 'cancel_run',
+          target: { kind: 'run' }, expectedRevision: 6, revision: 7,
+          recordedAt: '2026-01-01T00:00:02.000Z',
+          outcome: { controlPhase: 'cancelled', runStatus: 'cancelled' },
+        }],
+        history: [{
+          commandId: 'cmd-1', action: 'cancel_run', target: { kind: 'run' },
+          revision: 7, recordedAt: '2026-01-01T00:00:02.000Z',
+          fromPhase: 'cancelling', toPhase: 'cancelled', summary: 'Cancellation acknowledged',
+        }],
+      },
+    };
+
+    await persistence.saveRunState(run);
+    expect(await persistence.loadRunState(run.id)).toEqual(run);
+  });
+
+  it('bounds restored command receipts and lifecycle history to their newest entries', async () => {
+    const receipts = Array.from({ length: MAX_COMMAND_RECEIPTS + 3 }, (_, revision) => ({
+      commandId: `command-${revision}`, fingerprint: `fingerprint-${revision}`,
+      action: 'pause_run' as const, target: { kind: 'run' as const },
+      expectedRevision: revision, revision: revision + 1,
+      recordedAt: '2026-01-01T00:00:00.000Z',
+      outcome: { controlPhase: 'none' as const, runStatus: 'in_progress' as const },
+    }));
+    const history = Array.from({ length: MAX_LIFECYCLE_HISTORY + 5 }, (_, revision) => ({
+      commandId: `command-${revision}`, action: 'pause_run' as const,
+      target: { kind: 'run' as const }, revision: revision + 1,
+      recordedAt: '2026-01-01T00:00:00.000Z',
+      fromPhase: 'none' as const, toPhase: 'pausing' as const,
+    }));
+    const run: RunState = {
+      id: 'bounded', status: 'in_progress', steps: [],
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      lifecycle: {
+        version: 2, capabilities: { ...EXECUTION_CONTROL_CAPABILITIES },
+        controlPhase: 'none', revision: 999, commandReceipts: receipts, history,
+      },
+    };
+    await persistence.saveRunState(run);
+
+    const loaded = await persistence.loadRunState(run.id);
+    expect(loaded?.lifecycle.commandReceipts).toHaveLength(MAX_COMMAND_RECEIPTS);
+    expect(loaded?.lifecycle.commandReceipts[0].commandId).toBe('command-3');
+    expect(loaded?.lifecycle.history).toHaveLength(MAX_LIFECYCLE_HISTORY);
+    expect(loaded?.lifecycle.history[0].commandId).toBe('command-5');
+  });
+
+  it('fails closed with an actionable error for unsupported future lifecycle versions', async () => {
+    const dir = join(tmpDir, 'runs', 'future');
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'state.json'), JSON.stringify({
+      id: 'future', status: 'ready', steps: [], lifecycle: { version: 3 },
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+    }));
+
+    await expect(persistence.loadRunState('future')).rejects.toThrow(
+      /Unsupported run lifecycle version 3.*Upgrade/s,
+    );
+    await expect(persistence.loadAllRunStates()).rejects.toThrow(
+      /Unsupported run lifecycle version 3/,
+    );
   });
 
   it('preserves durable worktree lifecycle context across restart', async () => {
