@@ -1,7 +1,74 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Database } from '../src/db/database.js';
+import { StateMachine } from '../src/state/machine.js';
 import { makeRun, makeMessage, makeMemoryEntry } from './helpers.js';
 import type { RunState, Message, MemoryEntry } from '../src/types.js';
+import {
+  EXECUTION_CONTROL_CAPABILITIES,
+  MAX_COMMAND_RECEIPTS,
+  MAX_LIFECYCLE_HISTORY,
+  RUN_LIFECYCLE_VERSION,
+  type RunControlPhase,
+} from '../src/types.js';
+
+function makeLifecycleRun(
+  id: string,
+  controlPhase: RunControlPhase,
+  status: RunState['status'],
+): RunState {
+  return makeRun(id, {
+    status,
+    steps: [{
+      step: {
+        id: 1, description: 'durable work', files: ['src/durable.ts'],
+        acceptanceCriteria: ['survives restart'], dependsOn: [],
+      },
+      status: controlPhase === 'cancelled'
+        ? 'cancelled'
+        : controlPhase === 'cancelling' ? 'cancelling' : 'reviewing',
+      retryCount: 1,
+      assignedAgent: controlPhase === 'cancelled' ? null : 'reviewer',
+      result: { status: 'done_with_concerns', summary: 'implementation retained' },
+      resultHistory: [{ status: 'done', summary: 'coder result retained' }],
+      claimedFiles: controlPhase === 'cancelled' ? [] : ['src/durable.ts'],
+      consecutiveSameError: 0,
+      manualAttempt: 2,
+      cancelRequestedAt: '2026-01-01T00:00:05.000Z',
+      cancelledAt: '2026-01-01T00:00:06.000Z',
+      worktree: {
+        targetBranch: 'main', targetCommit: 'abc123',
+        path: `.worktrees/${id}/step-1`, branch: `team-${id}-step-1`,
+      },
+    }],
+    lifecycle: {
+      version: RUN_LIFECYCLE_VERSION,
+      capabilities: EXECUTION_CONTROL_CAPABILITIES,
+      controlPhase,
+      revision: 23,
+      pauseRequestedAt: '2026-01-01T00:00:02.000Z',
+      pausedAt: '2026-01-01T00:00:03.000Z',
+      cancelRequestedAt: '2026-01-01T00:00:04.000Z',
+      commandReceipts: [{
+        commandId: 'command-23', fingerprint: `phase:${controlPhase}`,
+        action: 'pause_run', target: { kind: 'run' }, expectedRevision: 22,
+        revision: 23, recordedAt: '2026-01-01T00:00:07.000Z',
+        outcome: { controlPhase, runStatus: status },
+      }],
+      history: [{
+        commandId: 'command-23', action: 'pause_run', target: { kind: 'run' },
+        revision: 23, recordedAt: '2026-01-01T00:00:07.000Z',
+        fromPhase: 'none', toPhase: controlPhase, summary: 'durable audit entry',
+      }],
+    },
+  });
+}
+
+async function restartDatabase(db: Database): Promise<Database> {
+  const sqlDb = (db as unknown as { db: { export: () => Uint8Array } }).db;
+  const initSqlJs = (await import('sql.js')).default;
+  const SQL = await initSqlJs();
+  return new Database(new SQL.Database(sqlDb.export()));
+}
 
 describe('Database', () => {
   let db: Database;
@@ -12,7 +79,18 @@ describe('Database', () => {
 
   describe('Run CRUD', () => {
     it('insertRun + getRun round-trips a full RunState', () => {
-      const run = makeRun('r1', { task: 'Build the thing', status: 'ready' });
+      const run = makeRun('r1', {
+        task: 'Build the thing',
+        status: 'ready',
+        lifecycle: {
+          version: RUN_LIFECYCLE_VERSION,
+          capabilities: EXECUTION_CONTROL_CAPABILITIES,
+          controlPhase: 'none',
+          revision: 0,
+          commandReceipts: [],
+          history: [],
+        },
+      });
       db.insertRun(run);
       const retrieved = db.getRun('r1');
       expect(retrieved).toEqual(run);
@@ -52,6 +130,136 @@ describe('Database', () => {
       const run = makeRun('r1');
       db.insertRun(run);
       expect(() => db.insertRun(run)).toThrow();
+    });
+
+    it.each([undefined, 1] as const)(
+      'normalizes legacy lifecycle version %s on read without a migration write or event',
+      (version) => {
+        const legacy = makeRun(`legacy-${version ?? 'missing'}`, {
+          steps: [{
+            step: {
+              id: 1, description: 'legacy work', files: ['src/legacy.ts'],
+              acceptanceCriteria: [], dependsOn: [],
+            },
+            status: 'coding', retryCount: 0, assignedAgent: 'coder', result: null,
+            claimedFiles: ['src/legacy.ts'], consecutiveSameError: 0,
+            manualAttempt: 8,
+            cancelRequestedAt: '2026-01-01T00:00:02.000Z',
+            cancelledAt: '2026-01-01T00:00:03.000Z',
+          }],
+          lifecycle: {
+            version: (version ?? 2) as 2,
+            capabilities: EXECUTION_CONTROL_CAPABILITIES,
+            controlPhase: 'cancelling', revision: 14,
+            commandReceipts: [{ commandId: 'legacy-receipt' }] as never,
+            history: [{ commandId: 'legacy-history' }] as never,
+            cancelRequestedAt: '2026-01-01T00:00:04.000Z',
+          },
+        });
+        if (version === undefined) delete legacy.lifecycle;
+        else (legacy.lifecycle as unknown as { version: number }).version = version;
+
+        db.insertRun(legacy);
+        const updateSpy = vi.spyOn(db, 'updateRun');
+        const sm = new StateMachine(db);
+        const stateEvent = vi.fn();
+        sm.on('state_update', stateEvent);
+
+        const restored = sm.getRun(legacy.id)!;
+        expect(restored.lifecycle).toEqual({
+          version: RUN_LIFECYCLE_VERSION,
+          capabilities: EXECUTION_CONTROL_CAPABILITIES,
+          controlPhase: 'none', revision: 0, commandReceipts: [], history: [],
+        });
+        expect(restored.steps[0].manualAttempt).toBe(0);
+        expect(restored.steps[0]).not.toHaveProperty('cancelRequestedAt');
+        expect(restored.steps[0]).not.toHaveProperty('cancelledAt');
+        expect(updateSpy).not.toHaveBeenCalled();
+        expect(stateEvent).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ['pausing', 'in_progress'],
+      ['paused', 'in_progress'],
+      ['cancelling', 'in_progress'],
+      ['cancelled', 'cancelled'],
+    ] as const)('round-trips durable lifecycle phase %s across an adapter restart', async (phase, status) => {
+      const run = makeLifecycleRun(`phase-${phase}`, phase, status);
+      db.insertRun(run);
+
+      const restarted = await restartDatabase(db);
+      const restored = restarted.getRun(run.id)!;
+      expect(restored).toEqual(run);
+      expect(restored.lifecycle).toMatchObject({
+        version: RUN_LIFECYCLE_VERSION,
+        capabilities: EXECUTION_CONTROL_CAPABILITIES,
+        controlPhase: phase,
+        revision: 23,
+      });
+      expect(restored.steps[0]).toMatchObject({
+        manualAttempt: 2,
+        cancelRequestedAt: '2026-01-01T00:00:05.000Z',
+        cancelledAt: '2026-01-01T00:00:06.000Z',
+        worktree: run.steps[0].worktree,
+        result: run.steps[0].result,
+        resultHistory: run.steps[0].resultHistory,
+      });
+    });
+
+    it('bounds lifecycle receipts and history when reading persisted JSON', () => {
+      const run = makeLifecycleRun('bounded', 'paused', 'in_progress');
+      run.lifecycle!.commandReceipts = Array.from(
+        { length: MAX_COMMAND_RECEIPTS + 3 },
+        (_, index) => ({
+          commandId: `receipt-${index}`, fingerprint: `fingerprint-${index}`,
+          action: 'pause_run' as const, target: { kind: 'run' as const },
+          expectedRevision: index, revision: index + 1,
+          recordedAt: '2026-01-01T00:00:00.000Z',
+          outcome: { controlPhase: 'paused' as const, runStatus: 'in_progress' as const },
+        }),
+      );
+      run.lifecycle!.history = Array.from(
+        { length: MAX_LIFECYCLE_HISTORY + 4 },
+        (_, index) => ({
+          commandId: `history-${index}`, action: 'pause_run' as const,
+          target: { kind: 'run' as const }, revision: index + 1,
+          recordedAt: '2026-01-01T00:00:00.000Z',
+          fromPhase: 'none' as const, toPhase: 'pausing' as const,
+        }),
+      );
+      db.insertRun(run);
+
+      const restored = db.getRun(run.id)!;
+      expect(restored.lifecycle!.commandReceipts).toHaveLength(MAX_COMMAND_RECEIPTS);
+      expect(restored.lifecycle!.commandReceipts[0].commandId).toBe('receipt-3');
+      expect(restored.lifecycle!.history).toHaveLength(MAX_LIFECYCLE_HISTORY);
+      expect(restored.lifecycle!.history[0].commandId).toBe('history-4');
+    });
+
+    it('fails closed when persisted JSON declares a future lifecycle version', () => {
+      const future = makeRun('future', { lifecycle: {
+        version: RUN_LIFECYCLE_VERSION,
+        capabilities: EXECUTION_CONTROL_CAPABILITIES,
+        controlPhase: 'none', revision: 0, commandReceipts: [], history: [],
+      } });
+      (future.lifecycle as unknown as { version: number }).version = RUN_LIFECYCLE_VERSION + 1;
+      db.insertRun(future);
+
+      expect(() => db.getRun(future.id)).toThrow(
+        /Unsupported run lifecycle version 3.*Upgrade/s,
+      );
+      expect(() => db.getAllRuns()).toThrow(/Unsupported run lifecycle version 3/);
+    });
+
+    it('keeps the existing runs SQL schema unchanged', () => {
+      const sqlDb = (db as unknown as {
+        db: { exec: (sql: string) => Array<{ values: unknown[][] }> };
+      }).db;
+      const [result] = sqlDb.exec('PRAGMA table_info(runs)');
+      expect(result.values.map((row) => row[1])).toEqual([
+        'id', 'task', 'status', 'data', 'created_at', 'updated_at',
+      ]);
     });
   });
 
