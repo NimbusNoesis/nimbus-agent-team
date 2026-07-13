@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { StateMachine } from '../src/state/machine.js';
 import { Database } from '../src/db/database.js';
 import type { PlanStep, RunState, StepState } from '../src/types.js';
@@ -13,9 +13,18 @@ const makeStep = (id: number, dependsOn: number[] = [], files?: string[]): PlanS
 
 describe('StateMachine', () => {
   let sm: StateMachine;
+  let db: Database;
 
   beforeEach(async () => {
-    sm = new StateMachine(await Database.create());
+    db = await Database.create();
+    sm = new StateMachine(db);
+  });
+
+  const worktree = (stepId: number) => ({
+    targetBranch: 'main',
+    targetCommit: 'abc123',
+    path: `/tmp/run/step-${stepId}`,
+    branch: `team-run-step-${stepId}`,
   });
 
   describe('createRun', () => {
@@ -281,12 +290,15 @@ describe('StateMachine', () => {
   describe('resolveEscalation', () => {
     it('transitions escalated step back to coding', () => {
       const run = sm.createRun([makeStep(1)]);
+      sm.setWorktree(run.id, 1, worktree(1));
       sm.startStep(run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'blocked', summary: 'stuck' });
       sm.resolveEscalation(run.id, 1);
       const updated = sm.getRun(run.id)!;
       expect(updated.steps[0].status).toBe('coding');
       expect(updated.status).toBe('in_progress');
+      expect(updated.steps[0].manualAttempt).toBe(1);
+      expect(updated.lifecycle?.history[0].summary).toMatch(/deprecated/i);
     });
 
     it('restores claimedFiles to the planned files so conflicts are visible again', () => {
@@ -294,6 +306,7 @@ describe('StateMachine', () => {
         makeStep(1, [], ['shared.ts', 'other.ts']),
         makeStep(2, [], ['shared.ts']),
       ]);
+      sm.setWorktree(run.id, 1, worktree(1));
       sm.startStep(run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'blocked', summary: 'stuck' });
       // Escalation clears claims
@@ -314,6 +327,7 @@ describe('StateMachine', () => {
         makeStep(1, [], ['shared.ts']),
         makeStep(2, [], ['shared.ts']),
       ]);
+      sm.setWorktree(run.id, 1, worktree(1));
       // Step 1 escalates, releasing its claim on shared.ts
       sm.startStep(run.id, 1, 'coder-1');
       sm.submitResult(run.id, 1, { status: 'blocked', summary: 'stuck' });
@@ -325,7 +339,7 @@ describe('StateMachine', () => {
       sm.on('state_update', (state: RunState) => events.push(state));
 
       expect(() => sm.resolveEscalation(run.id, 1)).toThrow(
-        'Step 1 cannot resume from escalation — file conflicts: shared.ts (also claimed by step 2)'
+        'Step 1 cannot retry — file conflicts: shared.ts (also claimed by step 2)'
       );
 
       const after = sm.getRun(run.id)!;
@@ -341,6 +355,7 @@ describe('StateMachine', () => {
         makeStep(1, [], ['shared.ts']),
         makeStep(2, [], ['shared.ts']),
       ]);
+      sm.setWorktree(run.id, 1, worktree(1));
       sm.startStep(run.id, 1, 'coder-1');
       sm.submitResult(run.id, 1, { status: 'blocked', summary: 'stuck' });
       sm.startStep(run.id, 2, 'coder-2');
@@ -349,6 +364,344 @@ describe('StateMachine', () => {
 
       expect(() => sm.resolveEscalation(run.id, 1)).toThrow('shared.ts (also claimed by step 2)');
       expect(sm.getRun(run.id)!.steps[0].status).toBe('escalated');
+    });
+  });
+
+  describe('execution controls', () => {
+    it('pauses cooperatively, retains active claims, freezes admissions, and resumes', () => {
+      const run = sm.createRun([
+        makeStep(1, [], ['active.ts']),
+        makeStep(2, [], ['next.ts']),
+      ]);
+      sm.startStep(run.id, 1, 'coder');
+
+      const pause = sm.executeControl(run.id, {
+        action: 'pause_run', target: { kind: 'run' }, commandId: 'pause-1', expectedRevision: 0,
+      });
+      expect(pause.outcome.controlPhase).toBe('pausing');
+      expect(sm.getRun(run.id)!.steps[0].claimedFiles).toEqual(['active.ts']);
+      expect(() => sm.startStep(run.id, 2, 'coder')).toThrow("control phase is 'pausing'");
+
+      // A worker admitted before the pause may drain and report its result.
+      sm.submitResult(run.id, 1, { status: 'done', summary: 'drained' });
+      expect(sm.getRun(run.id)!.steps[0].status).toBe('reviewing');
+      expect(() => sm.requestRevision(run.id, 1)).toThrow("control phase is 'pausing'");
+
+      sm.executeControl(run.id, {
+        action: 'acknowledge_pause', target: { kind: 'run' }, commandId: 'pause-ack-1', expectedRevision: 1,
+      });
+      expect(sm.getRun(run.id)!.lifecycle?.controlPhase).toBe('paused');
+      sm.executeControl(run.id, {
+        action: 'resume_run', target: { kind: 'run' }, commandId: 'resume-1', expectedRevision: 2,
+      });
+      expect(sm.getRun(run.id)!.lifecycle?.controlPhase).toBe('none');
+      expect(() => sm.startStep(run.id, 2, 'coder')).not.toThrow();
+    });
+
+    it('pauses immediately when no workers need to drain', () => {
+      const run = sm.createRun([makeStep(1)]);
+      const receipt = sm.executeControl(run.id, {
+        action: 'pause_run', target: { kind: 'run' }, commandId: 'pause-ready', expectedRevision: 0,
+      });
+      expect(receipt.outcome.controlPhase).toBe('paused');
+      expect(sm.getRun(run.id)!.lifecycle?.pausedAt).toBeDefined();
+    });
+
+    it('cancels an active step cooperatively, rejects late output, then releases claims on acknowledgement', () => {
+      const run = sm.createRun([
+        makeStep(1, [], ['shared.ts']),
+        makeStep(2, [], ['shared.ts']),
+      ]);
+      sm.startStep(run.id, 1, 'coder');
+      sm.executeControl(run.id, {
+        action: 'cancel_step', target: { kind: 'step', stepId: 1 }, commandId: 'cancel-step-1', expectedRevision: 0,
+      });
+
+      let state = sm.getRun(run.id)!;
+      expect(state.steps[0].status).toBe('cancelling');
+      expect(state.steps[0].claimedFiles).toEqual(['shared.ts']);
+      expect(() => sm.submitResult(run.id, 1, { status: 'done', summary: 'late' }))
+        .toThrow("cannot submit result from status 'cancelling'");
+      expect(() => sm.startStep(run.id, 2, 'coder')).toThrow('file conflicts');
+
+      sm.executeControl(run.id, {
+        action: 'acknowledge_cancel', target: { kind: 'step', stepId: 1 }, commandId: 'cancel-ack-1', expectedRevision: 1,
+      });
+      state = sm.getRun(run.id)!;
+      expect(state.steps[0].status).toBe('cancelled');
+      expect(state.steps[0].claimedFiles).toEqual([]);
+      expect(state.steps[0].cancelledAt).toBeDefined();
+      expect(() => sm.startStep(run.id, 2, 'coder')).not.toThrow();
+      expect(state.status).toBe('escalated');
+    });
+
+    it('cancels inactive steps immediately without cascading and reports dependent blockers', () => {
+      const run = sm.createRun([
+        makeStep(1),
+        makeStep(2, [1]),
+        makeStep(3),
+      ]);
+      sm.executeControl(run.id, {
+        action: 'cancel_step', target: { kind: 'step', stepId: 1 }, commandId: 'cancel-pending', expectedRevision: 0,
+      });
+      const state = sm.getRun(run.id)!;
+      expect(state.steps.map((step) => step.status)).toEqual(['cancelled', 'pending', 'pending']);
+      expect(state.status).toBe('escalated');
+      expect(sm.getBlockingReasons(run.id, 2)).toEqual([
+        'Blocked by cancelled dependency step 1: Step 1',
+      ]);
+      expect(() => sm.startStep(run.id, 2, 'coder')).toThrow("step 1 is 'cancelled'");
+      expect(() => sm.startStep(run.id, 3, 'coder')).not.toThrow();
+      expect(sm.getRun(run.id)!.status).toBe('escalated');
+    });
+
+    it('cancels a run only after active workers drain while cancelling pending work immediately', () => {
+      const run = sm.createRun([makeStep(1), makeStep(2), makeStep(3)]);
+      sm.startStep(run.id, 1, 'coder');
+      sm.submitResult(run.id, 1, { status: 'done', summary: 'awaiting review' });
+      sm.startStep(run.id, 2, 'coder');
+      sm.executeControl(run.id, {
+        action: 'cancel_run', target: { kind: 'run' }, commandId: 'cancel-run-1', expectedRevision: 0,
+      });
+      let state = sm.getRun(run.id)!;
+      expect(state.lifecycle?.controlPhase).toBe('cancelling');
+      expect(state.steps.map((step) => step.status)).toEqual(['cancelling', 'cancelling', 'cancelled']);
+      expect(state.steps[0].claimedFiles).toEqual(['file1.ts']);
+      expect(() => sm.startStep(run.id, 3, 'coder')).toThrow("control phase is 'cancelling'");
+      expect(() => sm.submitResult(run.id, 2, { status: 'done', summary: 'late' }))
+        .toThrow("cannot submit result from status 'cancelling'");
+      expect(() => sm.executeControl(run.id, {
+        action: 'acknowledge_cancel', target: { kind: 'step', stepId: 1 }, commandId: 'wrong-scope-ack', expectedRevision: 1,
+      })).toThrow('must be acknowledged with a run target');
+
+      sm.executeControl(run.id, {
+        action: 'acknowledge_cancel', target: { kind: 'run' }, commandId: 'cancel-run-ack', expectedRevision: 1,
+      });
+      state = sm.getRun(run.id)!;
+      expect(state.lifecycle?.controlPhase).toBe('cancelled');
+      expect(state.status).toBe('cancelled');
+      expect(state.steps.every((step) => step.status === 'cancelled')).toBe(true);
+      expect(state.steps.every((step) => step.claimedFiles.length === 0)).toBe(true);
+    });
+
+    it('cancels an inactive run immediately and keeps completed steps immutable', () => {
+      const run = sm.createRun([makeStep(1), makeStep(2)]);
+      sm.startStep(run.id, 1, 'coder');
+      sm.submitResult(run.id, 1, { status: 'done', summary: 'done' });
+      sm.advanceStep(run.id, 1);
+
+      expect(() => sm.executeControl(run.id, {
+        action: 'cancel_step', target: { kind: 'step', stepId: 1 }, commandId: 'cancel-complete', expectedRevision: 0,
+      })).toThrow('complete and immutable');
+
+      sm.executeControl(run.id, {
+        action: 'cancel_run', target: { kind: 'run' }, commandId: 'cancel-inactive-run', expectedRevision: 0,
+      });
+      const state = sm.getRun(run.id)!;
+      expect(state.lifecycle?.controlPhase).toBe('cancelled');
+      expect(state.status).toBe('cancelled');
+      expect(state.steps.map((step) => step.status)).toEqual(['complete', 'cancelled']);
+    });
+
+    it('retries only eligible escalated steps with durable worktrees and preserves attempt history', () => {
+      const run = sm.createRun([makeStep(1)]);
+      sm.setWorktree(run.id, 1, worktree(1));
+      sm.startStep(run.id, 1, 'coder');
+      sm.submitResult(run.id, 1, { status: 'blocked', summary: 'first blocker' });
+
+      const receipt = sm.executeControl(run.id, {
+        action: 'retry_step', target: { kind: 'step', stepId: 1 }, commandId: 'retry-1', expectedRevision: 0,
+      });
+      const step = sm.getRun(run.id)!.steps[0];
+      expect(receipt.outcome.stepStatus).toBe('coding');
+      expect(step.manualAttempt).toBe(1);
+      expect(step.retryCount).toBe(0);
+      expect(step.claimedFiles).toEqual(['file1.ts']);
+      expect(step.resultHistory?.at(-1)?.summary).toBe('first blocker');
+      expect(step.result).toBeNull();
+      expect(step.worktree).toEqual(worktree(1));
+    });
+
+    it('rejects retry without a worktree, unmet dependencies, conflicts, or remaining manual attempts', () => {
+      const missing = sm.createRun([makeStep(1)]);
+      sm.startStep(missing.id, 1, 'coder');
+      sm.submitResult(missing.id, 1, { status: 'blocked', summary: 'blocked' });
+      expect(() => sm.executeControl(missing.id, {
+        action: 'retry_step', target: { kind: 'step', stepId: 1 }, commandId: 'retry-missing', expectedRevision: 0,
+      })).toThrow('without persisted worktree');
+
+      const dependent = sm.createRun([makeStep(1), makeStep(2, [1])]);
+      sm.setWorktree(dependent.id, 2, worktree(2));
+      // Restore gives us a realistic escalated dependent whose prerequisite is incomplete.
+      const dependentState = sm.getRun(dependent.id)!;
+      dependentState.steps[1].status = 'escalated';
+      sm.restoreRun({ ...dependentState, id: 'dependent-retry' });
+      expect(() => sm.executeControl('dependent-retry', {
+        action: 'retry_step', target: { kind: 'step', stepId: 2 }, commandId: 'retry-dependent', expectedRevision: 0,
+      })).toThrow('unmet dependencies');
+
+      const conflicting = sm.createRun([
+        makeStep(1, [], ['shared.ts']), makeStep(2, [], ['shared.ts']),
+      ]);
+      sm.setWorktree(conflicting.id, 1, worktree(1));
+      sm.startStep(conflicting.id, 1, 'coder');
+      sm.submitResult(conflicting.id, 1, { status: 'blocked', summary: 'blocked' });
+      sm.startStep(conflicting.id, 2, 'coder');
+      expect(() => sm.executeControl(conflicting.id, {
+        action: 'retry_step', target: { kind: 'step', stepId: 1 }, commandId: 'retry-conflict', expectedRevision: 0,
+      })).toThrow('file conflicts');
+
+      const exhausted = sm.createRun([makeStep(1)]);
+      sm.setWorktree(exhausted.id, 1, worktree(1));
+      sm.startStep(exhausted.id, 1, 'coder');
+      for (let attempt = 0; attempt < 3; attempt++) {
+        sm.submitResult(exhausted.id, 1, { status: 'blocked', summary: `blocked ${attempt + 1}` });
+        sm.executeControl(exhausted.id, {
+          action: 'retry_step',
+          target: { kind: 'step', stepId: 1 },
+          commandId: `retry-${attempt + 1}`,
+          expectedRevision: attempt,
+        });
+      }
+      sm.submitResult(exhausted.id, 1, { status: 'blocked', summary: 'blocked 4' });
+      expect(() => sm.executeControl(exhausted.id, {
+        action: 'retry_step', target: { kind: 'step', stepId: 1 }, commandId: 'retry-exhausted', expectedRevision: 3,
+      })).toThrow('exhausted its 3 manual retry attempts');
+      expect(sm.getRun(exhausted.id)!.steps[0].manualAttempt).toBe(3);
+    });
+
+    it('returns retained identical replays and rejects payload mismatches or stale revisions side-effect-free', () => {
+      const run = sm.createRun([makeStep(1)]);
+      const events: RunState[] = [];
+      sm.on('state_update', (state: RunState) => events.push(state));
+      const updateSpy = vi.spyOn(db, 'updateRun');
+      const command = {
+        action: 'pause_run' as const,
+        target: { kind: 'run' as const },
+        commandId: 'idempotent-pause',
+        expectedRevision: 0,
+      };
+
+      const first = sm.executeControl(run.id, command);
+      const afterFirst = sm.getRun(run.id)!;
+      expect(updateSpy).toHaveBeenCalledTimes(1);
+      expect(events).toHaveLength(1);
+      expect(afterFirst.lifecycle?.revision).toBe(1);
+      expect(afterFirst.lifecycle?.commandReceipts).toHaveLength(1);
+      expect(afterFirst.lifecycle?.history).toHaveLength(1);
+
+      expect(sm.executeControl(run.id, command)).toEqual(first);
+      expect(sm.getRun(run.id)).toEqual(afterFirst);
+      expect(updateSpy).toHaveBeenCalledTimes(1);
+      expect(events).toHaveLength(1);
+
+      expect(() => sm.executeControl(run.id, { ...command, action: 'cancel_run' }))
+        .toThrow('different payload');
+      expect(() => sm.executeControl(run.id, {
+        action: 'resume_run', target: { kind: 'run' }, commandId: 'stale-resume', expectedRevision: 0,
+      })).toThrow('revision conflict');
+      expect(sm.getRun(run.id)).toEqual(afterFirst);
+      expect(updateSpy).toHaveBeenCalledTimes(1);
+      expect(events).toHaveLength(1);
+    });
+
+    it('bounds durable command receipts and lifecycle history', () => {
+      const run = sm.createRun([makeStep(1)]);
+      const seeded = sm.getRun(run.id)!;
+      const receipt = (revision: number) => ({
+        commandId: `seed-${revision}`,
+        fingerprint: `seed-${revision}`,
+        action: 'pause_run' as const,
+        target: { kind: 'run' as const },
+        expectedRevision: revision - 1,
+        revision,
+        recordedAt: seeded.createdAt,
+        outcome: { controlPhase: 'paused' as const, runStatus: 'ready' as const },
+      });
+      seeded.id = 'bounded-run';
+      seeded.lifecycle!.revision = 255;
+      seeded.lifecycle!.commandReceipts = Array.from({ length: 255 }, (_, index) => receipt(index + 1));
+      seeded.lifecycle!.history = Array.from({ length: 127 }, (_, index) => ({
+        commandId: `history-${index + 1}`,
+        action: 'pause_run' as const,
+        target: { kind: 'run' as const },
+        revision: index + 1,
+        recordedAt: seeded.createdAt,
+        fromPhase: 'none' as const,
+        toPhase: 'paused' as const,
+      }));
+      sm.restoreRun(seeded);
+
+      sm.executeControl('bounded-run', {
+        action: 'pause_run', target: { kind: 'run' }, commandId: 'pause-256', expectedRevision: 255,
+      });
+      sm.executeControl('bounded-run', {
+        action: 'resume_run', target: { kind: 'run' }, commandId: 'resume-257', expectedRevision: 256,
+      });
+      const lifecycle = sm.getRun('bounded-run')!.lifecycle!;
+      expect(lifecycle.revision).toBe(257);
+      expect(lifecycle.commandReceipts).toHaveLength(256);
+      expect(lifecycle.history).toHaveLength(128);
+      expect(lifecycle.commandReceipts[0].commandId).toBe('seed-2');
+      expect(lifecycle.history[0].commandId).toBe('history-2');
+    });
+
+    it('restores in-flight lifecycle state and replays a durable receipt without another effect', () => {
+      const run = sm.createRun([makeStep(1), makeStep(2)]);
+      sm.startStep(run.id, 1, 'coder');
+      const command = {
+        action: 'pause_run' as const,
+        target: { kind: 'run' as const },
+        commandId: 'restart-pause',
+        expectedRevision: 0,
+      };
+      const receipt = sm.executeControl(run.id, command);
+      const beforeRestart = sm.getRun(run.id)!;
+
+      const restarted = new StateMachine(db);
+      const updateSpy = vi.spyOn(db, 'updateRun');
+      const events: RunState[] = [];
+      restarted.on('state_update', (state: RunState) => events.push(state));
+
+      expect(restarted.getRun(run.id)).toEqual(beforeRestart);
+      expect(restarted.executeControl(run.id, command)).toEqual(receipt);
+      expect(restarted.getRun(run.id)).toEqual(beforeRestart);
+      expect(updateSpy).not.toHaveBeenCalled();
+      expect(events).toHaveLength(0);
+    });
+
+    it('keeps completed and cancelled targets terminal with rejected commands side-effect-free', () => {
+      const completed = sm.createRun([makeStep(1)]);
+      sm.startStep(completed.id, 1, 'coder');
+      sm.submitResult(completed.id, 1, { status: 'done', summary: 'done' });
+      sm.advanceStep(completed.id, 1);
+
+      const completedBefore = sm.getRun(completed.id)!;
+      const updateSpy = vi.spyOn(db, 'updateRun');
+      const events: RunState[] = [];
+      sm.on('state_update', (state: RunState) => events.push(state));
+      expect(() => sm.executeControl(completed.id, {
+        action: 'pause_run', target: { kind: 'run' }, commandId: 'pause-complete', expectedRevision: 0,
+      })).toThrow('terminal and cannot be paused');
+      expect(() => sm.executeControl(completed.id, {
+        action: 'cancel_run', target: { kind: 'run' }, commandId: 'cancel-complete-run', expectedRevision: 0,
+      })).toThrow('terminal and cannot be cancelled');
+      expect(sm.getRun(completed.id)).toEqual(completedBefore);
+
+      const cancelled = sm.createRun([makeStep(1)]);
+      sm.executeControl(cancelled.id, {
+        action: 'cancel_run', target: { kind: 'run' }, commandId: 'cancel-terminal', expectedRevision: 0,
+      });
+      const cancelledBefore = sm.getRun(cancelled.id)!;
+      const writesAfterCancel = updateSpy.mock.calls.length;
+      const eventsAfterCancel = events.length;
+      expect(() => sm.executeControl(cancelled.id, {
+        action: 'resume_run', target: { kind: 'run' }, commandId: 'resume-cancelled', expectedRevision: 1,
+      })).toThrow("cannot resume from control phase 'cancelled'");
+      expect(() => sm.startStep(cancelled.id, 1, 'coder')).toThrow("control phase is 'cancelled'");
+      expect(sm.getRun(cancelled.id)).toEqual(cancelledBefore);
+      expect(updateSpy).toHaveBeenCalledTimes(writesAfterCancel);
+      expect(events).toHaveLength(eventsAfterCancel);
     });
   });
 
