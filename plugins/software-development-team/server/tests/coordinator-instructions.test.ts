@@ -36,6 +36,7 @@ const instructions = instructionFiles.map((file) => ({
   file,
   content: readFileSync(new URL(file, repositoryRoot), 'utf8').replace(/\*\*/g, ''),
 }));
+const maintainerGuidance = readRepositoryFile('plugins/software-development-team/CLAUDE.md').replace(/\*\*/g, '');
 
 const roles = ['planner', 'plan-critic', 'coder', 'reviewer', 'researcher', 'documentation'] as const;
 const agentFiles = roles.flatMap((role) => [
@@ -507,6 +508,92 @@ describe('coordinator instruction contract', () => {
     expect(content).toMatch(/no (?:separate )?server WIP cap|do not impose a server WIP cap/i);
     expect(content).toMatch(/do not (?:use )?pause, cancel|do not pause or cancel/i);
     expect(content).toMatch(/worktrees?.*never permit overlapping|overlapping.*even when using worktrees|never use (?:them|worktrees) to run overlapping/i);
+  });
+
+  it.each(instructions)('$file implements the lifecycle-v2 polling and command contract', ({ content }) => {
+    const end = content.includes('## Deterministic Runnable-Set Scheduling')
+      ? '## Deterministic Runnable-Set Scheduling'
+      : '## Pipeline Parallelism';
+    const lifecycle = sectionBetween(content, '## Lifecycle-v2 Execution Controls', end)
+      .replace(/`/g, '')
+      .replace(/\s+/g, ' ');
+
+    expect(content).toMatch(/team_control.*mcp__.*team_control/i);
+    expect(lifecycle).toMatch(/team_status.*authority.*every coordinator pass/is);
+    for (const field of ['lifecycleVersion', 'capabilities', 'actionAvailability', 'revision', 'phase', 'workers']) {
+      expect(lifecycle).toContain(field);
+    }
+    expect(lifecycle).toMatch(/newer than this coordinator understands[\s\S]*fail closed/i);
+    expect(lifecycle).toMatch(/unique[\s\S]*commandId[\s\S]*fresh[\s\S]*expectedRevision[\s\S]*exact[\s\S]*(?:run or step|target)/i);
+    expect(lifecycle).toMatch(/cancellation[\s\S]*confirmation: true/i);
+    expect(lifecycle).toMatch(/same commandId[\s\S]*same command fingerprint[\s\S]*safe replay[\s\S]*not.*another transition/i);
+    expect(lifecycle).toMatch(/stale expectedRevision[\s\S]*conflict[\s\S]*do not[\s\S]*blindly retry[\s\S]*refresh team_status/i);
+  });
+
+  it.each(instructions)('$file drains pause and cancellation before acknowledgement or cleanup', ({ content }) => {
+    const end = content.includes('## Deterministic Runnable-Set Scheduling')
+      ? '## Deterministic Runnable-Set Scheduling'
+      : '## Pipeline Parallelism';
+    const lifecycle = sectionBetween(content, '## Lifecycle-v2 Execution Controls', end)
+      .replace(/`/g, '')
+      .replace(/\s+/g, ' ');
+
+    expect(lifecycle).toMatch(/pause_run[\s\S]*admissions are frozen[\s\S]*pausing[\s\S]*paused[\s\S]*never call[\s\S]*start_coding[\s\S]*(?:spawn|re-spawn)/i);
+    expect(lifecycle).toMatch(/pause is cooperative[\s\S]*do not kill active native workers[\s\S]*retain every file claim[\s\S]*worktree/i);
+    expect(lifecycle).toMatch(/only after every native worker[\s\S]*quiescent[\s\S]*fresh status[\s\S]*acknowledge_pause/i);
+    expect(lifecycle).toMatch(/never equate[\s\S]*pausing[\s\S]*acknowledged paused/i);
+    expect(lifecycle).toMatch(/resume_run[\s\S]*refresh status[\s\S]*recompute the runnable set[\s\S]*dependencies[\s\S]*claims[\s\S]*blockers/i);
+
+    expect(lifecycle).toMatch(/cancel_run[\s\S]*run target[\s\S]*cancel_step[\s\S]*exact step target[\s\S]*explicit confirmation/i);
+    expect(lifecycle).toMatch(/active target becomes cancelling[\s\S]*do not kill[\s\S]*do not merge[\s\S]*release claims[\s\S]*remove its worktree/i);
+    expect(lifecycle).toMatch(/rejects late result state mutations[\s\S]*discard its result as a state transition[\s\S]*audit context/i);
+    expect(lifecycle).toMatch(/inactive cancellable target[\s\S]*cancelled immediately[\s\S]*no native worker to drain[\s\S]*no acknowledgement/i);
+    expect(lifecycle).toMatch(/native workers in the requested scope are quiescent[\s\S]*acknowledge_cancel[\s\S]*same scope[\s\S]*run target[\s\S]*exact step target/i);
+    expect(lifecycle).toMatch(/cancelled step is terminal[\s\S]*never merged[\s\S]*only after acknowledgement[\s\S]*abandoned-worktree cleanup/i);
+    expect(lifecycle).toMatch(/dependents pending[\s\S]*cancelled-dependency blockers[\s\S]*independent work may continue/i);
+    expect(lifecycle).toMatch(/completed steps and completed results are immutable/i);
+  });
+
+  it.each(instructions)('$file safely retries escalations and reconstructs controls after restart', ({ content }) => {
+    const end = content.includes('## Deterministic Runnable-Set Scheduling')
+      ? '## Deterministic Runnable-Set Scheduling'
+      : '## Pipeline Parallelism';
+    const lifecycle = sectionBetween(content, '## Lifecycle-v2 Execution Controls', end)
+      .replace(/`/g, '')
+      .replace(/\s+/g, ' ');
+
+    expect(lifecycle).toMatch(/team_control\(action: "retry_step"\)[\s\S]*resolve_escalation[\s\S]*deprecated compatibility alias[\s\S]*same safety rules/i);
+    expect(lifecycle).toMatch(/fresh step actionAvailability\.retry_step[\s\S]*escalated[\s\S]*persisted worktree[\s\S]*manual-attempt budget[\s\S]*dependencies[\s\S]*file claims/i);
+    expect(lifecycle).toMatch(/reuses that worktree[\s\S]*preserves result\/review\/audit history[\s\S]*increments manualAttempt[\s\S]*resets per-attempt reviewer counters/i);
+    expect(lifecycle).toMatch(/reconstruct lifecycle phase, revision,[\s\S]*receipts\/history[\s\S]*cancellation state[\s\S]*worktree context from team_status/i);
+    expect(lifecycle).toMatch(/restored state is pausing or cancelling[\s\S]*drain-and-acknowledge protocol[\s\S]*workers from the prior session[\s\S]*truly quiescent/i);
+    expect(lifecycle).toMatch(/preserve completed results,[\s\S]*branches,[\s\S]*worktrees,[\s\S]*artifacts/i);
+    expect(lifecycle).toMatch(/do not run an older lifecycle-v1[\s\S]*pausing[\s\S]*paused[\s\S]*cancelling[\s\S]*before downgrade/i);
+  });
+
+  it('keeps the executable lifecycle-v2 contract identical across both hosts and entry points', () => {
+    const sections = instructions.map(({ content }) => {
+      const end = content.includes('## Deterministic Runnable-Set Scheduling')
+        ? '## Deterministic Runnable-Set Scheduling'
+        : '## Pipeline Parallelism';
+      return sectionBetween(content, '## Lifecycle-v2 Execution Controls', end).trim();
+    });
+    expect(new Set(sections).size).toBe(1);
+  });
+
+  it('documents the same lifecycle-v2 invariants for repository maintainers', () => {
+    const lifecycle = sectionBetween(
+      maintainerGuidance,
+      '### Lifecycle-v2 controls are coordinator-drained and revisioned',
+      '### Coordinator message relay for dashboard visibility',
+    ).replace(/`/g, '').replace(/\s+/g, ' ');
+    expect(lifecycle).toMatch(/both hosts implement the same lifecycle-v2 protocol/i);
+    expect(lifecycle).toMatch(/team_status[\s\S]*lifecycleVersion[\s\S]*capabilities[\s\S]*actionAvailability[\s\S]*revision/i);
+    expect(lifecycle).toMatch(/same-fingerprint command replay is idempotent[\s\S]*stale revision[\s\S]*status refresh/i);
+    expect(lifecycle).toMatch(/pause_run freezes all admissions immediately[\s\S]*cooperative drain[\s\S]*never kill[\s\S]*acknowledge_pause/i);
+    expect(lifecycle).toMatch(/cancel_run and cancel_step[\s\S]*reject late result state mutations[\s\S]*acknowledge_cancel[\s\S]*matching run or step scope/i);
+    expect(lifecycle).toMatch(/team_control\(retry_step\)[\s\S]*durable worktree[\s\S]*manualAttempt[\s\S]*resolve_escalation[\s\S]*deprecated/i);
+    expect(lifecycle).toMatch(/after coordinator restart[\s\S]*pausing[\s\S]*cancelling[\s\S]*do not downgrade to lifecycle v1/i);
   });
 
   it.each(instructions)('$file rejects superseded scheduling semantics', ({ content }) => {

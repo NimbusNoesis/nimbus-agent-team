@@ -17,6 +17,7 @@ The team's MCP tools are namespaced. When this prompt says `team_X`, call `mcp__
 
 - `team_start` → `mcp__plugin_software-development-team_software-development-team__team_start`
 - `team_status` → `mcp__plugin_software-development-team_software-development-team__team_status`
+- `team_control` → `mcp__plugin_software-development-team_software-development-team__team_control`
 - `team_advance` → `mcp__plugin_software-development-team_software-development-team__team_advance`
 - `team_send_message` → `mcp__plugin_software-development-team_software-development-team__team_send_message`
 - `team_get_messages` → `mcp__plugin_software-development-team_software-development-team__team_get_messages`
@@ -249,7 +250,9 @@ When re-dispatching a coder after `NEEDS_REVISION`:
 
 ### Step is ESCALATED → Ask user
 
-Print the issue. Wait for user guidance. When received, `team_advance(resolve_escalation)` and re-dispatch coder.
+Print the issue and wait for user guidance. When retry is explicitly requested,
+follow the lifecycle-v2 escalated-step retry protocol below; do not dispatch from
+the user's message alone.
 
 ### Read-only review step (no code result) → mark_reviewed
 
@@ -282,6 +285,98 @@ Every Agent dispatch prompt needs all of these — subagents have no inherited c
 7. **Prior context** — any review feedback (for revisions) or user guidance
 8. **Tool name mapping** — remind the subagent that `team_X` means `mcp__plugin_software-development-team_software-development-team__team_X`
 9. **Run ID key prefix** — remind the subagent to use the first 8 characters of the run ID as a prefix for reflection and review memory keys (e.g., `{runId-short}-step-{N}-reflection`). Include the actual 8-char prefix value so the agent doesn't have to compute it.
+
+## Lifecycle-v2 Execution Controls
+
+Treat `team_status` as the authority on every coordinator pass. Read
+`lifecycleVersion`, `capabilities`, run and step `actionAvailability`,
+`revision`, `phase`, `workers`, and blocking reasons before deciding
+whether a control is legal. Do not infer availability from an old snapshot or
+from a worker's return text. If `lifecycleVersion` is newer than this
+coordinator understands, fail closed and ask the user to upgrade the
+coordinator. For lifecycle v2, invoke `team_control` with a unique,
+operation-scoped `commandId`, the fresh `expectedRevision`, and the exact
+run or step target. Cancellation also requires `confirmation: true`.
+
+A successful command advances the revision once and records an audit receipt.
+Repeating the same `commandId` with the same command fingerprint is a safe
+replay and must not be treated as another transition. A reused command ID with
+different arguments or a stale `expectedRevision` is a conflict: do not
+blindly retry or replay a destructive action. Refresh `team_status`, explain
+the current state, and reschedule or ask for fresh user intent.
+
+### Pause and resume protocol
+
+1. Send `pause_run` against the run target. As soon as it succeeds, admissions
+   are frozen: while the phase is `pausing` or `paused`, never call
+   `start_coding`, spawn or re-spawn a worker, or admit review/revision work.
+2. Pause is cooperative. Do not kill active native workers. Let already-running
+   agents return, continue polling `team_status`, and retain every file claim,
+   branch, worktree, result, and artifact. Do not merge, release claims, or
+   clean up while the pause is draining.
+3. The coordinator owns native-worker truth. Only after every native worker
+   from this run is quiescent and a fresh status still offers
+   `acknowledge_pause`, send that distinct action. Never equate
+   `pause_run`/phase `pausing` with an acknowledged `paused` run.
+4. While `paused`, preserve the run exactly. On explicit resume intent, use a
+   fresh revision to send `resume_run`. Then refresh status and recompute the
+   runnable set from dependencies, claims, blockers, and action availability;
+   do not resume from a cached queue.
+
+### Cancellation protocol
+
+Run and step cancellation are cooperative drains. Send `cancel_run` with a
+run target or `cancel_step` with the exact step target only after explicit
+confirmation. An active target becomes `cancelling`; do not kill its native
+worker, and do not merge, release claims, delete a branch, or remove its
+worktree yet. The server rejects late result state mutations for cancelling
+targets; when a drained worker returns, discard its result as a state
+transition, preserve useful artifacts, and relay the late output only as audit
+context.
+
+An inactive cancellable target may become `cancelled` immediately; it has no
+native worker to drain and therefore needs no acknowledgement.
+
+Keep polling until native workers in the requested scope are quiescent. Then,
+and only if a fresh status offers the action, send the distinct
+`acknowledge_cancel` with the same scope: run target for a run cancellation,
+or the exact step target for a step cancellation. A run in `cancelling` or
+`cancelled` admits no workers. A cancelled step is terminal and is never
+merged; only after acknowledgement may the coordinator perform the documented
+abandoned-worktree cleanup. Step cancellation leaves dependents pending with
+cancelled-dependency blockers while independent work may continue after a
+fresh scheduling pass. Completed steps and completed results are immutable and
+must never be cancelled or overwritten.
+
+### Escalated-step retry protocol
+
+Prefer `team_control(action: "retry_step")`; `team_advance(action:
+"resolve_escalation")` is a deprecated compatibility alias and must obey the
+same safety rules. Retry only when a fresh step `actionAvailability.retry_step`
+says the escalated step is eligible, the run phase is `none`, the persisted
+worktree tuple is present and consistent, the manual-attempt budget remains,
+all dependencies are complete, and file claims can be reacquired without
+conflict. A retry reuses that worktree, preserves result/review/audit history,
+increments `manualAttempt`, resets per-attempt reviewer counters, and returns
+the step to coding. Refresh status after the command before spawning; a
+conflict or replay never authorizes a spawn by itself.
+
+### Restart, interruption, and compatibility
+
+On begin-loop recovery or `resume`, reconstruct lifecycle phase, revision,
+receipts/history, step cancellation state, and worktree context from
+`team_status`; never reset them because the coordinator process restarted.
+If restored state is `pausing` or `cancelling`, continue the applicable
+drain-and-acknowledge protocol. First establish that workers from the prior
+session are truly quiescent; process absence is not permission for premature
+merge, cleanup, claim release, or acknowledgement. Preserve completed results,
+branches, worktrees, and artifacts throughout recovery.
+
+Do not run an older lifecycle-v1 server or coordinator against persisted v2
+state while any run is `pausing`, `paused`, or `cancelling`. Finish or
+safely resolve those phases with a lifecycle-v2 binary before downgrade.
+`cancelled` is terminal, and future lifecycle versions must be rejected
+rather than guessed.
 
 ## Deterministic Runnable-Set Scheduling
 
