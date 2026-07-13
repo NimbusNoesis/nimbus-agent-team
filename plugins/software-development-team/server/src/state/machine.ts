@@ -20,6 +20,15 @@ import { Database } from '../db/database.js';
 
 const MAX_RETRIES = 3;
 const MAX_MANUAL_ATTEMPTS = 3;
+const EXECUTION_CONTROL_ACTIONS = new Set<ExecutionControlAction>([
+  'pause_run',
+  'acknowledge_pause',
+  'resume_run',
+  'cancel_run',
+  'cancel_step',
+  'acknowledge_cancel',
+  'retry_step',
+]);
 
 export interface ExecutionControlCommand {
   action: ExecutionControlAction;
@@ -439,7 +448,7 @@ export class StateMachine extends EventEmitter {
     if (typeof command.commandId !== 'string' || !command.commandId.trim()) {
       throw new Error('commandId must not be empty');
     }
-    if (!(command.action in EXECUTION_CONTROL_CAPABILITIES)) {
+    if (!EXECUTION_CONTROL_ACTIONS.has(command.action)) {
       throw new Error(`Unsupported lifecycle action '${String(command.action)}'`);
     }
     if (!Number.isInteger(command.expectedRevision) || command.expectedRevision < 0) {
@@ -517,6 +526,8 @@ export class StateMachine extends EventEmitter {
         }
         break;
       }
+      default:
+        throw new Error(`Unsupported lifecycle action '${String(command.action)}'`);
     }
   }
 
@@ -598,6 +609,8 @@ export class StateMachine extends EventEmitter {
         delete step.cancelledAt;
         break;
       }
+      default:
+        throw new Error(`Unsupported lifecycle action '${String(command.action)}'`);
     }
   }
 

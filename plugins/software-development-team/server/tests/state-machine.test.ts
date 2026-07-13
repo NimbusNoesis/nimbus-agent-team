@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { StateMachine } from '../src/state/machine.js';
 import { Database } from '../src/db/database.js';
-import type { PlanStep, RunState, StepState } from '../src/types.js';
+import type { ExecutionControlAction, PlanStep, RunState, StepState } from '../src/types.js';
 
 const makeStep = (id: number, dependsOn: number[] = [], files?: string[]): PlanStep => ({
   id,
@@ -603,6 +603,31 @@ describe('StateMachine', () => {
       expect(sm.getRun(run.id)).toEqual(afterFirst);
       expect(updateSpy).toHaveBeenCalledTimes(1);
       expect(events).toHaveLength(1);
+    });
+
+    it('rejects inherited and unknown runtime actions without durable side effects', () => {
+      const run = sm.createRun([makeStep(1)]);
+      const before = sm.getRun(run.id)!;
+      const updateSpy = vi.spyOn(db, 'updateRun');
+      const events: RunState[] = [];
+      sm.on('state_update', (state: RunState) => events.push(state));
+
+      for (const action of ['toString', 'hasOwnProperty', 'unknown_action']) {
+        expect(() => sm.executeControl(run.id, {
+          action: action as ExecutionControlAction,
+          target: { kind: 'run' },
+          commandId: `unsupported-${action}`,
+          expectedRevision: 0,
+        })).toThrow(`Unsupported lifecycle action '${action}'`);
+
+        const after = sm.getRun(run.id)!;
+        expect(after).toEqual(before);
+        expect(after.lifecycle?.revision).toBe(0);
+        expect(after.lifecycle?.commandReceipts).toEqual([]);
+        expect(after.lifecycle?.history).toEqual([]);
+        expect(updateSpy).not.toHaveBeenCalled();
+        expect(events).toEqual([]);
+      }
     });
 
     it('bounds durable command receipts and lifecycle history', () => {
