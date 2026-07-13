@@ -16,6 +16,7 @@ import type {
 } from '../src/dashboard/client/state/store';
 import { RunControls } from '../src/dashboard/client/components/controls/RunControls';
 import { StepControls } from '../src/dashboard/client/components/controls/StepControls';
+import { ControlConfirmationDialog } from '../src/dashboard/client/components/controls/ControlConfirmationDialog';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -159,6 +160,50 @@ describe('RunControls', () => {
     expect(background.hasAttribute('inert')).toBe(false);
     expect(background.hasAttribute('aria-hidden')).toBe(false);
     background.remove();
+  });
+
+  it('keeps shared background isolated until the last independent dialog closes', () => {
+    const preserved = document.createElement('section');
+    preserved.setAttribute('aria-hidden', 'menu');
+    preserved.setAttribute('inert', 'locked');
+    const ordinary = document.createElement('section');
+    document.body.append(preserved, ordinary);
+    const intent = {
+      action: 'pause_run' as const,
+      target: { kind: 'run' as const },
+      title: 'Pause test run',
+      submitLabel: 'Pause admissions',
+      consequence: 'No new work is admitted.',
+    };
+    const firstOpener = document.createElement('button');
+    const secondOpener = document.createElement('button');
+    document.body.append(firstOpener, secondOpener);
+
+    const first = render(
+      <ControlConfirmationDialog intent={intent} pending={false} opener={firstOpener} onCancel={() => {}} onConfirm={() => {}} />,
+    );
+    const second = render(
+      <ControlConfirmationDialog intent={intent} pending={false} opener={secondOpener} onCancel={() => {}} onConfirm={() => {}} />,
+    );
+    const cancelButtons = screen.getAllByRole('button', { name: 'Keep working', hidden: true });
+    expect(document.activeElement).toBe(cancelButtons[1]);
+
+    first.unmount();
+    expect(preserved.getAttribute('aria-hidden')).toBe('true');
+    expect(preserved.hasAttribute('inert')).toBe(true);
+    expect(ordinary.getAttribute('aria-hidden')).toBe('true');
+    expect(document.activeElement).toBe(cancelButtons[1]);
+
+    second.unmount();
+    expect(preserved.getAttribute('aria-hidden')).toBe('menu');
+    expect(preserved.getAttribute('inert')).toBe('locked');
+    expect(ordinary.hasAttribute('aria-hidden')).toBe(false);
+    expect(ordinary.hasAttribute('inert')).toBe(false);
+    expect(document.activeElement).toBe(secondOpener);
+    preserved.remove();
+    ordinary.remove();
+    firstOpener.remove();
+    secondOpener.remove();
   });
 
   it('submits a destructive command only once while pending and announces success', async () => {

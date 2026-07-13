@@ -9,8 +9,9 @@ export function StepDetail({ stepState: s, id }: Props) {
   const run = currentRun.value;
   const [now, setNow] = useState(Date.now());
 
-  // Keep the "running" elapsed value live while the step is in progress.
-  const isRunning = !!s.startedAt && !s.completedAt;
+  // Liveness is a state-machine property, not the absence of an end timestamp.
+  // Cancelling is still active while its worker drains and retains file claims.
+  const isRunning = !!s.startedAt && ['coding', 'reviewing', 'cancelling'].includes(s.status);
   useEffect(() => {
     if (!isRunning) return;
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -33,13 +34,16 @@ export function StepDetail({ stepState: s, id }: Props) {
       });
     }
     // Mirror the server's blockingReasonsFor: files claimed by another
-    // in-flight (coding/reviewing) step also block a pending step.
+    // in-flight (coding/reviewing/cancelling) step also blocks a pending step.
+    // Cancelling retains its claims until coordinator acknowledgement.
     run.steps.forEach(other => {
       if (other.step.id === s.step.id) return;
-      if (other.status !== 'coding' && other.status !== 'reviewing') return;
+      if (!['coding', 'reviewing', 'cancelling'].includes(other.status)) return;
       (s.step.files || []).forEach(file => {
         if (other.claimedFiles?.includes(file)) {
-          blockingReasons.push(`File conflict: ${file} is claimed by step ${other.step.id}`);
+          blockingReasons.push(other.status === 'cancelling'
+            ? `File conflict: ${file} is claimed by cancelling step ${other.step.id}; the claim is retained until coordinator acknowledgement.`
+            : `File conflict: ${file} is claimed by step ${other.step.id}`);
         }
       });
     });
@@ -47,21 +51,30 @@ export function StepDetail({ stepState: s, id }: Props) {
 
   // Compute file conflicts for active steps
   const fileConflicts: string[] = [];
-  if ((s.status === 'coding' || s.status === 'reviewing') && run) {
+  if (['coding', 'reviewing', 'cancelling'].includes(s.status) && run) {
     run.steps.forEach(other => {
       if (other.step.id === s.step.id) return;
-      if (other.status !== 'coding' && other.status !== 'reviewing') return;
+      if (!['coding', 'reviewing', 'cancelling'].includes(other.status)) return;
       (s.step.files || []).forEach(file => {
         if (other.claimedFiles?.includes(file)) fileConflicts.push(file);
       });
     });
   }
 
-  function formatTimingElapsed(startIso: string, endIso?: string): string {
-    const elapsed = Math.round(((endIso ? new Date(endIso).getTime() : Date.now()) - new Date(startIso).getTime()) / 1000);
+  const terminalEnd = s.status === 'complete'
+    ? s.completedAt
+    : s.status === 'cancelled'
+      ? s.cancelledAt
+      : s.status === 'escalated'
+        ? run?.updatedAt
+        : undefined;
+
+  function formatTimingElapsed(startIso: string, endIso: string | undefined, running: boolean): string {
+    if (!running && !endIso) return 'End time unavailable';
+    const elapsed = Math.max(0, Math.round((((running ? now : new Date(endIso!).getTime())) - new Date(startIso).getTime()) / 1000));
     const mins = Math.floor(elapsed / 60);
     const secs = elapsed % 60;
-    return `${mins > 0 ? `${mins}m ` : ''}${secs}s${!endIso ? ' (running)' : ''}`;
+    return `${mins > 0 ? `${mins}m ` : ''}${secs}s${running ? ' (running)' : ''}`;
   }
 
   return (
@@ -165,7 +178,7 @@ export function StepDetail({ stepState: s, id }: Props) {
         </div>
       )}
 
-      {(s.startedAt || s.completedAt) && (
+      {(s.startedAt || s.completedAt || s.cancelledAt || (s.status === 'escalated' && terminalEnd)) && (
         <div class="step-detail-section step-timing">
           <div class="step-detail-title">Timing</div>
           <div class="step-timing-grid">
@@ -181,10 +194,22 @@ export function StepDetail({ stepState: s, id }: Props) {
                 <span class="step-timing-value">{new Date(s.completedAt).toLocaleTimeString()}</span>
               </div>
             )}
+            {s.cancelledAt && (
+              <div class="step-timing-row">
+                <span class="step-timing-label">Cancelled</span>
+                <span class="step-timing-value">{new Date(s.cancelledAt).toLocaleTimeString()}</span>
+              </div>
+            )}
+            {s.status === 'escalated' && terminalEnd && (
+              <div class="step-timing-row">
+                <span class="step-timing-label">Escalated</span>
+                <span class="step-timing-value">{new Date(terminalEnd).toLocaleTimeString()}</span>
+              </div>
+            )}
             {s.startedAt && (
               <div class="step-timing-row">
                 <span class="step-timing-label">Elapsed</span>
-                <span class="step-timing-value">{formatTimingElapsed(s.startedAt, s.completedAt)}</span>
+                <span class="step-timing-value">{formatTimingElapsed(s.startedAt, terminalEnd, isRunning)}</span>
               </div>
             )}
           </div>

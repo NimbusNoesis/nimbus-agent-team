@@ -19,6 +19,63 @@ interface Props {
   onConfirm: (reason?: string, confirmation?: string) => void;
 }
 
+interface IsolationSnapshot {
+  count: number;
+  ariaHidden: string | null;
+  inert: string | null;
+}
+
+interface ActiveDialog {
+  token: symbol;
+  opener: HTMLElement | null;
+  focus: () => void;
+}
+
+const isolatedElements = new Map<HTMLElement, IsolationSnapshot>();
+const activeDialogs: ActiveDialog[] = [];
+
+function acquireIsolation(elements: Iterable<HTMLElement>): HTMLElement[] {
+  const acquired = [...new Set(elements)];
+  for (const element of acquired) {
+    const existing = isolatedElements.get(element);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      isolatedElements.set(element, {
+        count: 1,
+        ariaHidden: element.getAttribute('aria-hidden'),
+        inert: element.getAttribute('inert'),
+      });
+    }
+    element.setAttribute('aria-hidden', 'true');
+    element.setAttribute('inert', '');
+  }
+  return acquired;
+}
+
+function releaseIsolation(elements: Iterable<HTMLElement>) {
+  for (const element of elements) {
+    const snapshot = isolatedElements.get(element);
+    if (!snapshot) continue;
+    snapshot.count -= 1;
+    if (snapshot.count > 0) continue;
+    if (snapshot.ariaHidden === null) element.removeAttribute('aria-hidden');
+    else element.setAttribute('aria-hidden', snapshot.ariaHidden);
+    if (snapshot.inert === null) element.removeAttribute('inert');
+    else element.setAttribute('inert', snapshot.inert);
+    isolatedElements.delete(element);
+  }
+}
+
+function unregisterDialog(token: symbol) {
+  const index = activeDialogs.findIndex(dialog => dialog.token === token);
+  if (index === -1) return;
+  const wasTopmost = index === activeDialogs.length - 1;
+  const [dialog] = activeDialogs.splice(index, 1);
+  if (activeDialogs.length === 0) dialog.opener?.focus();
+  else if (wasTopmost) activeDialogs[activeDialogs.length - 1].focus();
+}
+
 export function ControlConfirmationDialog({ intent, pending, opener, onCancel, onConfirm }: Props) {
   const titleId = useId();
   const descriptionId = useId();
@@ -41,23 +98,14 @@ export function ControlConfirmationDialog({ intent, pending, opener, onCancel, o
       foreground = foreground.parentElement;
       if (foreground === document.body) break;
     }
-    const previous = background.map(element => ({
-      element,
-      ariaHidden: element.getAttribute('aria-hidden'),
-      inert: element.hasAttribute('inert'),
-    }));
-    for (const element of background) {
-      element.setAttribute('aria-hidden', 'true');
-      element.setAttribute('inert', '');
-    }
-    cancelRef.current?.focus();
+    const acquired = acquireIsolation(background);
+    const token = Symbol('control-dialog');
+    const activeDialog = { token, opener, focus: () => cancelRef.current?.focus() };
+    activeDialogs.push(activeDialog);
+    activeDialog.focus();
     return () => {
-      for (const item of previous) {
-        if (item.ariaHidden === null) item.element.removeAttribute('aria-hidden');
-        else item.element.setAttribute('aria-hidden', item.ariaHidden);
-        if (!item.inert) item.element.removeAttribute('inert');
-      }
-      opener?.focus();
+      releaseIsolation(acquired);
+      unregisterDialog(token);
     };
   }, [opener]);
 

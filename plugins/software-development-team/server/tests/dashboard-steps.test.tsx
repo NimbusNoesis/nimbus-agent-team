@@ -239,6 +239,23 @@ describe('StepDetail', () => {
     expect(screen.getByText('File conflict: src/shared.ts is claimed by step 2')).toBeTruthy();
   });
 
+  it('keeps a pending overlap blocked while the claiming step is cancelling', () => {
+    const other = makeStep({
+      step: { id: 2, description: 'Draining step', files: ['src/shared.ts'] },
+      status: 'cancelling',
+      claimedFiles: ['src/shared.ts'],
+      cancelRequestedAt: '2026-01-01T00:00:30Z',
+    });
+    const s = makeStep({
+      step: { id: 1, description: 'Pending overlap', files: ['src/shared.ts'] },
+      status: 'pending',
+    });
+    currentRun.value = makeRun({ steps: [other, s] });
+    render(<StepDetail stepState={s} />);
+    expect(screen.getByText(/File conflict: src\/shared\.ts is claimed by cancelling step 2/)).toBeTruthy();
+    expect(screen.getByText(/claim is retained until coordinator acknowledgement/)).toBeTruthy();
+  });
+
   it('does not report a file conflict for a pending step when the claiming step is complete', () => {
     const other = makeStep({
       step: { id: 2, description: 'Finished step', files: ['src/shared.ts'] },
@@ -393,6 +410,32 @@ describe('StepDetail', () => {
     currentRun.value = makeRun({ steps: [s] });
     const { container } = render(<StepDetail stepState={s} />);
     expect(container.textContent).toContain('(running)');
+    vi.useRealTimers();
+  });
+
+  it('uses cancelledAt as the terminal end and never labels a cancelled step running', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T01:00:00Z'));
+    const s = makeStep({
+      status: 'cancelled',
+      startedAt: '2026-01-01T00:00:00Z',
+      cancelledAt: '2026-01-01T00:01:15Z',
+    });
+    currentRun.value = makeRun({ steps: [s] });
+    const { container } = render(<StepDetail stepState={s} />);
+    expect(container.textContent).toContain('1m 15s');
+    expect(container.textContent).not.toContain('(running)');
+    vi.useRealTimers();
+  });
+
+  it('uses the persisted run update as an escalated end and never labels escalation running', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T01:00:00Z'));
+    const s = makeStep({ status: 'escalated', startedAt: '2026-01-01T00:00:00Z' });
+    currentRun.value = makeRun({ steps: [s], updatedAt: '2026-01-01T00:02:05Z' });
+    const { container } = render(<StepDetail stepState={s} />);
+    expect(container.textContent).toContain('2m 5s');
+    expect(container.textContent).not.toContain('(running)');
     vi.useRealTimers();
   });
 
