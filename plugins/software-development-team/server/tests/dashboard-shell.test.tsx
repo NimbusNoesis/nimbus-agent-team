@@ -120,7 +120,7 @@ describe('shared async and adaptive navigation behavior', () => {
     expect(screen.getByRole('status')).toBeTruthy();
   });
 
-  it('uses a single navigation DOM and restores the focused destination across layout changes', async () => {
+  it('uses a single navigation DOM and preserves navigation focus across layout changes', async () => {
     let layoutListener: (() => void) | undefined;
     vi.stubGlobal('matchMedia', vi.fn(() => ({
       matches: false,
@@ -142,5 +142,38 @@ describe('shared async and adaptive navigation behavior', () => {
     layoutListener?.();
     await waitFor(() => expect(document.activeElement).toBe(activity));
     expect(activity.getAttribute('href')).toBe('#activity-panel');
+  });
+
+  it('does not steal input or control focus when the workspace layout changes', async () => {
+    let layoutListener: (() => void) | undefined;
+    const removeEventListener = vi.fn();
+    vi.stubGlobal('matchMedia', vi.fn(() => ({
+      matches: false,
+      media: '(max-width: 900px)',
+      addEventListener: (_type: string, listener: () => void) => { layoutListener = listener; },
+      removeEventListener,
+    })));
+    const { unmount } = render(
+      <>
+        <WorkspaceNavigation />
+        <label>Operator note<input /></label>
+        <button type="button">Confirm control</button>
+      </>,
+    );
+
+    const input = screen.getByRole('textbox', { name: 'Operator note' });
+    input.focus();
+    layoutListener?.();
+    await Promise.resolve();
+    expect(document.activeElement).toBe(input);
+
+    const control = screen.getByRole('button', { name: 'Confirm control' });
+    control.focus();
+    layoutListener?.();
+    await Promise.resolve();
+    expect(document.activeElement).toBe(control);
+
+    unmount();
+    expect(removeEventListener).toHaveBeenCalledWith('change', layoutListener);
   });
 });

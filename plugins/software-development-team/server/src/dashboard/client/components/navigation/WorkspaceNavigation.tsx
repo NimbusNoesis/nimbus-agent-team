@@ -8,33 +8,34 @@ const WORKSPACE_ITEMS = [
 
 export function WorkspaceNavigation() {
   const [activeId, setActiveId] = useState<string>(WORKSPACE_ITEMS[0].id);
-  const lastTarget = useRef(activeId);
+  const navigation = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return;
     const query = window.matchMedia('(max-width: 900px)');
-    const retainFocus = () => {
+    const retainNavigationFocus = () => {
       const focused = document.activeElement as HTMLElement | null;
-      const targetId = focused?.dataset.workspaceTarget ?? lastTarget.current;
+      if (!focused?.dataset.workspaceTarget || !navigation.current?.contains(focused)) return;
+
       queueMicrotask(() => {
-        document.querySelector<HTMLElement>(`[data-workspace-target="${targetId}"]`)?.focus();
+        if (document.activeElement !== focused && document.activeElement !== document.body) return;
+        if (focused.isConnected) focused.focus();
       });
     };
-    query.addEventListener?.('change', retainFocus);
-    return () => query.removeEventListener?.('change', retainFocus);
+    query.addEventListener?.('change', retainNavigationFocus);
+    return () => query.removeEventListener?.('change', retainNavigationFocus);
   }, []);
 
   function activate(event: MouseEvent, id: string) {
     event.preventDefault();
     setActiveId(id);
-    lastTarget.current = id;
     const panel = document.getElementById(id);
     panel?.focus({ preventScroll: true });
     panel?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
   }
 
   return (
-    <nav class="workspace-navigation" aria-label="Workspace views">
+    <nav ref={navigation} class="workspace-navigation" aria-label="Workspace views">
       {WORKSPACE_ITEMS.map(item => (
         <a
           key={item.id}
