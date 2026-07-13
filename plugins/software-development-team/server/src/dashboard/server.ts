@@ -8,6 +8,7 @@
 // non-localhost (or malformed) Origin header are rejected; requests with no
 // Origin header (non-browser clients) are allowed.
 import express from 'express';
+import type { ErrorRequestHandler, Request } from 'express';
 import WebSocket, { WebSocketServer } from 'ws';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
@@ -16,7 +17,14 @@ import { existsSync } from 'node:fs';
 import type { StateMachine } from '../state/machine.js';
 import type { MessageBus } from '../bus/message-bus.js';
 import type { MemoryStore } from '../memory/store.js';
-import type { DashboardEvent, Message, RunState, MemoryEntry } from '../types.js';
+import type {
+  DashboardEvent,
+  ExecutionControlAction,
+  ExecutionControlTarget,
+  Message,
+  RunState,
+  MemoryEntry,
+} from '../types.js';
 import { logger } from '../logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -26,6 +34,189 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Node's WHATWG URL keeps IPv6 brackets in `hostname` ('[::1]'), but include the
 // bare form too for safety across parsers.
 const ALLOWED_WS_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+const JSON_BODY_LIMIT_BYTES = 16 * 1024;
+const MAX_CONTROL_REASON_LENGTH = 500;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CONTROL_ACTIONS = new Set<ExecutionControlAction>([
+  'pause_run',
+  'resume_run',
+  'cancel_run',
+  'cancel_step',
+  'retry_step',
+  'acknowledge_pause',
+  'acknowledge_cancel',
+]);
+const RUN_ONLY_ACTIONS = new Set<ExecutionControlAction>([
+  'pause_run',
+  'resume_run',
+  'cancel_run',
+  'acknowledge_pause',
+]);
+const STEP_ONLY_ACTIONS = new Set<ExecutionControlAction>(['cancel_step', 'retry_step']);
+
+type ControlRequestBody = {
+  action: ExecutionControlAction;
+  target: ExecutionControlTarget;
+  commandId: string;
+  expectedRevision: number;
+  reason?: string;
+  confirmation?: string;
+};
+
+class ControlRequestError extends Error {
+  constructor(
+    readonly status: 400 | 403 | 404 | 409,
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function rejectUnknownFields(object: Record<string, unknown>, allowed: readonly string[], label: string): void {
+  const unknown = Object.keys(object).filter((key) => !allowed.includes(key));
+  if (unknown.length > 0) {
+    throw new ControlRequestError(400, 'unknown_fields', `${label} contains unknown fields: ${unknown.join(', ')}`);
+  }
+}
+
+function parseControlBody(value: unknown, runId: string): ControlRequestBody {
+  if (!isPlainObject(value)) {
+    throw new ControlRequestError(400, 'invalid_body', 'Request body must be a JSON object');
+  }
+  rejectUnknownFields(
+    value,
+    ['action', 'target', 'commandId', 'expectedRevision', 'reason', 'confirmation'],
+    'Request body',
+  );
+
+  if (typeof value.action !== 'string' || !CONTROL_ACTIONS.has(value.action as ExecutionControlAction)) {
+    throw new ControlRequestError(400, 'invalid_action', 'action is not a supported execution control');
+  }
+  const action = value.action as ExecutionControlAction;
+  if (typeof value.commandId !== 'string' || !UUID_PATTERN.test(value.commandId)) {
+    throw new ControlRequestError(400, 'invalid_command_id', 'commandId must be a UUID');
+  }
+  if (!Number.isSafeInteger(value.expectedRevision) || (value.expectedRevision as number) < 0) {
+    throw new ControlRequestError(400, 'invalid_revision', 'expectedRevision must be a non-negative safe integer');
+  }
+  if (!isPlainObject(value.target)) {
+    throw new ControlRequestError(400, 'invalid_target', 'target must be a JSON object');
+  }
+
+  let target: ExecutionControlTarget;
+  if (value.target.kind === 'run') {
+    rejectUnknownFields(value.target, ['kind'], 'run target');
+    target = { kind: 'run' };
+  } else if (value.target.kind === 'step') {
+    rejectUnknownFields(value.target, ['kind', 'stepId'], 'step target');
+    if (!Number.isSafeInteger(value.target.stepId) || (value.target.stepId as number) <= 0) {
+      throw new ControlRequestError(400, 'invalid_step_id', 'stepId must be a positive safe integer');
+    }
+    target = { kind: 'step', stepId: value.target.stepId as number };
+  } else {
+    throw new ControlRequestError(400, 'invalid_target', "target.kind must be 'run' or 'step'");
+  }
+
+  if (RUN_ONLY_ACTIONS.has(action) && target.kind !== 'run') {
+    throw new ControlRequestError(400, 'target_mismatch', `${action} requires a run target`);
+  }
+  if (STEP_ONLY_ACTIONS.has(action) && target.kind !== 'step') {
+    throw new ControlRequestError(400, 'target_mismatch', `${action} requires a step target`);
+  }
+
+  let reason: string | undefined;
+  if (value.reason !== undefined) {
+    if (typeof value.reason !== 'string' || value.reason.trim().length === 0) {
+      throw new ControlRequestError(400, 'invalid_reason', 'reason must be a non-empty string when supplied');
+    }
+    reason = value.reason.trim();
+    if (reason.length > MAX_CONTROL_REASON_LENGTH) {
+      throw new ControlRequestError(
+        400,
+        'invalid_reason',
+        `reason must be at most ${MAX_CONTROL_REASON_LENGTH} characters`,
+      );
+    }
+  }
+
+  const destructive = action === 'cancel_run' || action === 'cancel_step';
+  if (destructive && reason === undefined) {
+    throw new ControlRequestError(400, 'reason_required', 'Cancellation requires a reason');
+  }
+  if (!destructive && value.confirmation !== undefined) {
+    throw new ControlRequestError(400, 'unexpected_confirmation', 'confirmation is only accepted for cancellation');
+  }
+  if (destructive) {
+    const expected = target.kind === 'run'
+      ? `cancel run ${runId}`
+      : `cancel step ${runId}/${target.stepId}`;
+    if (value.confirmation !== expected) {
+      throw new ControlRequestError(400, 'confirmation_mismatch', 'Cancellation confirmation does not match the target');
+    }
+  }
+
+  return {
+    action,
+    target,
+    commandId: value.commandId,
+    expectedRevision: value.expectedRevision as number,
+    ...(reason === undefined ? {} : { reason }),
+    ...(typeof value.confirmation === 'string' ? { confirmation: value.confirmation } : {}),
+  };
+}
+
+/**
+ * Browser mutations must be genuinely same-origin. Requests without Origin are
+ * allowed for local CLI clients because the server is bound to loopback only.
+ */
+function enforceMutationOrigin(req: Request): void {
+  const host = req.get('host');
+  if (!host) throw new ControlRequestError(403, 'invalid_origin', 'A loopback Host header is required');
+
+  let requestOrigin: URL;
+  try {
+    requestOrigin = new URL(`http://${host}`);
+  } catch {
+    throw new ControlRequestError(403, 'invalid_origin', 'Host header is malformed');
+  }
+  if (!ALLOWED_WS_HOSTNAMES.has(requestOrigin.hostname)) {
+    throw new ControlRequestError(403, 'invalid_origin', 'Mutation requests must target a loopback host');
+  }
+
+  const origin = req.get('origin');
+  if (origin === undefined) return;
+  if (origin === '' || origin === 'null') {
+    throw new ControlRequestError(403, 'invalid_origin', 'Browser mutation Origin is not allowed');
+  }
+  let parsedOrigin: URL;
+  try {
+    parsedOrigin = new URL(origin);
+  } catch {
+    throw new ControlRequestError(403, 'invalid_origin', 'Browser mutation Origin is malformed');
+  }
+  if (parsedOrigin.protocol !== 'http:' || parsedOrigin.origin !== requestOrigin.origin) {
+    throw new ControlRequestError(403, 'invalid_origin', 'Browser mutation requests must be same-origin');
+  }
+}
+
+function stateMachineError(err: unknown): ControlRequestError {
+  const message = err instanceof Error ? err.message : 'Execution control failed';
+  if (/Run .+ not found|Step \d+ not found/.test(message)) {
+    return new ControlRequestError(404, 'target_not_found', message);
+  }
+  if (/revision conflict/i.test(message)) {
+    return new ControlRequestError(409, 'revision_conflict', message);
+  }
+  if (/already used with a different payload/i.test(message)) {
+    return new ControlRequestError(409, 'command_conflict', message);
+  }
+  return new ControlRequestError(409, 'invalid_phase', message);
+}
 
 /**
  * Returns true when a WebSocket upgrade should be accepted based on its Origin
@@ -61,7 +252,9 @@ export async function startDashboard(
     next();
   });
 
-  app.use(express.json());
+  // Keep every JSON mutation bounded. The error middleware below translates
+  // parser failures to the dashboard's structured validation response.
+  app.use(express.json({ limit: JSON_BODY_LIMIT_BYTES, strict: true }));
 
   // Resolve public directory — works in both dev (src/) and prod (dist/) layouts
   const candidates = [
@@ -85,6 +278,61 @@ export async function startDashboard(
     res.json(bus.getAllMessages(req.params.runId));
   });
 
+  app.post('/api/runs/:runId/control', (req, res) => {
+    try {
+      enforceMutationOrigin(req);
+      if (!req.is('application/json')) {
+        throw new ControlRequestError(400, 'unsupported_content_type', 'Content-Type must be application/json');
+      }
+
+      const runId = req.params.runId;
+      if (!UUID_PATTERN.test(runId)) {
+        throw new ControlRequestError(400, 'invalid_run_id', 'runId must be a UUID');
+      }
+      const existing = sm.getRun(runId);
+      if (!existing) {
+        throw new ControlRequestError(404, 'target_not_found', `Run ${runId} not found`);
+      }
+
+      const body = parseControlBody(req.body as unknown, runId);
+      if (body.target.kind === 'step') {
+        const stepId = body.target.stepId;
+        if (!existing.steps.some((step) => step.step.id === stepId)) {
+          throw new ControlRequestError(404, 'target_not_found', `Step ${stepId} not found in run ${runId}`);
+        }
+      }
+      const replayed = existing.lifecycle?.commandReceipts.some((receipt) => receipt.commandId === body.commandId) ?? false;
+
+      let receipt;
+      try {
+        receipt = sm.executeControl(runId, {
+          action: body.action,
+          target: body.target,
+          commandId: body.commandId,
+          expectedRevision: body.expectedRevision,
+          ...(body.reason === undefined ? {} : { summary: body.reason }),
+        });
+      } catch (err) {
+        throw stateMachineError(err);
+      }
+
+      res.json({
+        success: true,
+        replayed,
+        receipt,
+        run: sm.getRun(runId),
+      });
+    } catch (err) {
+      const responseError = err instanceof ControlRequestError ? err : stateMachineError(err);
+      res.status(responseError.status).json({
+        error: {
+          code: responseError.code,
+          message: responseError.message,
+        },
+      });
+    }
+  });
+
   app.post('/api/guidance', (req, res) => {
     const { runId, body } = req.body;
     if (!runId || !body) {
@@ -103,6 +351,20 @@ export async function startDashboard(
       res.status(500).json({ error: 'Failed to post message' });
     }
   });
+
+  const jsonErrorHandler: ErrorRequestHandler = (err, _req, res, next) => {
+    if (err instanceof Error && 'type' in err) {
+      const type = String((err as Error & { type?: string }).type);
+      const code = type === 'entity.too.large' ? 'body_too_large' : 'malformed_json';
+      const message = type === 'entity.too.large'
+        ? `JSON request body must not exceed ${JSON_BODY_LIMIT_BYTES} bytes`
+        : 'Request body contains malformed JSON';
+      res.status(400).json({ error: { code, message } });
+      return;
+    }
+    next(err);
+  };
+  app.use(jsonErrorHandler);
 
   const httpServer = createServer(app);
   const wss = new WebSocketServer({

@@ -1,4 +1,6 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import WebSocket from 'ws';
 import { Database } from '../src/db/database.js';
 import { StateMachine } from '../src/state/machine.js';
@@ -143,6 +145,318 @@ describe('Dashboard server', () => {
         body: JSON.stringify({ runId: 'no-such-run', body: 'hello?' }),
       });
       expect(res.status).toBe(404);
+    });
+  });
+
+  describe('POST /api/runs/:runId/control', () => {
+    type ControlTarget = { kind: 'run' } | { kind: 'step'; stepId: number };
+
+    function createControlRun() {
+      return sm.createRun([{
+        id: 1,
+        description: 'Controlled step',
+        files: ['controlled.ts'],
+        acceptanceCriteria: [],
+        dependsOn: [],
+      }]);
+    }
+
+    function bodyFor(
+      runId: string,
+      action: string,
+      target: ControlTarget,
+      expectedRevision = 0,
+      overrides: Record<string, unknown> = {},
+    ) {
+      const destructive = action === 'cancel_run' || action === 'cancel_step';
+      return {
+        action,
+        target,
+        commandId: randomUUID(),
+        expectedRevision,
+        ...(destructive ? {
+          reason: 'Operator requested cancellation',
+          confirmation: target.kind === 'run'
+            ? `cancel run ${runId}`
+            : `cancel step ${runId}/${target.stepId}`,
+        } : {}),
+        ...overrides,
+      };
+    }
+
+    async function postControl(
+      runId: string,
+      body: unknown,
+      headers: Record<string, string> = {},
+    ) {
+      return fetch(`${baseUrl}/api/runs/${runId}/control`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: typeof body === 'string' ? body : JSON.stringify(body),
+      });
+    }
+
+    function activateStep(runId: string): void {
+      sm.setWorktree(runId, 1, {
+        targetBranch: 'main',
+        targetCommit: 'abc123',
+        path: '/tmp/control-step',
+        branch: 'control-step',
+      });
+      sm.startStep(runId, 1, 'coder');
+    }
+
+    function escalateStep(runId: string): void {
+      activateStep(runId);
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        sm.submitResult(runId, 1, { status: 'done', summary: `coder ${attempt}` });
+        sm.submitResult(runId, 1, { status: 'needs_revision', summary: `review ${attempt}` });
+        sm.requestRevision(runId, 1);
+      }
+    }
+
+    it('applies pause and resume, and reports an identical command replay without a second mutation', async () => {
+      const run = createControlRun();
+      const pauseBody = bodyFor(run.id, 'pause_run', { kind: 'run' });
+      const first = await postControl(run.id, pauseBody);
+      expect(first.status).toBe(200);
+      expect(await first.json()).toMatchObject({
+        success: true,
+        replayed: false,
+        receipt: { action: 'pause_run', revision: 1, outcome: { controlPhase: 'paused' } },
+        run: { lifecycle: { revision: 1, controlPhase: 'paused' } },
+      });
+
+      const replay = await postControl(run.id, pauseBody);
+      expect(replay.status).toBe(200);
+      expect(await replay.json()).toMatchObject({ success: true, replayed: true, receipt: { revision: 1 } });
+      expect(sm.getRun(run.id)?.lifecycle?.history).toHaveLength(1);
+
+      const resume = await postControl(run.id, bodyFor(run.id, 'resume_run', { kind: 'run' }, 1));
+      expect(resume.status).toBe(200);
+      expect(await resume.json()).toMatchObject({ receipt: { outcome: { controlPhase: 'none' }, revision: 2 } });
+    });
+
+    it('supports coordinator pause acknowledgement for a draining active worker', async () => {
+      const run = createControlRun();
+      activateStep(run.id);
+
+      const pause = await postControl(run.id, bodyFor(run.id, 'pause_run', { kind: 'run' }));
+      expect(await pause.json()).toMatchObject({ receipt: { outcome: { controlPhase: 'pausing' } } });
+
+      const acknowledgement = await postControl(
+        run.id,
+        bodyFor(run.id, 'acknowledge_pause', { kind: 'run' }, 1),
+      );
+      expect(acknowledgement.status).toBe(200);
+      expect(await acknowledgement.json()).toMatchObject({ receipt: { outcome: { controlPhase: 'paused' } } });
+    });
+
+    it('cancels a pending step with exact confirmation and preserves the reason in audit history', async () => {
+      const run = createControlRun();
+      const response = await postControl(run.id, bodyFor(run.id, 'cancel_step', { kind: 'step', stepId: 1 }));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        receipt: { action: 'cancel_step', outcome: { stepStatus: 'cancelled' } },
+      });
+      expect(sm.getRun(run.id)?.lifecycle?.history[0]).toMatchObject({
+        action: 'cancel_step',
+        summary: 'Operator requested cancellation',
+      });
+    });
+
+    it('cancels and acknowledges active step and run targets', async () => {
+      const stepRun = createControlRun();
+      activateStep(stepRun.id);
+      const cancelStep = await postControl(
+        stepRun.id,
+        bodyFor(stepRun.id, 'cancel_step', { kind: 'step', stepId: 1 }),
+      );
+      expect(await cancelStep.json()).toMatchObject({ receipt: { outcome: { stepStatus: 'cancelling' } } });
+      const acknowledgeStep = await postControl(
+        stepRun.id,
+        bodyFor(stepRun.id, 'acknowledge_cancel', { kind: 'step', stepId: 1 }, 1),
+      );
+      expect(await acknowledgeStep.json()).toMatchObject({ receipt: { outcome: { stepStatus: 'cancelled' } } });
+
+      const run = createControlRun();
+      activateStep(run.id);
+      const cancelRun = await postControl(run.id, bodyFor(run.id, 'cancel_run', { kind: 'run' }));
+      expect(await cancelRun.json()).toMatchObject({ receipt: { outcome: { controlPhase: 'cancelling' } } });
+      const acknowledgeRun = await postControl(
+        run.id,
+        bodyFor(run.id, 'acknowledge_cancel', { kind: 'run' }, 1),
+      );
+      expect(await acknowledgeRun.json()).toMatchObject({
+        receipt: { outcome: { controlPhase: 'cancelled', runStatus: 'cancelled' } },
+      });
+    });
+
+    it('retries an escalated step through the authoritative state machine', async () => {
+      const run = createControlRun();
+      escalateStep(run.id);
+      expect(sm.getRun(run.id)?.steps[0].status).toBe('escalated');
+
+      const response = await postControl(run.id, bodyFor(run.id, 'retry_step', { kind: 'step', stepId: 1 }));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        receipt: { action: 'retry_step', outcome: { stepStatus: 'coding' } },
+        run: { steps: [{ status: 'coding', manualAttempt: 1 }] },
+      });
+    });
+
+    it('returns structured 404, revision, command, and phase conflicts without extra mutations', async () => {
+      const invalidRun = await postControl('not-a-uuid', bodyFor(randomUUID(), 'pause_run', { kind: 'run' }));
+      expect(invalidRun.status).toBe(400);
+      expect(await invalidRun.json()).toMatchObject({ error: { code: 'invalid_run_id' } });
+
+      const unknown = randomUUID();
+      const missingRun = await postControl(unknown, bodyFor(unknown, 'pause_run', { kind: 'run' }));
+      expect(missingRun.status).toBe(404);
+      expect(await missingRun.json()).toMatchObject({ error: { code: 'target_not_found' } });
+
+      const run = createControlRun();
+      const missingStep = await postControl(run.id, bodyFor(run.id, 'retry_step', { kind: 'step', stepId: 999 }));
+      expect(missingStep.status).toBe(404);
+
+      const invalidPhase = await postControl(run.id, bodyFor(run.id, 'resume_run', { kind: 'run' }));
+      expect(invalidPhase.status).toBe(409);
+      expect(await invalidPhase.json()).toMatchObject({ error: { code: 'invalid_phase' } });
+
+      const pauseBody = bodyFor(run.id, 'pause_run', { kind: 'run' });
+      expect((await postControl(run.id, pauseBody)).status).toBe(200);
+      const stale = await postControl(run.id, bodyFor(run.id, 'resume_run', { kind: 'run' }, 0));
+      expect(stale.status).toBe(409);
+      expect(await stale.json()).toMatchObject({ error: { code: 'revision_conflict' } });
+
+      const mismatchedReplay = await postControl(run.id, { ...pauseBody, reason: 'different payload' });
+      expect(mismatchedReplay.status).toBe(409);
+      expect(await mismatchedReplay.json()).toMatchObject({ error: { code: 'command_conflict' } });
+      expect(sm.getRun(run.id)?.lifecycle).toMatchObject({ revision: 1, history: [{ action: 'pause_run' }] });
+    });
+
+    it('rejects malformed fields, targets, reasons, and confirmations before delegation', async () => {
+      const run = createControlRun();
+      const valid = bodyFor(run.id, 'pause_run', { kind: 'run' });
+      const cases: Array<{ body: unknown; code: string }> = [
+        { body: { ...valid, unexpected: true }, code: 'unknown_fields' },
+        { body: { ...valid, action: 'explode_run' }, code: 'invalid_action' },
+        { body: { ...valid, action: undefined }, code: 'invalid_action' },
+        { body: { ...valid, commandId: 'not-a-uuid' }, code: 'invalid_command_id' },
+        { body: { ...valid, commandId: undefined }, code: 'invalid_command_id' },
+        { body: { ...valid, expectedRevision: -1 }, code: 'invalid_revision' },
+        { body: { ...valid, expectedRevision: 1.5 }, code: 'invalid_revision' },
+        { body: { ...valid, expectedRevision: undefined }, code: 'invalid_revision' },
+        { body: { ...valid, target: { kind: 'run', extra: true } }, code: 'unknown_fields' },
+        { body: { ...valid, target: { kind: 'step', stepId: 0 } }, code: 'invalid_step_id' },
+        { body: { ...valid, target: { kind: 'step', stepId: 1 } }, code: 'target_mismatch' },
+        { body: { ...valid, reason: '' }, code: 'invalid_reason' },
+        { body: { ...valid, reason: 'x'.repeat(501) }, code: 'invalid_reason' },
+        { body: { ...valid, confirmation: 'unused' }, code: 'unexpected_confirmation' },
+        {
+          body: bodyFor(run.id, 'cancel_run', { kind: 'run' }, 0, { reason: undefined }),
+          code: 'reason_required',
+        },
+        {
+          body: bodyFor(run.id, 'cancel_run', { kind: 'run' }, 0, { confirmation: 'cancel the wrong run' }),
+          code: 'confirmation_mismatch',
+        },
+        {
+          body: bodyFor(run.id, 'cancel_step', { kind: 'step', stepId: 1 }, 0, {
+            confirmation: `cancel step ${run.id}/2`,
+          }),
+          code: 'confirmation_mismatch',
+        },
+      ];
+      const execute = vi.spyOn(sm, 'executeControl');
+
+      for (const testCase of cases) {
+        const response = await postControl(run.id, testCase.body);
+        expect(response.status).toBe(400);
+        expect(await response.json()).toMatchObject({ error: { code: testCase.code } });
+      }
+      expect(execute).not.toHaveBeenCalled();
+      expect(sm.getRun(run.id)?.lifecycle?.revision).toBe(0);
+      execute.mockRestore();
+    });
+
+    it('requires application/json and rejects malformed or oversized JSON side-effect-free', async () => {
+      const run = createControlRun();
+      const execute = vi.spyOn(sm, 'executeControl');
+
+      const wrongType = await fetch(`${baseUrl}/api/runs/${run.id}/control`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: '{}',
+      });
+      expect(wrongType.status).toBe(400);
+      expect(await wrongType.json()).toMatchObject({ error: { code: 'unsupported_content_type' } });
+
+      const malformed = await postControl(run.id, '{"action":');
+      expect(malformed.status).toBe(400);
+      expect(await malformed.json()).toMatchObject({ error: { code: 'malformed_json' } });
+
+      const oversized = await postControl(run.id, JSON.stringify({ padding: 'x'.repeat(17 * 1024) }));
+      expect(oversized.status).toBe(400);
+      expect(await oversized.json()).toMatchObject({ error: { code: 'body_too_large' } });
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(sm.getRun(run.id)?.lifecycle?.revision).toBe(0);
+      execute.mockRestore();
+    });
+
+    it('allows no-Origin local clients and exact same-origin browsers only', async () => {
+      const noOriginRun = createControlRun();
+      expect((await postControl(noOriginRun.id, bodyFor(noOriginRun.id, 'pause_run', { kind: 'run' }))).status).toBe(200);
+
+      const browserRun = createControlRun();
+      expect((await postControl(
+        browserRun.id,
+        bodyFor(browserRun.id, 'pause_run', { kind: 'run' }),
+        { Origin: baseUrl },
+      )).status).toBe(200);
+
+      for (const origin of ['http://evil.example', 'http://localhost:1', 'null', 'not a url']) {
+        const run = createControlRun();
+        const execute = vi.spyOn(sm, 'executeControl');
+        const response = await postControl(
+          run.id,
+          bodyFor(run.id, 'pause_run', { kind: 'run' }),
+          { Origin: origin },
+        );
+        expect(response.status).toBe(403);
+        expect(await response.json()).toMatchObject({ error: { code: 'invalid_origin' } });
+        expect(execute).not.toHaveBeenCalled();
+        execute.mockRestore();
+      }
+
+      const hostRun = createControlRun();
+      const hostBody = JSON.stringify(bodyFor(hostRun.id, 'pause_run', { kind: 'run' }));
+      const invalidHost = await new Promise<{ status: number; body: unknown }>((resolve, reject) => {
+        const req = httpRequest({
+          hostname: '127.0.0.1',
+          port,
+          path: `/api/runs/${hostRun.id}/control`,
+          method: 'POST',
+          headers: {
+            Host: 'evil.example',
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(hostBody),
+          },
+        }, (response) => {
+          const chunks: Buffer[] = [];
+          response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+          response.on('end', () => resolve({
+            status: response.statusCode ?? 0,
+            body: JSON.parse(Buffer.concat(chunks).toString()),
+          }));
+        });
+        req.on('error', reject);
+        req.end(hostBody);
+      });
+      expect(invalidHost.status).toBe(403);
+      expect(invalidHost.body).toMatchObject({ error: { code: 'invalid_origin' } });
+      expect(sm.getRun(hostRun.id)?.lifecycle?.revision).toBe(0);
     });
   });
 
