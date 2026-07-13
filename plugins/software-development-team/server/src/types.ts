@@ -3,7 +3,14 @@
 
 // --- Step States ---
 
-export type StepStatus = 'pending' | 'coding' | 'reviewing' | 'complete' | 'escalated' | 'cancelled';
+export type StepStatus =
+  | 'pending'
+  | 'coding'
+  | 'reviewing'
+  | 'complete'
+  | 'escalated'
+  | 'cancelling'
+  | 'cancelled';
 
 export type RunStatus = 'ready' | 'in_progress' | 'escalated' | 'complete' | 'cancelled';
 
@@ -67,6 +74,25 @@ export type ExecutionControlAction =
   | 'acknowledge_pause'
   | 'acknowledge_cancel';
 
+/**
+ * Stable feature support advertised to MCP and dashboard clients. These flags
+ * say which commands the lifecycle contract implements; whether a supported
+ * command is currently available is derived separately from run/step state.
+ */
+export type ExecutionControlCapabilities = {
+  readonly [Action in ExecutionControlAction]: boolean;
+};
+
+export const EXECUTION_CONTROL_CAPABILITIES = Object.freeze({
+  pause_run: true,
+  resume_run: true,
+  cancel_run: true,
+  cancel_step: true,
+  retry_step: true,
+  acknowledge_pause: true,
+  acknowledge_cancel: true,
+}) satisfies ExecutionControlCapabilities;
+
 export type ExecutionControlTarget =
   | { kind: 'run' }
   | { kind: 'step'; stepId: number };
@@ -106,6 +132,7 @@ export interface LifecycleHistoryEntry {
 
 export interface RunLifecycleV2 {
   version: typeof RUN_LIFECYCLE_VERSION;
+  capabilities: ExecutionControlCapabilities;
   controlPhase: RunControlPhase;
   revision: number;
   commandReceipts: LifecycleCommandReceipt[];

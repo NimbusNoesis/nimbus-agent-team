@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RunState, Message, MemoryEntry } from '../src/types.js';
 import {
+  EXECUTION_CONTROL_CAPABILITIES,
   MAX_COMMAND_RECEIPTS,
   MAX_LIFECYCLE_HISTORY,
   RUN_LIFECYCLE_VERSION,
@@ -39,6 +40,7 @@ describe('Persistence', () => {
       steps: [],
       lifecycle: {
         version: RUN_LIFECYCLE_VERSION,
+        capabilities: EXECUTION_CONTROL_CAPABILITIES,
         controlPhase: 'running',
         revision: 0,
         commandReceipts: [],
@@ -60,7 +62,8 @@ describe('Persistence', () => {
     const loaded = await persistence.loadRunState('legacy-missing');
 
     expect(loaded?.lifecycle).toEqual({
-      version: 2, controlPhase: 'running', revision: 0,
+      version: 2, capabilities: EXECUTION_CONTROL_CAPABILITIES,
+      controlPhase: 'running', revision: 0,
       commandReceipts: [], history: [],
     });
     expect(await readFile(file, 'utf-8')).toBe(raw);
@@ -86,7 +89,8 @@ describe('Persistence', () => {
     const loaded = await persistence.loadRunState('legacy-v1');
 
     expect(loaded?.lifecycle).toEqual({
-      version: 2, controlPhase: 'pausing', revision: 4,
+      version: 2, capabilities: EXECUTION_CONTROL_CAPABILITIES,
+      controlPhase: 'pausing', revision: 4,
       commandReceipts: [], history: [],
     });
     expect(loaded?.steps[0].manualAttempt).toBe(0);
@@ -95,10 +99,28 @@ describe('Persistence', () => {
 
   it('round-trips all version-2 lifecycle fields', async () => {
     const run: RunState = {
-      id: 'v2', status: 'in_progress', steps: [],
+      id: 'v2', status: 'in_progress', steps: [{
+        step: {
+          id: 1, description: 'draining cancellation', files: ['src/active.ts'],
+          acceptanceCriteria: [], dependsOn: [],
+        },
+        status: 'cancelling', retryCount: 0, assignedAgent: 'coder', result: null,
+        claimedFiles: ['src/active.ts'], consecutiveSameError: 0, manualAttempt: 2,
+        cancelRequestedAt: '2026-01-01T00:00:04.000Z',
+      }, {
+        step: {
+          id: 2, description: 'acknowledged cancellation', files: ['src/inactive.ts'],
+          acceptanceCriteria: [], dependsOn: [],
+        },
+        status: 'cancelled', retryCount: 0, assignedAgent: null, result: null,
+        claimedFiles: [], consecutiveSameError: 0, manualAttempt: 0,
+        cancelRequestedAt: '2026-01-01T00:00:05.000Z',
+        cancelledAt: '2026-01-01T00:00:06.000Z',
+      }],
       createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:01.000Z',
       lifecycle: {
         version: 2,
+        capabilities: { ...EXECUTION_CONTROL_CAPABILITIES },
         controlPhase: 'paused',
         revision: 7,
         pauseRequestedAt: '2026-01-01T00:00:02.000Z',
@@ -139,7 +161,10 @@ describe('Persistence', () => {
     const run: RunState = {
       id: 'bounded', status: 'in_progress', steps: [],
       createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
-      lifecycle: { version: 2, controlPhase: 'running', revision: 999, commandReceipts: receipts, history },
+      lifecycle: {
+        version: 2, capabilities: { ...EXECUTION_CONTROL_CAPABILITIES },
+        controlPhase: 'running', revision: 999, commandReceipts: receipts, history,
+      },
     };
     await persistence.saveRunState(run);
 

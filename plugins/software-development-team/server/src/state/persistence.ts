@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile, appendFile, readdir, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  EXECUTION_CONTROL_CAPABILITIES,
   MAX_COMMAND_RECEIPTS,
   MAX_LIFECYCLE_HISTORY,
   RUN_LIFECYCLE_VERSION,
@@ -94,6 +95,10 @@ export function normalizeRunState(value: unknown): RestoredRunState {
   // when present so an experimental v1 control phase/revision is not lost.
   const lifecycle: RunLifecycleV2 = {
     version: RUN_LIFECYCLE_VERSION,
+    // Capabilities describe this binary's v2 contract, not persisted action
+    // availability. Deriving them here gives legacy runs a safe canonical
+    // support surface and prevents stale JSON from enabling unknown behavior.
+    capabilities: { ...EXECUTION_CONTROL_CAPABILITIES },
     controlPhase: controlPhase(rawLifecycle?.controlPhase),
     revision: nonNegativeInteger(rawLifecycle?.revision, 0, 'lifecycle revision'),
     commandReceipts: lifecycleArray(
