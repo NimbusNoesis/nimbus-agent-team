@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-A Claude Code plugin that orchestrates a multi-agent coding team (coordinator, planner, plan-critic, coder, reviewer, researcher, documentation) with shared memory, a message bus, and a real-time dashboard. Built as an MCP server with a Preact web dashboard.
+A Claude Code plugin that orchestrates a multi-agent coding team (coordinator, planner, plan-critic, coder, reviewer, researcher, documentation) with shared memory, a message bus, and a real-time dashboard. It also ships a standalone pre-run `recursive-planner` for bounded deep planning; that helper is not an execution/dashboard role. Built as an MCP server with a Preact web dashboard.
 
 ## Architecture
 
@@ -18,8 +18,8 @@ A Claude Code plugin that orchestrates a multi-agent coding team (coordinator, p
 ## Key Files
 
 ```
-agents/            Agent definitions (planner, plan-critic, coder, reviewer, researcher, documentation)
-commands/          User-invocable slash commands (begin, status, memory, resume, plan, research, review)
+agents/            Agent definitions (planner, plan-critic, recursive-planner, coder, reviewer, researcher, documentation)
+commands/          User-invocable slash commands (begin, deep-plan, status, memory, resume, plan, research, review)
 server/src/
   index.ts         MCP server setup, tool registration, Database wiring
   types.ts         All TypeScript types (StepState, RunState, Message, MemoryEntry, DashboardEvent)
@@ -40,7 +40,7 @@ cd server
 npm install          # install dependencies
 npx tsc --noEmit     # type check
 npx tsup             # build (ESM output to dist/)
-npx vitest run       # run tests (433 tests across 20 files)
+npx vitest run       # run tests (442 tests across 20 files)
 npx vitest           # watch mode
 npm run knip         # find unused files, exports, and dependencies
 ```
@@ -79,11 +79,21 @@ When loaded via the plugin system, MCP tool names are prefixed with `plugin_<plu
 
 A parallel Codex distribution lives in the repo-root `codex/` directory (`codex/agents/*.toml`, `codex/skills/<name>/SKILL.md`, `codex/install.sh`). It is **additive** — it reuses this plugin's `server/` unchanged via absolute paths and does not touch the Claude Code plugin. Three host-specific differences matter when editing shared behavior:
 
-- **Tool prefix differs per host.** Claude Code (plugin): `mcp__plugin_software-development-team_software-development-team__team_X`. Codex: `mcp__software-development-team__team_X` (server name only — Codex does not add a `plugin_…` prefix). The `codex/` files use the shorter form throughout.
+- **Tool prefix differs per host.** Claude Code (plugin): `mcp__plugin_software-development-team_software-development-team__team_X`. Codex sanitizes the server name for native callable identifiers: `mcp__software_development_team__team_X`. The raw hyphenated `mcp__software-development-team__team_X` form is invalid on Codex.
 - **Dispatch model differs per host.** Claude Code dispatches subagents via the built-in Agent tool with `subagent_type`. Codex spawns subagents on the coordinator's request (no Agent tool); the coordinator passes the full per-step context in the spawn request, and the static role lives in the agent TOML.
-- **Entry points differ per host.** Claude Code uses **commands** (`commands/*.md` — begin, status, memory, resume, plan, research, review — with `description`/`argument-hint` frontmatter and `$ARGUMENTS` templating). Codex uses **skills** (`codex/skills/<name>/SKILL.md`, `name` + `description` frontmatter only, no `$ARGUMENTS` — the user's request arrives as context, and the `description` drives `/skills` selection and implicit triggering). Do not put flat `.md` files in a plugin `skills/` directory on the Claude side — the plugin system only loads skills as `skills/<name>/SKILL.md` directories, so flat files there are silently ignored (this is why all Claude entry points live in `commands/`).
+- **Entry points differ per host.** Claude Code uses **commands** (`commands/*.md` — begin, deep-plan, status, memory, resume, plan, research, review — with `description`/`argument-hint` frontmatter and `$ARGUMENTS` templating). Codex uses **skills** (`codex/skills/<name>/SKILL.md`, including `deep-plan`, with `name` + `description` frontmatter only and no `$ARGUMENTS`; the user's request arrives as context). Do not put flat `.md` files in a plugin `skills/` directory on the Claude side — the plugin system only loads skills as `skills/<name>/SKILL.md` directories, so flat files there are silently ignored.
 
 When changing coordinator logic or an agent's instructions, update **both** the `plugins/software-development-team/` source of truth and its `codex/` counterpart so the two hosts stay in sync. The `server/` is shared, so server changes apply to both automatically.
+
+### Deep-plan is bounded, pre-run, and controller-owned
+
+`commands/deep-plan.md` and `codex/skills/deep-plan/SKILL.md` are mirrored main-session controllers. They may produce at most three recursive-planner refinement responses, five one-at-a-time material questions, and two deduplicated research probes; every non-cancel refinement exit then gets exactly one plan-critic pass and one recursive-planner synthesis pass. `recursive-planner` itself performs exactly one read-only pass and never self-spawns or asks the user directly.
+
+The controller checkpoints a compact canonical brief, latest validated dossier and `team_start.steps` appendix, decisions, evidence capsules, open questions, counters, signatures, and pending request under `deep-plan-<D>-checkpoint`. It writes this `context` entry on behalf of the planning role. `resume <D>` reconstructs from that checkpoint plus the new answer; `skip` records an explicit assumption/open question, and `cancel` returns the latest partial artifact without critic/synthesis. Never persist raw transcripts, chain-of-thought, superseded drafts, secrets, or full research dumps.
+
+Claude dispatches explicit `software-development-team:recursive-planner`, `:researcher`, and `:plan-critic` types. Codex reads the corresponding installed TOML before each spawn and reserves a complete seven-label grammar-safe set (three rounds, two probes, critic, synthesis); resume reuses only not-yet-created labels from the original set. Both hosts use collision-safe no-run reflection keys. Deep-plan never calls `team_start`, starts a run, creates a worktree, or mutates repository files; its validated JSON appendix is only a later handoff to the normal begin/approval workflow.
+
+The fixed execution/dashboard roster remains coordinator, planner, coder, reviewer, researcher, and documentation. Do not add `recursive-planner` to `start_coding`, scheduler worker lists, worktree ownership, dashboard colors/cards, or merge lifecycle rules.
 
 Coordinator scheduling is deterministic: reserve capacity for eligible review/revision lifecycle work first, then choose dependency-complete pending work in plan order. Worker budgets come from the `hostCapacity` field in the `team_status` response (`maxParallel = hostCapacity - 1`). The server reports that field only when `TEAM_HOST_CAPACITY` is configured with the host's actual total agent-slot quota; CPU parallelism is not an agent quota. If it is absent or invalid, coordinators fall back to one worker. File claims compare as exact planned strings and overlapping claims always serialize, including in worktrees. `start_coding` is the authoritative admission check; rejection requires a fresh status and reschedule. A native spawn failure must be submitted as a `blocked` result, and normal scheduling uses neither pause nor cancel semantics.
 
@@ -99,10 +109,10 @@ Agent files use YAML frontmatter (`name`, `description`, `tools`, `color`; `mode
 
 ### Read-only / critique-only agents use a trimmed template
 
-Agents that do not touch code and do not submit step results (e.g., `plan-critic`) omit the Submitting Results, File Ownership, and Verification sections. They add instead: a **Dispatch Input** section (documents the input contract callers must pass), an output-format section (structured sections defining what the agent returns), and a **What NOT to Do** guardrail block. Their `tools` frontmatter excludes `team_submit_result` and they write only to the `reflections` namespace.
+Agents that do not touch code and do not submit step results (for example `plan-critic` and `recursive-planner`) omit run-result lifecycle sections and explicitly define their dispatch/output contracts and mutation boundaries. Their `tools` frontmatter excludes `team_submit_result`. `plan-critic` returns seven critique sections; `recursive-planner` returns one exact JSON envelope containing compact state, a dossier, and a graph-valid appendix. Both use caller-supplied no-run reflection keys outside runs.
 
 ### Different agents use different MCP tool subsets
-Not all agents get all 4 MCP tools. Planner gets 3 (no `submit_result`). All other agents get all 4 tools. Match the tool set to the agent's actual responsibilities.
+Not all agents get all 4 MCP tools. Planner gets memory read/write and messaging but no result submission. Plan-critic and recursive-planner get only the memory tools their read-only contracts require; recursive-planner's only write is its exact reflection. Execution roles receive lifecycle tools appropriate to their responsibilities. Keep the frontmatter allowlist, documented mapping, and actual role contract aligned.
 
 ### Memory namespace write authority
 Each memory namespace has designated writer agents to prevent authority conflicts and keep signal quality high. All agents read all namespaces (`decisions`, `context`, `learnings`, `reviews`, `reflections`), but writes are scoped:
@@ -125,7 +135,7 @@ All store mutations follow: `const run = this.db.getRun(id)` → mutate the loca
 
 ### Mandatory run-scoped Git worktree workflow
 
-Every execution step uses exactly one mandatory worktree, `.worktrees/{runId}/step-{N}`, on `team-{runId}-step-{N}`. Planner and plan-critic are pre-approval and read-only in the primary workspace. Coder and documentation are mutating roles: all repository reads, writes, verification, and commits occur only in the supplied worktree. Reviewer and researcher use their supplied worktree only for read-only repository inspection and verification.
+Every execution step uses exactly one mandatory worktree, `.worktrees/{runId}/step-{N}`, on `team-{runId}-step-{N}`. Planner, plan-critic, and recursive-planner are pre-run/pre-approval and read-only in the primary workspace; recursive-planner is never an execution step. Coder and documentation are mutating roles: all repository reads, writes, verification, and commits occur only in the supplied worktree. Reviewer and researcher use their supplied worktree only for read-only repository inspection and verification.
 
 On a pending step's first admission, the coordinator captures the current target branch and exact commit, creates the worktree from that commit, then calls `team_advance(action: "set_worktree", worktree: { targetBranch, targetCommit, path, branch })` before `start_coding`. The tuple is durable step state, returned by `team_status`, and set-once. Reviewer, revision-coder, researcher, documentation, and interrupted-worker re-dispatches must reuse it. If it is absent or inconsistent, block or escalate and preserve any artifacts—do not recapture or create a replacement.
 
@@ -164,14 +174,15 @@ better-sqlite3 requires native C++ compilation and is incompatible with Node v24
 
 ### All user entry points are commands
 
-Beyond the coordinator (`begin`), the plugin ships six focused slash commands in `commands/` that provide workflows without the full team orchestration (frontmatter: `description`, `argument-hint`; `$ARGUMENTS` templating). There are two patterns:
+Beyond the coordinator (`begin`), the plugin ships seven focused slash commands in `commands/` that provide workflows without the full execution lifecycle (frontmatter: `description`, `argument-hint`; `$ARGUMENTS` templating). There are three patterns:
 
 - **Utility commands** (`status`, `memory`, `resume`) — call MCP tools directly to query or manage state
 - **Agent-dispatch commands** (`plan`, `research`, `review`) — dispatch a single subagent via the Agent tool (always with an explicit namespaced `subagent_type`) for focused work
+- **Bounded planning controller** (`deep-plan`) — repeatedly dispatches one-pass read-only roles within hard budgets, checkpoints canonical state, and never starts execution
 
 These files previously lived in `skills/` as flat `.md` files, where the plugin system silently ignored them (skills require `skills/<name>/SKILL.md` directories) — keep them in `commands/`.
 
-Agent-dispatch commands that run outside a team run (no `runId`) must explicitly tell the dispatched agent NOT to call team MCP tools (`team_submit_result`, `team_memory_write`, `team_send_message`). The `plan` command is an exception — it includes MCP tool mappings because the planner writes to memory.
+Agent-dispatch commands that run outside a team run (no `runId`) must explicitly override run/worktree/lifecycle assumptions. Standalone research/review normally forbid result/message writes; plan and deep-plan use narrowly scoped memory writes for planning rationale, exact reflections, and canonical checkpoints. Never fabricate a run ID merely to satisfy an execution-oriented agent template.
 
 ### Memory keys are run-scoped to prevent cross-run overwrites
 
