@@ -1,5 +1,6 @@
 import type SqlJs from 'sql.js';
 import type { RunState, Message, MemoryEntry, MemoryNamespace } from '../types.js';
+import { normalizeRunState } from '../state/persistence.js';
 
 type SqlJsDatabase = SqlJs.Database;
 
@@ -107,12 +108,12 @@ export class Database {
   getRun(id: string): RunState | undefined {
     const row = this.selectOne<{ data: string }>('SELECT data FROM runs WHERE id = ?', [id]);
     if (!row) return undefined;
-    return JSON.parse(row.data) as RunState;
+    return normalizeRunState(JSON.parse(row.data));
   }
 
   getAllRuns(): RunState[] {
     const rows = this.selectAll<{ data: string }>('SELECT data FROM runs ORDER BY created_at ASC');
-    return rows.map((r) => JSON.parse(r.data) as RunState);
+    return rows.map((r) => normalizeRunState(JSON.parse(r.data)));
   }
 
   updateRun(run: RunState): void {
