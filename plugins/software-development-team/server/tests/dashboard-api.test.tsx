@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
-  currentRun, messages, memoryEntries, loadingRunId, currentFilter,
+  allRuns, currentRun, messages, memoryEntries, loadingRunId, currentFilter,
+  connectionStatus, dataFreshness, controlOperations, getControlOperation,
 } from '../src/dashboard/client/state/store';
 import type { RunState, Message, MemoryEntry } from '../src/dashboard/client/state/store';
 
@@ -8,7 +9,7 @@ import type { RunState, Message, MemoryEntry } from '../src/dashboard/client/sta
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
-const { fetchRuns, fetchMessages, fetchMemory, sendGuidance, selectRun } =
+const { fetchRuns, fetchMessages, fetchMemory, sendGuidance, selectRun, executeControl } =
   await import('../src/dashboard/client/state/api');
 
 function makeRun(id: string, status = 'in_progress' as const): RunState {
@@ -16,6 +17,20 @@ function makeRun(id: string, status = 'in_progress' as const): RunState {
     id, status, steps: [],
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:01:00Z',
+  };
+}
+
+function controlledRun(id: string, revision = 0): RunState {
+  return {
+    ...makeRun(id),
+    lifecycle: {
+      version: 2,
+      capabilities: {
+        pause_run: true, resume_run: true, cancel_run: true, cancel_step: true,
+        retry_step: true, acknowledge_pause: true, acknowledge_cancel: true,
+      },
+      controlPhase: 'none', revision, commandReceipts: [], history: [],
+    },
   };
 }
 
@@ -39,11 +54,117 @@ function errorResponse(status = 500) {
 
 beforeEach(() => {
   mockFetch.mockReset();
+  allRuns.value = [];
   currentRun.value = null;
   messages.value = [];
   memoryEntries.value = [];
   loadingRunId.value = null;
   currentFilter.value = 'all';
+  connectionStatus.value = 'online';
+  dataFreshness.value = 'fresh';
+  controlOperations.value = {};
+});
+
+describe('execution control API', () => {
+  const commandId = '11111111-1111-4111-8111-111111111111';
+
+  function successResponse(run: RunState, action = 'pause_run' as const) {
+    run.lifecycle!.revision = 1;
+    run.lifecycle!.controlPhase = 'paused';
+    const receipt = {
+      commandId, fingerprint: 'fingerprint', action, target: { kind: 'run' as const },
+      expectedRevision: 0, revision: 1, recordedAt: '2026-01-01T00:02:00Z',
+      outcome: { controlPhase: 'paused' as const, runStatus: run.status },
+    };
+    return { success: true, replayed: false, receipt, run };
+  }
+
+  it('sends commandId, expected revision, target, reason, and confirmation exactly once', async () => {
+    const run = controlledRun('r1');
+    allRuns.value = [run];
+    currentRun.value = run;
+    mockFetch.mockReturnValue(okJson(successResponse(controlledRun('r1'))));
+
+    const result = await executeControl('r1', {
+      action: 'cancel_run', target: { kind: 'run' }, commandId,
+      reason: 'No longer needed', confirmation: 'cancel run r1',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({
+      action: 'cancel_run', target: { kind: 'run' }, commandId, expectedRevision: 0,
+      reason: 'No longer needed', confirmation: 'cancel run r1',
+    });
+    expect(getControlOperation('r1', { kind: 'run' }).status).toBe('success');
+  });
+
+  it('suppresses a double submit while the target request is pending', async () => {
+    const run = controlledRun('r1');
+    allRuns.value = [run];
+    currentRun.value = run;
+    let resolveFetch!: (value: unknown) => void;
+    mockFetch.mockReturnValue(new Promise(resolve => { resolveFetch = resolve; }));
+
+    const first = executeControl('r1', { action: 'pause_run', target: { kind: 'run' }, commandId });
+    const second = await executeControl('r1', { action: 'pause_run', target: { kind: 'run' } });
+    expect(second).toMatchObject({ ok: false, error: { code: 'request_in_progress' } });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    resolveFetch({ ok: true, json: () => Promise.resolve(successResponse(controlledRun('r1'))) });
+    await first;
+  });
+
+  it('does not replay a conflicting mutation and refreshes before requiring reconfirmation', async () => {
+    const run = controlledRun('r1');
+    const refreshed = controlledRun('r1', 1);
+    allRuns.value = [run];
+    currentRun.value = run;
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false, status: 409,
+        json: () => Promise.resolve({ error: { code: 'revision_conflict', message: 'stale revision' } }),
+      })
+      .mockReturnValueOnce(okJson([refreshed]));
+
+    const result = await executeControl('r1', { action: 'pause_run', target: { kind: 'run' }, commandId });
+    expect(result).toMatchObject({ ok: false, requiresReconfirmation: true, error: { code: 'revision_conflict' } });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch.mock.calls[0][1]?.method).toBe('POST');
+    expect(mockFetch.mock.calls[1]).toEqual(['/api/runs']);
+    expect(getControlOperation('r1', { kind: 'run' })).toMatchObject({
+      status: 'conflict', requiresReconfirmation: true, recoveredRevision: 1,
+    });
+  });
+
+  it.each([400, 403, 404])('preserves structured %s errors without retrying', async status => {
+    const run = controlledRun('r1');
+    allRuns.value = [run];
+    currentRun.value = run;
+    mockFetch.mockResolvedValue({
+      ok: false, status,
+      json: () => Promise.resolve({ error: { code: `code_${status}`, message: `message ${status}` } }),
+    });
+    const result = await executeControl('r1', { action: 'pause_run', target: { kind: 'run' }, commandId });
+    expect(result).toMatchObject({ ok: false, error: { status, code: `code_${status}` } });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not replace the selected run when a control response resolves after a run switch', async () => {
+    const firstRun = controlledRun('r1');
+    const secondRun = controlledRun('r2');
+    allRuns.value = [firstRun, secondRun];
+    currentRun.value = firstRun;
+    let resolveFetch!: (value: unknown) => void;
+    mockFetch.mockReturnValue(new Promise(resolve => { resolveFetch = resolve; }));
+    const pending = executeControl('r1', { action: 'pause_run', target: { kind: 'run' }, commandId });
+    currentRun.value = secondRun;
+    dataFreshness.value = 'loading';
+    resolveFetch({ ok: true, json: () => Promise.resolve(successResponse(controlledRun('r1'))) });
+    await pending;
+    expect(currentRun.value?.id).toBe('r2');
+    expect(dataFreshness.value).toBe('loading');
+  });
 });
 
 describe('API client', () => {
