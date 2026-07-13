@@ -1,13 +1,30 @@
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
-  esbuild: {
-    jsx: 'automatic',
-    jsxImportSource: 'preact',
+  oxc: {
+    jsx: {
+      runtime: 'automatic',
+      importSource: 'preact',
+    },
   },
   test: {
-    environmentMatchGlobs: [
-      ['tests/dashboard-*.test.tsx', 'jsdom'],
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: 'node',
+          environment: 'node',
+          include: ['tests/**/*.test.ts'],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'dashboard',
+          environment: 'jsdom',
+          include: ['tests/dashboard-*.test.tsx'],
+        },
+      },
     ],
   },
 });
