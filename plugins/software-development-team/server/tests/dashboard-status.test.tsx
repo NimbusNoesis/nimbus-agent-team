@@ -177,6 +177,113 @@ describe('AgentCard', () => {
     expect(stepInfo!.textContent).toContain('Orchestrating selected run');
   });
 
+  it('shows the assigned implementation worker draining when coding is cancelled', () => {
+    currentRun.value = makeRun({
+      lifecycle: {
+        version: 2,
+        capabilities: {
+          pause_run: true, resume_run: true, cancel_run: true, cancel_step: true,
+          retry_step: true, acknowledge_pause: true, acknowledge_cancel: true,
+        },
+        controlPhase: 'cancelling', revision: 2, commandReceipts: [], history: [],
+      },
+      steps: [makeStep({
+        assignedAgent: 'coder',
+        status: 'cancelling',
+        claimedFiles: ['src/worker.ts'],
+      })],
+    });
+
+    render(<AgentCard agentName="coder" />);
+
+    expect(screen.getByRole('listitem', { name: 'coder, cancelling' })).toBeTruthy();
+    expect(screen.getByText('CANCELLING')).toBeTruthy();
+    expect(screen.getByText(/Draining coder/)).toBeTruthy();
+    expect(screen.getByText(/step and its file claims remain assigned/)).toBeTruthy();
+    expect(screen.getByText(/Step 1: Test step/)).toBeTruthy();
+  });
+
+  it('shows the reviewer draining when a reviewing step is cancelled', () => {
+    currentRun.value = makeRun({
+      lifecycle: {
+        version: 2,
+        capabilities: {
+          pause_run: true, resume_run: true, cancel_run: true, cancel_step: true,
+          retry_step: true, acknowledge_pause: true, acknowledge_cancel: true,
+        },
+        controlPhase: 'cancelling', revision: 2, commandReceipts: [], history: [],
+      },
+      steps: [makeStep({
+        assignedAgent: 'coder',
+        status: 'cancelling',
+        result: { status: 'done', summary: 'Implementation submitted' },
+        claimedFiles: ['src/reviewed.ts'],
+      })],
+    });
+
+    render(<AgentCard agentName="reviewer" />);
+
+    expect(screen.getByRole('listitem', { name: 'reviewer, cancelling' })).toBeTruthy();
+    expect(screen.getByText('CANCELLING')).toBeTruthy();
+    expect(screen.getByText(/Draining reviewer/)).toBeTruthy();
+    expect(screen.getByText(/Step 1: Test step/)).toBeTruthy();
+  });
+
+  it('shows paused coordinator monitoring instead of orchestrating', () => {
+    currentRun.value = makeRun({
+      status: 'in_progress',
+      lifecycle: {
+        version: 2,
+        capabilities: {
+          pause_run: true, resume_run: true, cancel_run: true, cancel_step: true,
+          retry_step: true, acknowledge_pause: true, acknowledge_cancel: true,
+        },
+        controlPhase: 'paused', revision: 2, commandReceipts: [], history: [],
+      },
+    });
+
+    render(<AgentCard agentName="coordinator" />);
+
+    expect(screen.getByRole('listitem', { name: 'coordinator, paused' })).toBeTruthy();
+    expect(screen.getByText('PAUSED')).toBeTruthy();
+    expect(screen.getByText(/Monitoring the paused selected run/)).toBeTruthy();
+    expect(screen.queryByText('ORCHESTRATING')).toBeNull();
+  });
+
+  it.each([
+    ['pausing', 'PAUSING', /Draining active workers before the pause/],
+    ['cancelling', 'CANCELLING', /Draining active workers before cancellation/],
+  ] as const)('uses lifecycle phase %s as coordinator truth', (controlPhase, label, detail) => {
+    currentRun.value = makeRun({
+      status: 'in_progress',
+      lifecycle: {
+        version: 2,
+        capabilities: {
+          pause_run: true, resume_run: true, cancel_run: true, cancel_step: true,
+          retry_step: true, acknowledge_pause: true, acknowledge_cancel: true,
+        },
+        controlPhase, revision: 2, commandReceipts: [], history: [],
+      },
+    });
+
+    render(<AgentCard agentName="coordinator" />);
+
+    expect(screen.getByRole('listitem', { name: `coordinator, ${controlPhase}` })).toBeTruthy();
+    expect(screen.getByText(label)).toBeTruthy();
+    expect(screen.getByText(detail)).toBeTruthy();
+    expect(screen.queryByText('ORCHESTRATING')).toBeNull();
+  });
+
+  it('shows terminal cancellation even when only run status is available', () => {
+    currentRun.value = makeRun({ status: 'cancelled' });
+    render(<AgentCard agentName="coordinator" />);
+
+    expect(screen.getByRole('listitem', { name: 'coordinator, cancelled' })).toBeTruthy();
+    expect(screen.getByText('CANCELLED')).toBeTruthy();
+    expect(screen.getByText(/terminally cancelled/)).toBeTruthy();
+    expect(screen.queryByText('ORCHESTRATING')).toBeNull();
+  });
+
   it('shows elapsed timer when active step has startedAt', () => {
     currentRun.value = makeRun({
       steps: [makeStep({

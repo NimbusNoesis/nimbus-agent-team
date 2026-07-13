@@ -1,9 +1,97 @@
 import { useEffect, useState } from 'preact/hooks';
 import { currentRun, messages } from '../../state/store';
 import { formatElapsed, formatRelativeTime } from '../../utils/format';
+import type { RunState, StepState } from '../../state/store';
 
 interface Props {
   agentName: string;
+}
+
+interface RosterState {
+  active: boolean;
+  detail?: string;
+  label: string;
+  step: StepState | null;
+}
+
+function coordinatorState(run: RunState | null): RosterState {
+  if (!run) return { active: false, label: 'IDLE', step: null };
+
+  const phase = run.lifecycle?.controlPhase ?? 'none';
+  if (phase === 'pausing') {
+    return {
+      active: true,
+      label: 'PAUSING',
+      detail: 'Draining active workers before the pause is acknowledged…',
+      step: null,
+    };
+  }
+  if (phase === 'paused') {
+    return {
+      active: true,
+      label: 'PAUSED',
+      detail: 'Monitoring the paused selected run; no new work is being admitted.',
+      step: null,
+    };
+  }
+  if (phase === 'cancelling') {
+    return {
+      active: true,
+      label: 'CANCELLING',
+      detail: 'Draining active workers before cancellation is acknowledged…',
+      step: null,
+    };
+  }
+  if (phase === 'cancelled' || run.status === 'cancelled') {
+    return {
+      active: false,
+      label: 'CANCELLED',
+      detail: 'The selected run is terminally cancelled.',
+      step: null,
+    };
+  }
+  if (run.status === 'in_progress') {
+    return {
+      active: true,
+      label: 'ORCHESTRATING',
+      detail: 'Orchestrating selected run…',
+      step: null,
+    };
+  }
+  return { active: false, label: 'IDLE', step: null };
+}
+
+function workerState(run: RunState | null, agentName: string): RosterState {
+  if (!run) return { active: false, label: 'IDLE', step: null };
+
+  const directStep = agentName === 'reviewer'
+    ? run.steps.find(step => step.status === 'reviewing')
+    : run.steps.find(step => step.assignedAgent === agentName && step.status === 'coding');
+  if (directStep) {
+    return { active: true, label: directStep.status.toUpperCase(), step: directStep };
+  }
+
+  // Cancellation deliberately retains assignment and file claims while the
+  // native worker drains. The former status is no longer stored, so a result
+  // is the durable evidence that the step had reached review; otherwise the
+  // assigned implementation role remains the best available authority.
+  const drainingStep = agentName === 'reviewer'
+    ? run.steps.find(step => step.status === 'cancelling' && step.result !== null)
+    : run.steps.find(step => (
+      step.status === 'cancelling'
+      && step.assignedAgent === agentName
+      && step.result === null
+    ));
+  if (drainingStep) {
+    return {
+      active: true,
+      label: 'CANCELLING',
+      detail: `Draining ${agentName} before cancellation acknowledgement; the step and its file claims remain assigned.`,
+      step: drainingStep,
+    };
+  }
+
+  return { active: false, label: 'IDLE', step: null };
 }
 
 export function AgentCard({ agentName }: Props) {
@@ -12,16 +100,16 @@ export function AgentCard({ agentName }: Props) {
 
   // Assignment and lifecycle state are authoritative. Messages provide only
   // last-activity context; they never fabricate a native worker as active.
-  const activeStep = agentName === 'reviewer'
-    ? run?.steps.find(step => step.status === 'reviewing') ?? null
-    : run?.steps.find(step => step.assignedAgent === agentName && step.status === 'coding') ?? null;
-  const coordinatorActive = agentName === 'coordinator' && run?.status === 'in_progress';
-  const isActive = activeStep !== null || coordinatorActive;
+  const rosterState = agentName === 'coordinator'
+    ? coordinatorState(run)
+    : workerState(run, agentName);
+  const activeStep = rosterState.step;
+  const isActive = rosterState.active;
 
   const runMessages = run ? messages.value.filter(message => message.runId === run.id) : [];
   const lastMessage = [...runMessages].reverse().find(message => message.from === agentName) ?? null;
   const lastActivityTs = lastMessage?.timestamp ?? null;
-  const statusLabel = activeStep ? activeStep.status.toUpperCase() : coordinatorActive ? 'ORCHESTRATING' : 'IDLE';
+  const statusLabel = rosterState.label;
 
   useEffect(() => {
     if (!isActive) return;
@@ -49,7 +137,7 @@ export function AgentCard({ agentName }: Props) {
           {(activeStep.step.description ?? '').length > 60 ? '\u2026' : ''}
         </p>
       )}
-      {!activeStep && coordinatorActive && <p class="agent-step-info">Orchestrating selected run…</p>}
+      {rosterState.detail && <p class="agent-step-info">{rosterState.detail}</p>}
 
       {activeStep?.startedAt && (
         <p class="agent-timer-row">
