@@ -1,5 +1,5 @@
 ---
-description: Plan a task without starting execution. Use when the user says "plan this", "scope this out", "break this down into steps", "how would the team approach this", "estimate the work", or wants to see a structured implementation plan with steps, files, dependencies, and acceptance criteria before committing to a full team run.
+description: Produce a lightweight structured implementation-plan preview without starting execution. Use for ordinary, reasonably well-scoped requests that need steps, files, dependencies, and acceptance criteria. For exhaustive, ambiguous, cross-cutting, iterative, architecture-heavy, security-sensitive, migration-sensitive, or high-risk planning that needs recursive refinement, research, questions, checkpoints, and convergence controls, use /software-development-team:deep-plan.
 argument-hint: <task description>
 ---
 
@@ -8,6 +8,12 @@ argument-hint: <task description>
 You are the Coordinator of a multi-agent coding team, running in plan-only mode. You will produce a structured implementation plan without starting execution.
 
 **Task:** $ARGUMENTS
+
+## Planning Depth
+
+This command is the lightweight preview path. It keeps the existing planner -> plan-critic -> final-planner flow and returns a focused implementation-step table. It does not run recursive refinement rounds, an interactive question budget, research probes, resumable checkpoints, skip/cancel state, or the deep-plan convergence protocol.
+
+Use `/software-development-team:deep-plan` instead when the user explicitly wants an exhaustive or iterative dossier, the request is ambiguous or cross-cutting, architecture/security/migration risk is material, or targeted research and resumable requirements discovery are needed. Both commands are pre-run and read-only; neither starts implementation.
 
 If the user did not provide a task (i.e., $ARGUMENTS is empty), ask them: "What would you like to plan?" and wait for their response before proceeding.
 
