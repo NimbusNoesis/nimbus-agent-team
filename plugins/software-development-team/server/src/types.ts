@@ -3,7 +3,7 @@
 
 // --- Step States ---
 
-export type StepStatus =
+type StepStatus =
   | 'pending'
   | 'coding'
   | 'reviewing'
@@ -12,7 +12,7 @@ export type StepStatus =
   | 'cancelling'
   | 'cancelled';
 
-export type RunStatus = 'ready' | 'in_progress' | 'escalated' | 'complete' | 'cancelled';
+type RunStatus = 'ready' | 'in_progress' | 'escalated' | 'complete' | 'cancelled';
 
 export interface PlanStep {
   id: number;
@@ -97,7 +97,7 @@ export type ExecutionControlTarget =
   | { kind: 'run' }
   | { kind: 'step'; stepId: number };
 
-export interface LifecycleCommandOutcome {
+interface LifecycleCommandOutcome {
   controlPhase: RunControlPhase;
   runStatus: RunStatus;
   stepStatus?: StepStatus;
@@ -119,7 +119,7 @@ export interface LifecycleCommandReceipt {
 }
 
 /** A compact, user-visible audit record for a successful lifecycle command. */
-export interface LifecycleHistoryEntry {
+interface LifecycleHistoryEntry {
   commandId: string;
   action: ExecutionControlAction;
   target: ExecutionControlTarget;

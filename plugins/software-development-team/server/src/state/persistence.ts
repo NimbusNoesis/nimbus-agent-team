@@ -29,7 +29,7 @@ const CONTROL_PHASES = new Set<RunControlPhase>([
   'cancelled',
 ]);
 
-export class UnsupportedLifecycleVersionError extends Error {
+class UnsupportedLifecycleVersionError extends Error {
   constructor(version: number) {
     super(
       `Unsupported run lifecycle version ${version}; this server supports up to version ${RUN_LIFECYCLE_VERSION}. ` +

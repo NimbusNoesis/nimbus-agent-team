@@ -1,6 +1,6 @@
 import type { ComponentChildren } from 'preact';
 
-export type AsyncStateKind = 'loading' | 'error' | 'empty' | 'stale' | 'ready';
+type AsyncStateKind = 'loading' | 'error' | 'empty' | 'stale' | 'ready';
 
 interface AsyncStateProps {
   state: AsyncStateKind;

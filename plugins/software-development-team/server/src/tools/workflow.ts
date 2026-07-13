@@ -58,7 +58,7 @@ const ExecutionControlTargetSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('step'), stepId: positiveInt }).strict(),
 ]);
 
-export const teamControlShape = {
+const teamControlShape = {
   runId: z.string().min(1),
   action: ExecutionControlActionSchema,
   target: ExecutionControlTargetSchema,
@@ -116,7 +116,7 @@ export function handleTeamStart(sm: StateMachine, args: unknown) {
   return { runId: run.id, task: run.task, status: run.status, stepCount: run.steps.length };
 }
 
-export function handleTeamStatus(sm: StateMachine, args: unknown) {
+export function handleTeamStatus(sm: StateMachine, args: unknown): Record<string, unknown> {
   const parsed = TeamStatusSchema.parse(args);
   const run = sm.getRun(parsed.runId);
   if (!run) throw new Error(`Run ${parsed.runId} not found`);
