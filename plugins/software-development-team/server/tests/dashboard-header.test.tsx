@@ -3,6 +3,7 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/preact';
 import {
   allRuns, currentRun, expandedStepId, memoryEntries,
   expandedMemoryKeys, currentFilter, messages, loadingRunId,
+  connectionStatus, dataFreshness, lastSyncedAt,
 } from '../src/dashboard/client/state/store';
 import type { RunState, StepState } from '../src/dashboard/client/state/store';
 
@@ -61,6 +62,9 @@ beforeEach(() => {
   currentFilter.value = 'all';
   messages.value = [];
   loadingRunId.value = null;
+  connectionStatus.value = 'connecting';
+  dataFreshness.value = 'loading';
+  lastSyncedAt.value = null;
   vi.clearAllMocks();
 });
 
@@ -122,6 +126,51 @@ describe('Header', () => {
     render(<Header />);
     expect(screen.getByText(/3 retries/)).toBeTruthy();
   });
+
+  it('separates aggregate run status from control phase and operational health', () => {
+    const run = makeRun({
+      lifecycle: {
+        version: 2,
+        capabilities: {
+          pause_run: true, resume_run: true, cancel_run: true, cancel_step: true,
+          retry_step: true, acknowledge_pause: true, acknowledge_cancel: true,
+        },
+        controlPhase: 'pausing', revision: 7, commandReceipts: [], history: [],
+      },
+      steps: [
+        makeStep({ status: 'escalated' }),
+        makeStep({
+          step: { id: 2, description: 'Blocked', files: [], acceptanceCriteria: [], dependsOn: [1] },
+          status: 'pending',
+        }),
+        makeStep({
+          step: { id: 3, description: 'Active', files: [], acceptanceCriteria: [], dependsOn: [] },
+          status: 'coding', assignedAgent: 'coder',
+        }),
+      ],
+    });
+    currentRun.value = run;
+    allRuns.value = [run];
+    render(<Header />);
+    expect(screen.getByText('IN_PROGRESS')).toBeTruthy();
+    expect(screen.getByText(/Pause requested/)).toBeTruthy();
+    expect(screen.getByText('1 active workers · 1 blockers · 1 escalations')).toBeTruthy();
+    expect(screen.getByText('Revision 7')).toBeTruthy();
+  });
+
+  it('communicates connection, freshness, and safe read-only capability fallback in text', () => {
+    const run = makeRun();
+    currentRun.value = run;
+    allRuns.value = [run];
+    connectionStatus.value = 'offline';
+    dataFreshness.value = 'stale';
+    lastSyncedAt.value = '2026-01-01T00:01:00Z';
+    render(<Header />);
+    expect(screen.getByText(/Connection: Offline/)).toBeTruthy();
+    expect(screen.getByText(/Data: May be stale/)).toBeTruthy();
+    expect(screen.getByText(/Controls unavailable: read-only server/)).toBeTruthy();
+    expect(screen.getByText(/Synced/).querySelector('time')?.dateTime).toBe('2026-01-01T00:01:00Z');
+  });
 });
 
 describe('ProgressBar', () => {
@@ -168,6 +217,25 @@ describe('ProgressBar', () => {
     const fill = container.querySelector('.progress-bar-fill') as HTMLElement | null;
     expect(fill).toBeTruthy();
     expect(fill!.style.width).toBe('40%');
+  });
+
+  it('uses complete steps for accessible progress and does not count cancellation as success', () => {
+    currentRun.value = makeRun({
+      status: 'cancelled',
+      steps: [
+        makeStep({ status: 'complete' }),
+        makeStep({
+          step: { id: 2, description: 'Cancelled', files: [], acceptanceCriteria: [], dependsOn: [] },
+          status: 'cancelled',
+        }),
+      ],
+    });
+    render(<ProgressBar />);
+    const progress = screen.getByRole('progressbar', { name: 'Run progress' });
+    expect(progress.getAttribute('aria-valuenow')).toBe('1');
+    expect(progress.getAttribute('aria-valuemax')).toBe('2');
+    expect(progress.getAttribute('aria-valuetext')).toBe('1 of 2 steps complete; 1 cancelled');
+    expect((progress.querySelector('.progress-bar-fill') as HTMLElement).style.width).toBe('50%');
   });
 });
 
@@ -238,5 +306,27 @@ describe('RunTabs', () => {
     const tabs = Array.from(container.querySelectorAll('.run-tab'));
     fireEvent.click(tabs[0]);
     expect(selectRun).not.toHaveBeenCalled();
+  });
+
+  it('gives each tab a complete accessible label including cancellation and control phase', () => {
+    const run = makeRun({
+      status: 'cancelled',
+      steps: [makeStep({ status: 'cancelled' })],
+      lifecycle: {
+        version: 2,
+        capabilities: {
+          pause_run: true, resume_run: true, cancel_run: true, cancel_step: true,
+          retry_step: true, acknowledge_pause: true, acknowledge_cancel: true,
+        },
+        controlPhase: 'cancelled', revision: 2, commandReceipts: [], history: [],
+      },
+    });
+    allRuns.value = [run];
+    currentRun.value = run;
+    render(<RunTabs />);
+    const tab = screen.getByRole('button', { name: /Cancelled/ });
+    expect(tab.getAttribute('aria-current')).toBe('page');
+    expect(tab.getAttribute('aria-label')).toContain('1 cancelled');
+    expect(tab.getAttribute('aria-label')).toContain('execution cancelled');
   });
 });
