@@ -248,8 +248,85 @@ function sanitizeKey(key: string): string {
   return key;
 }
 
+/**
+ * Stamp embedded at the top level of state.json by saveRunState so sibling
+ * processes racing last-writer-wins on the same .team/ directory can DETECT
+ * a lost update (the write itself remains last-writer-wins by design).
+ */
+interface WriterStamp {
+  pid: number;
+  seq: number;
+  savedAt: string;
+}
+
+// Monotonic per-process counter. Combined with the pid it makes every temp
+// filename (state.json.tmp.<pid>.<seq>, messages.jsonl.tmp.<pid>.<seq>)
+// unique across concurrent sibling processes AND concurrent writes within
+// this process, eliminating interleaved-content corruption from two writers
+// sharing one tmp path and the paired ENOENT rename race between siblings.
+let writerSeq = 0;
+function nextWriterSeq(): number {
+  return ++writerSeq;
+}
+
+function readWriterStamp(value: unknown): Pick<WriterStamp, 'pid' | 'seq'> | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const stamp = (value as Record<string, unknown>).writerStamp;
+  if (typeof stamp !== 'object' || stamp === null || Array.isArray(stamp)) return null;
+  const { pid, seq } = stamp as Record<string, unknown>;
+  if (!Number.isInteger(pid) || !Number.isInteger(seq)) return null;
+  return { pid: pid as number, seq: seq as number };
+}
+
+/**
+ * Best-effort salvage for the trailing-garbage corruption class produced by
+ * the historical shared-tmp-path write race: a valid JSON document followed
+ * by extra content (typically a partial second document). Scans for the end
+ * of the first balanced top-level object (string/escape aware) and parses
+ * that prefix. Returns undefined when no leading document can be recovered.
+ */
+function salvageLeadingJsonDocument(data: string): unknown | undefined {
+  const start = data.indexOf('{');
+  if (start === -1) return undefined;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < data.length; i++) {
+    const ch = data[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        try {
+          return JSON.parse(data.slice(start, i + 1));
+        } catch {
+          return undefined;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
 export class Persistence {
   private appendCounts = new Map<string, number>();
+
+  // Last writer stamp this instance observed per run (from its own last save
+  // or last load). Production runs one Persistence per process, so this is
+  // the per-process arbitration memory for lost-update detection.
+  private lastObservedStamps = new Map<string, Pick<WriterStamp, 'pid' | 'seq'>>();
+
+  // Runs that already logged a stamp mismatch at warn in this process; later
+  // mismatches for the same run demote to debug (in normal multi-instance
+  // operation nearly every coordinator save after a sibling write mismatches).
+  private stampMismatchWarned = new Set<string>();
 
   constructor(private baseDir: string) {}
 
@@ -265,10 +342,97 @@ export class Persistence {
     const dir = this.runDir(run.id);
     await mkdir(dir, { recursive: true });
     const stateFile = join(dir, 'state.json');
-    const tmpFile = join(dir, 'state.json.tmp');
-    await writeFile(tmpFile, JSON.stringify(run, null, 2));
+    const writerStamp: WriterStamp = {
+      pid: process.pid,
+      seq: nextWriterSeq(),
+      savedAt: new Date().toISOString(),
+    };
+    // Serialize a COPY. The run argument is the same object held by
+    // StateMachine/DB and emitted in state_update WS events — it must never
+    // gain a writerStamp own-property.
+    const payload = JSON.stringify({ ...run, writerStamp }, null, 2);
+    // Unique per-process temp name: see nextWriterSeq for the race this fixes.
+    const tmpFile = `${stateFile}.tmp.${writerStamp.pid}.${writerStamp.seq}`;
+    await writeFile(tmpFile, payload);
+    // Detection only — never throws, never blocks the write (last writer wins).
+    await this.detectLostUpdate(run.id, stateFile);
     await rename(tmpFile, stateFile);
+    this.lastObservedStamps.set(run.id, { pid: writerStamp.pid, seq: writerStamp.seq });
     logger.debug('Persistence', `Saved run state`, { runId: run.id, status: run.status });
+  }
+
+  /**
+   * Lost-update detection with bounded last-writer-wins arbitration: re-read
+   * the on-disk writer stamp just before rename and compare it to the stamp
+   * this instance last observed for the run. A mismatch means a sibling
+   * process wrote in between — the sibling's update is about to be lost
+   * (last writer wins, detected and logged).
+   *
+   * PINNED FAILURE SEMANTICS: this method must NEVER throw. A propagated
+   * error from arbitration would latch the fail-closed PersistQueue for the
+   * whole process, which is forbidden — detection failures skip detection
+   * and let the write proceed. Genuine write/rename I/O errors in
+   * saveRunState itself still propagate and latch exactly as before.
+   */
+  private async detectLostUpdate(runId: string, stateFile: string): Promise<void> {
+    const expected = this.lastObservedStamps.get(runId);
+    // No prior observation (first save/load of this run in this process):
+    // nothing to compare, and skipping avoids a spurious ENOENT on the very
+    // first save of a new run.
+    if (!expected) return;
+
+    let observed: Pick<WriterStamp, 'pid' | 'seq'> | null;
+    try {
+      observed = readWriterStamp(JSON.parse(await readFile(stateFile, 'utf-8')));
+    } catch {
+      // ENOENT (sibling mid-rename) or JSON.parse failure (legacy
+      // trailing-garbage file) — skip detection and proceed with the write.
+      logger.warn('Persistence', 'Skipping lost-update detection: on-disk writer stamp unreadable', {
+        runId,
+        reasonCode: 'stamp_unreadable',
+      });
+      return;
+    }
+
+    // A parseable file without a valid stamp (observed === null) also means
+    // someone else wrote since our last observation — treat it as a mismatch.
+    if (observed !== null && observed.pid === expected.pid && observed.seq === expected.seq) return;
+
+    // Metadata only: runId plus observed/expected pid+seq — never run payloads.
+    const meta = {
+      runId,
+      reasonCode: 'stamp_mismatch',
+      expectedPid: expected.pid,
+      expectedSeq: expected.seq,
+      observedPid: observed?.pid ?? null,
+      observedSeq: observed?.seq ?? null,
+    };
+    if (this.stampMismatchWarned.has(runId)) {
+      logger.debug('Persistence', 'Concurrent writer detected for run state (last writer wins)', meta);
+    } else {
+      this.stampMismatchWarned.add(runId);
+      logger.warn('Persistence', 'Concurrent writer detected for run state (last writer wins)', meta);
+    }
+  }
+
+  /**
+   * Records the on-disk stamp as this instance's last observation for the
+   * run and strips writerStamp so restored state never carries it into
+   * normalizeRunState (or back out through StateMachine/WS events).
+   */
+  private observeAndStripWriterStamp(runId: string, parsed: unknown): unknown {
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return parsed;
+    const stamp = readWriterStamp(parsed);
+    if (stamp) {
+      this.lastObservedStamps.set(runId, stamp);
+    } else {
+      // Stampless (legacy) content is still the latest observation; drop any
+      // stale expectation so the next save does not report a false mismatch.
+      this.lastObservedStamps.delete(runId);
+    }
+    if (!Object.hasOwn(parsed, 'writerStamp')) return parsed;
+    const { writerStamp: _writerStamp, ...rest } = parsed as Record<string, unknown>;
+    return rest;
   }
 
   async loadAllRunStates(): Promise<RestoredRunState[]> {
@@ -295,13 +459,34 @@ export class Persistence {
   }
 
   async loadRunState(runId: string): Promise<RestoredRunState | null> {
+    let data: string;
     try {
-      const data = await readFile(join(this.runDir(runId), 'state.json'), 'utf-8');
-      return normalizeDiskExecutionModes(normalizeRunState(JSON.parse(data)));
+      data = await readFile(join(this.runDir(runId), 'state.json'), 'utf-8');
     } catch (err: any) {
       if (err.code === 'ENOENT') return null;
       throw err;
     }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(data);
+    } catch (parseError) {
+      // Legacy salvage: files corrupted by the historical shared-tmp-path
+      // race hold a valid JSON document followed by trailing garbage.
+      // Recover the leading document; if that fails, rethrow so
+      // loadAllRunStates keeps its skip-with-warning behavior.
+      const salvaged = salvageLeadingJsonDocument(data);
+      if (salvaged === undefined) throw parseError;
+      logger.warn('Persistence', 'Salvaged leading JSON document from corrupt run state', {
+        runId,
+        reasonCode: 'trailing_garbage_salvaged',
+      });
+      parsed = salvaged;
+    }
+
+    return normalizeDiskExecutionModes(
+      normalizeRunState(this.observeAndStripWriterStamp(runId, parsed)),
+    );
   }
 
   async appendMessage(runId: string, message: Message): Promise<void> {
@@ -332,7 +517,14 @@ export class Persistence {
       const lines = data.trim().split('\n').filter(Boolean);
       if (lines.length <= MAX_MESSAGES_PER_RUN) return;
       const kept = lines.slice(lines.length - MAX_MESSAGES_PER_RUN);
-      const tmp = file + '.tmp';
+      // Unique per-process temp name: corruption eliminated (no two writers
+      // can interleave content into one shared tmp path, and siblings can no
+      // longer steal each other's tmp file mid-rename); the
+      // lost-append-during-compaction window remains — a sibling's appendFile
+      // landing between our readFile above and the rename below is dropped.
+      // That residual window is bounded and accepted (restart-restore-only
+      // impact); do not "fix" it here without revisiting the design decision.
+      const tmp = `${file}.tmp.${process.pid}.${nextWriterSeq()}`;
       await writeFile(tmp, kept.join('\n') + '\n');
       await rename(tmp, file);
       logger.debug('Persistence', `Compacted message log`, { runId, kept: kept.length });
