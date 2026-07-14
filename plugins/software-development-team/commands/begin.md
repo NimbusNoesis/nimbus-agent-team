@@ -70,7 +70,7 @@ When the user's task is to **review existing code** (not build something), the r
      - **Uncommitted work**: also include `git diff` (unstaged) and `git diff --cached` (staged).
      - **Untracked new files**: list them with `git ls-files --others --exclude-standard` — they appear in no diff, so the reviewer must read them directly.
      - Only if *all* of these are empty, ask the user which files or commit range to review.
-2. Create a single read-only step describing the review (e.g., "Deep code review of `<targets>`"), then call `team_start` with a fully-formed step — every step requires `id`, `description`, `files`, `acceptanceCriteria`, and `dependsOn` (the schema rejects a description-only step):
+2. Create a single read-only step describing the review (e.g., "Deep code review of `<targets>`"), then call `team_start` with a fully-formed step — every step requires `id`, `description`, `files`, `acceptanceCriteria`, `dependsOn`, and an explicit `executionMode`. A standalone review MUST use `executionMode: "read_only"` (the schema rejects a description-only step):
 
    ```text
    team_start(steps: [{
@@ -78,7 +78,8 @@ When the user's task is to **review existing code** (not build something), the r
      description: "Deep code review of <targets>",
      files: [<review target paths>],
      acceptanceCriteria: ["Findings reported with file/line, severity, and a concrete fix for each issue"],
-     dependsOn: []
+     dependsOn: [],
+     executionMode: "read_only"
    }])
    ```
 
@@ -102,6 +103,21 @@ When the user's task is to **review existing code** (not build something), the r
    - Run ID prefix (for reflection/review memory keys): {runId-short}
    - Tool name mapping: team_X means mcp__plugin_software-development-team_software-development-team__team_X
 
+   ## Full step context
+   - Step description: {paste the complete persisted step description}
+   - Execution mode: read_only (paste the exact persisted `executionMode` from `team_status`; do not infer it from the reviewer role)
+   - Exact files: {paste every exact file string from the step's files array}
+   - Acceptance criteria: {paste the complete acceptanceCriteria array}
+   - Dependencies: [] — no dependencies
+
+   ## Persisted worktree lifecycle context
+   - Worktree path: .worktrees/{runId}/step-{stepId}
+   - Branch name: team-{runId}-step-{stepId}
+   - Captured target branch: {targetBranch}
+   - Captured target commit: {targetCommit}
+   - Lifecycle rule: reuse this exact persisted worktree and mode; do not recapture, recreate, or infer either from the agent role.
+   - Location/role rule: perform every repository read, verification command, and Git inspection inside this worktree. Never edit, stage, commit, merge, or clean it up.
+
    ## Review targets
    {file list or diff scope}
 
@@ -111,13 +127,13 @@ When the user's task is to **review existing code** (not build something), the r
    ## Instructions
    Review for correctness, security, code quality, error handling, and test coverage.
    If the review targets include executable code, run the project's verification suite (tests, type check, lint) to catch regressions. Skip verification for doc-only or config-only targets — there is nothing to regress.
-   Submit your verdict via team_submit_result as usual — `done` if the code is clean, `needs_revision` if you found issues worth fixing — and return your full findings as structured text (overall verdict, issues with file/line + why + fix, positives, verification results, optional suggestions). This is a dedicated review: the coordinator closes the step with `mark_reviewed` and presents your findings to the user; it does not dispatch a coder to act on a `needs_revision` verdict here.
+   Do NOT call `team_submit_result`. Return your full findings as structured text (overall verdict, issues with file/line + why + fix, positives, verification results, optional suggestions). This is a dedicated review: the coordinator preserves the verdict in a dashboard message, closes the step with `mark_reviewed` only after the required eligibility checks, and presents your findings to the user; it does not dispatch a coder to act on a `needs_revision` verdict here.
    You MAY write a review reflection to the reflections namespace and review notes to the reviews namespace.
    """
    )
    ```
 
-4. A dedicated review delivers findings, not code to fix — so close the step with `mark_reviewed` after the reviewer returns, **regardless of whether its verdict was `done` or `needs_revision`** (see "Read-only review step" in The Loop). `mark_reviewed` moves a `coding` or `reviewing` step straight to `complete`. Do NOT follow the normal `needs_revision → request_revision → dispatch coder` loop here; a dedicated review has no coder. The reviewer keeps its usual two verdicts — only the coordinator's close-out differs.
+4. A dedicated review delivers findings, not code to fix. Preserve its returned verdict in a dashboard message, then refresh `team_status` and inspect the persisted worktree. Call `mark_reviewed` **only** when the persisted `executionMode` is exactly `read_only`, both `result` and `resultHistory` prove no result has ever been submitted, `git -C .worktrees/{runId}/step-{stepId} status --porcelain` is empty, and `git -C .worktrees/{runId}/step-{stepId} rev-parse HEAD` equals the captured `targetCommit`. If any check fails, do not call `mark_reviewed`; preserve the worktree and escalate. When they all pass, close the step regardless of whether its returned text verdict was `done` or `needs_revision` (see "Read-only review step" in The Loop). Do NOT follow the normal `needs_revision → request_revision → dispatch coder` loop here; a dedicated review has no coder.
 
    ```text
    team_advance(runId, stepId, action: "mark_reviewed", summary: "<one-line summary of what the review delivered>")
@@ -137,7 +153,33 @@ Each agent dispatch consumes tokens independently. Token costs scale linearly wi
 
 1. Call `team_dashboard_url` and tell the user the dashboard URL.
 2. Read shared memory (`team_memory_read` for all namespaces: `decisions`, `context`, `learnings`, `reviews`, `reflections`) for prior context.
-3. Create plan steps (yourself for quick tasks, or from planner output). **For planner-produced plans, run the adversarial review sub-phase (3a–3b) below before proceeding to step 4. For quick tasks you drafted yourself, skip directly to step 4.**
+3. Create plan steps (yourself for quick tasks, or from planner output). **For planner-produced plans, run the adversarial review sub-phase (3a–3b) below before proceeding to step 4. For quick tasks you drafted yourself, skip directly to step 4.** Every ordinary implementation, research, or documentation step MUST declare `executionMode: "code"`; `read_only` is reserved for the dedicated standalone-review workflow above and is never inferred from the assigned agent role. Require every planner JSON step to contain all fields `id`, `description`, `files`, `acceptanceCriteria`, `dependsOn`, and `executionMode`.
+
+   For a planner-produced plan, first dispatch the initial planner using the Agent tool:
+
+   ```text
+   Agent(
+     subagent_type: "software-development-team:planner",
+     description: "Draft implementation plan",
+     prompt: """
+   You are being dispatched as the initial planner before a run exists.
+
+   ## Pre-run context
+   - No run exists yet. Do not require or fabricate a run ID.
+   - Reflection key override: `prerun-<task-slug>-draft-plan-reflection` (use this exact resolved key).
+
+   ## Task description
+   {original task description}
+
+   ## Relevant memory context
+   {paste decisions, context, and learnings entries from team_memory_read}
+
+   Produce the draft implementation plan. Every step must include all fields `id`, `description`, `files`, `acceptanceCriteria`, `dependsOn`, and `executionMode`; ordinary implementation, research, and documentation steps use `executionMode: "code"`.
+   Write all progress, rationale, and reflection with `team_memory_write`; never call `team_send_message` because no run exists yet.
+   Your final response must be only a valid JSON array of plan steps containing all fields `id`, `description`, `files`, `acceptanceCriteria`, `dependsOn`, and `executionMode`, with no prose, Markdown fence, or JSON comments.
+   """
+   )
+   ```
 
    **3a. Dispatch the plan-critic** (planner-produced plans only).
 
@@ -152,20 +194,21 @@ Each agent dispatch consumes tokens independently. Token costs scale linearly wi
      prompt: """
    You are being dispatched as the plan-critic for an adversarial review pass.
 
-   ## Run context
-   - runId: {runId}
-   - Run ID prefix (for reflection key): {runId-short}
+   ## Pre-run context
+   - No run exists yet. Do not require or fabricate a run ID.
+   - Reflection key override: `prerun-<task-slug>-plan-critique-reflection` (use this exact resolved key).
 
    ## Task description
    {original task description}
 
    ## Draft plan (JSON)
-   {planner's steps array, exactly as returned — include all fields: id, description, files, acceptanceCriteria, dependsOn}
+   {planner's steps array, exactly as returned — include all fields: id, description, files, acceptanceCriteria, dependsOn, executionMode}
 
    ## Relevant memory context
    {paste decisions, context, and learnings entries from team_memory_read}
 
    Produce a structured critique following your Critique Output Format. Do NOT output a replacement plan. Do NOT call team_start.
+   Write any progress or reflection with `team_memory_write`; never call `team_send_message` because no run exists yet.
    """
    )
    ```
@@ -174,10 +217,10 @@ Each agent dispatch consumes tokens independently. Token costs scale linearly wi
 
    **3b. Re-dispatch the planner with the critique.**
 
-   Dispatch the planner again using the Agent tool (`subagent_type: "software-development-team:planner"`), passing the original task, the draft plan, and the full critique. Instruct the planner to produce a **final plan** that either addresses each concern or explicitly rejects it with rationale. The planner's output from this pass replaces the draft — use it as the plan for the approval gate.
+   Dispatch the planner again using the Agent tool (`subagent_type: "software-development-team:planner"`), passing the original task, the draft plan, and the full critique. Explicitly state that no run exists yet, no run ID may be required or fabricated, and its reflection key override is `prerun-<task-slug>-final-plan-reflection` (use the exact resolved key). Instruct the planner to produce a **final plan** that either addresses each concern or explicitly rejects it with rationale. Every returned implementation, research, or documentation step must explicitly retain `executionMode: "code"`. Any rationale, progress update, or reflection must be written with `team_memory_write` before the final response (never `team_send_message` — no run exists yet). The final response must be only a valid JSON array of plan steps containing `executionMode`, with no prose, Markdown fence, or JSON comments. The planner's output from this pass replaces the draft — use it as the plan for the approval gate.
 
 4. **Plan approval gate**: Present the final plan to the user and wait for approval. Show steps, files, dependencies, and estimated scope. For quick tasks (1-3 steps), ask "Ready to proceed?" For large tasks, ask the user to review the full plan.
-5. Only after user approval: call `team_start` with the approved steps.
+5. Only after user approval: validate that every approved step contains an explicit supported `executionMode` and call `team_start` with the approved steps. Normal code, research, and documentation steps use `code`; only the standalone-review shape above uses `read_only`.
 6. Immediately after `team_start` returns the run ID, relay the planning phase to the dashboard in one message so the feed reflects how the plan was produced:
 
    ```text
@@ -205,6 +248,8 @@ mcp__plugin_software-development-team_software-development-team__team_advance(ru
 ```
 
 `start_coding` is authoritative. Dispatch a worker **only after it succeeds**. If it is rejected, the scheduling snapshot is stale: call `team_status`, recompute the runnable set, and retry the scheduling decision; never dispatch from the stale snapshot.
+
+Before admission, read the step's exact persisted `executionMode` from the fresh `team_status` snapshot. Execution mode is a workflow contract, not a role selector: never infer it from the chosen agent. Ordinary coder, researcher, and documentation dispatches retain `executionMode: "code"`; the standalone reviewer retains `read_only`.
 
 The `agent` label passed to `team_advance` must always be a fixed dashboard roster name (`planner`, `coder`, `reviewer`, `researcher`, `documentation`) — never `general-purpose` or any other label; the dashboard's agent status panel only lights cards for roster names. For work that fits no specialist exactly, use the closest specialist (almost always `coder`) as both the roster label and the dispatched agent type.
 
@@ -256,20 +301,20 @@ the user's message alone.
 
 ### Read-only review step (no code result) → mark_reviewed
 
-Some steps are dispatched to **read-only agents** that only deliver findings and never call `team_submit_result` (e.g., a security/code review or an investigation that produces no edits). Such a step stays in `coding` forever and shows as "stuck" on the dashboard, even though its work is done. After the read-only Agent returns with its findings, close the step with:
+Only a step whose persisted `executionMode` is exactly `read_only` may use this path. Such a worker only delivers findings and never calls `team_submit_result`; the step stays in `coding` until the coordinator closes it. After the Agent returns, refresh `team_status` and verify that both `result` and `resultHistory` show no submitted result, its persisted worktree is pristine (`git status --porcelain` is empty), and `git rev-parse HEAD` equals the captured `targetCommit`. Then close the step with:
 
 ```
 team_advance(runId, stepId, action: "mark_reviewed", summary: "<one-line summary of what the review delivered>")
 ```
 
-`mark_reviewed` moves a `coding` (or `reviewing`) step straight to `complete` with a synthetic `done` result — no fabricated coder submission needed. Use it **only** for steps with no code changes to verify; steps that produce edits must still go through the normal coder → reviewer → `approve` flow.
+`mark_reviewed` moves a `coding` step straight to `complete` with a synthetic `done` result — no fabricated coder submission needed. Use it **only** when all of the exact `read_only`, no-result, and pristine-worktree checks above pass. Never use it for `executionMode: "code"`, for any step with a submitted result or result history, or to bypass the coder → reviewer → `approve` flow. If a check fails, preserve the worktree and escalate.
 
 ### Worker returned but step still `coding` → close it (safety net)
 
 After ANY worker Agent returns, refresh `team_status` before scheduling anything else. If that worker's step is still `coding`, the worker failed to submit its result (crashed, ran out of context, or never called `team_submit_result`). Never leave the step open:
 
-- **Read-only work** (findings only, no edits): close it with `mark_reviewed` as described above.
-- **Code work with usable output**: if the worker's return text and the step worktree (`git -C .worktrees/{runId}/step-{N} status`) show completed work, call `team_submit_result` on the worker's behalf (`status: "done"`, summary taken from the worker's return text) so the step moves to `reviewing`, then dispatch the reviewer as normal.
+- **Persisted `executionMode: "read_only"` with findings only, no submitted result, and a pristine worktree**: close it with `mark_reviewed` as described above.
+- **Persisted `executionMode: "code"` with usable output**: if the worker's return text and the step worktree (`git -C .worktrees/{runId}/step-{N} status`) show completed work, call `team_submit_result` on the worker's behalf (`status: "done"`, summary taken from the worker's return text) so the step moves to `reviewing`, then dispatch the reviewer as normal.
 - **No usable output**: call `team_submit_result` with `status: "blocked"` and the failure details, then follow Stuck Detection.
 
 ## Dispatch Context Checklist
@@ -277,13 +322,14 @@ After ANY worker Agent returns, refresh `team_status` before scheduling anything
 Every Agent dispatch prompt needs all of these — subagents have no inherited context.
 
 1. **Step description** — what to build
-2. **Files to touch** — exact paths from the plan
-3. **Acceptance criteria** — what "done" looks like
-4. **Verification commands** — exact test/lint commands to run (e.g., `npm test`, `npx vitest run tests/specific.test.ts`)
-5. **Relevant memory** — read `team_memory_read` for `decisions`, `context`, and `learnings` namespaces, paste relevant entries
-6. **Run ID and step ID** — so the subagent can call `team_submit_result`
-7. **Prior context** — any review feedback (for revisions) or user guidance
-8. **Tool name mapping** — remind the subagent that `team_X` means `mcp__plugin_software-development-team_software-development-team__team_X`
+2. **Execution mode** — the exact persisted `executionMode` from `team_status`; never infer mode from role
+3. **Files to touch** — exact paths from the plan
+4. **Acceptance criteria** — what "done" looks like
+5. **Verification commands** — exact test/lint commands to run (e.g., `npm test`, `npx vitest run tests/specific.test.ts`)
+6. **Relevant memory** — read `team_memory_read` for `decisions`, `context`, and `learnings` namespaces, paste relevant entries
+7. **Run ID and step ID** — so the subagent can call `team_submit_result`
+8. **Prior context** — any review feedback (for revisions) or user guidance
+9. **Tool name mapping** — remind the subagent that `team_X` means `mcp__plugin_software-development-team_software-development-team__team_X`
 9. **Run ID key prefix** — remind the subagent to use the first 8 characters of the run ID as a prefix for reflection and review memory keys (e.g., `{runId-short}-step-{N}-reflection`). Include the actual 8-char prefix value so the agent doesn't have to compute it.
 
 ## Lifecycle-v2 Execution Controls
@@ -354,9 +400,9 @@ Prefer `team_control(action: "retry_step")`; `team_advance(action:
 "resolve_escalation")` is a deprecated compatibility alias and must obey the
 same safety rules. Retry only when a fresh step `actionAvailability.retry_step`
 says the escalated step is eligible, the run phase is `none`, the persisted
-worktree tuple is present and consistent, the manual-attempt budget remains,
+worktree tuple and exact persisted execution mode are present and consistent, the manual-attempt budget remains,
 all dependencies are complete, and file claims can be reacquired without
-conflict. A retry reuses that worktree, preserves result/review/audit history,
+conflict. A retry reuses that worktree and execution mode without recapturing, recreating, inferring, or rewriting either one, preserves result/review/audit history,
 increments `manualAttempt`, resets per-attempt reviewer counters, and returns
 the step to coding. Refresh status after the command before spawning; a
 conflict or replay never authorizes a spawn by itself.
@@ -364,7 +410,7 @@ conflict or replay never authorizes a spawn by itself.
 ### Restart, interruption, and compatibility
 
 On begin-loop recovery or `resume`, reconstruct lifecycle phase, revision,
-receipts/history, step cancellation state, and worktree context from
+receipts/history, step cancellation state, execution mode, and worktree context from
 `team_status`; never reset them because the coordinator process restarted.
 If restored state is `pausing` or `cancelling`, continue the applicable
 drain-and-acknowledge protocol. First establish that workers from the prior
@@ -409,7 +455,7 @@ Every dispatched execution step uses its mandatory worktree `.worktrees/{runId}/
 
 ### Initial Pending Admission: Create and Persist Once
 
-Only when a PENDING execution step is first selected for admission, capture the coordinator's current target branch and exact commit, then create from that captured base:
+Only when a PENDING execution step is first selected for admission, capture the coordinator's current target branch and exact commit. Its explicit `executionMode` is already persisted by `team_start`; do not rewrite it during admission. Then create from that captured base:
 
 ```bash
 targetBranch=$(git branch --show-current)
@@ -426,10 +472,11 @@ Every coder, reviewer, researcher, and documentation dispatch reads the persiste
 - **Worktree path**: `.worktrees/{runId}/step-{N}`
 - **Branch name**: `team-{runId}-step-{N}`
 - **Captured target**: `{targetBranch}` at `{targetCommit}`
+- **Execution mode**: the exact persisted `code` or `read_only` value from `team_status`; never infer or change it based on the agent role
 - **Role rules**: coder and documentation edit/commit only in this worktree; reviewer and researcher are read-only and inspect/run verification only here; reviewer approval is required before merge.
 - **Location rule**: all repository reads, writes, tests, and Git commands run from this worktree; never touch the coordinator or another step's worktree.
 
-Reviewer, revision-coder, and interrupted-worker re-dispatches reuse this exact persisted context; never recapture a target or create another worktree. Before a later dispatch, verify its persisted path and branch are present and consistent. If context is missing or inconsistent, do not dispatch and do not recreate it; record the exact inconsistency and persisted values, block or escalate, and preserve artifacts for recovery.
+Reviewer, revision-coder, and interrupted-worker re-dispatches reuse this exact persisted worktree and execution mode; never recapture a target, create another worktree, infer mode from their role, or change the mode. Before a later dispatch, verify its persisted mode, path, and branch are present and consistent. If context is missing or inconsistent, do not dispatch and do not recreate it; record the exact inconsistency and persisted values, block or escalate, and preserve artifacts for recovery.
 
 ### Reviewer Approval, Merge, and Cleanup
 

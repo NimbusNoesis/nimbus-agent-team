@@ -51,7 +51,7 @@ The team's agent types are plugin-namespaced. These are the only valid `subagent
 
 1. Call `team_dashboard_url` and show the user the dashboard link.
 
-2. Call `team_status` with the provided run ID to load current state. If the run is not found, tell the user and stop.
+2. Call `team_status` with the provided run ID to load current state. If the run is not found, tell the user and stop. For every nonterminal step, reconstruct and retain the exact persisted `executionMode` plus `{targetBranch, targetCommit, path, branch}` worktree tuple. `team_status` is authoritative: never infer execution mode from `assignedAgent`, a role name, the apparent task type, or prior prose.
 
 3. Read shared memory for context (`team_memory_read` for all 5 namespaces):
    - `team_memory_read(namespace: "decisions")`
@@ -62,7 +62,7 @@ The team's agent types are plugin-namespaced. These are the only valid `subagent
 
 4. Check `team_get_messages` for any pending messages or guidance from before the interruption.
 
-5. Print a brief status summary showing where the run was interrupted and which steps need attention.
+5. Print a brief status summary showing where the run was interrupted and which steps need attention, including each such step's persisted execution mode and whether its exact worktree tuple is present.
 
 6. Announce: "[COORDINATOR] Resuming run <runId>. Current state: <N> of <total> steps complete. Entering coordinator loop."
 
@@ -89,6 +89,8 @@ mcp__plugin_software-development-team_software-development-team__team_advance(ru
 
 `start_coding` is authoritative. Dispatch a worker **only after it succeeds**. If it is rejected, the scheduling snapshot is stale: call `team_status`, recompute the runnable set, and retry the scheduling decision; never dispatch from the stale snapshot.
 
+Retain the exact `executionMode` returned by the fresh `team_status` snapshot. Execution mode is a persisted workflow contract, not a role selector: never infer or change it from the chosen agent. Ordinary code, research, and documentation steps remain `code`; only a previously persisted standalone review is `read_only`.
+
 The `agent` label passed to `team_advance` must always be a fixed dashboard roster name (`planner`, `coder`, `reviewer`, `researcher`, `documentation`) — never `general-purpose` or any other label; the dashboard's agent status panel only lights cards for roster names. For work that fits no specialist exactly, use the closest specialist (almost always `coder`) as both the roster label and the dispatched agent type.
 
 **Then**, dispatch the appropriate agent using the **Agent tool** (this is the built-in Claude Code tool, NOT an MCP tool) with an explicit `subagent_type`. The agent you dispatch depends on the step type:
@@ -111,7 +113,7 @@ Treat a failed worker spawn as a lifecycle event: do not leave a successfully st
 
 Check `steps[n].result`:
 
-- **If result.status is `done` or `done_with_concerns`**: The coder finished. Dispatch the reviewer using the **Agent tool** (`subagent_type: "software-development-team:reviewer"`). The reviewer will call `team_submit_result` with its verdict. After the reviewer Agent returns, check `team_status` again for the reviewer's result, then call `team_advance` with `approve` or `request_revision`.
+- **If the persisted `executionMode` is `code` and result.status is `done` or `done_with_concerns`**: The coder finished. Dispatch the reviewer using the **Agent tool** (`subagent_type: "software-development-team:reviewer"`). The reviewer will call `team_submit_result` with its verdict. After the reviewer Agent returns, check `team_status` again for the reviewer's result, then call `team_advance` with `approve` or `request_revision`. A `read_only` step must never enter this submitted-result path.
 - **If result.status is `needs_revision` (set by reviewer)**: Call `team_advance` with `request_revision`, then dispatch the coder again with the reviewer's feedback.
 
 **`done_with_concerns` handling**: A coder may submit `done_with_concerns` when the implementation is complete but they have concerns. The reviewer CAN approve a `done_with_concerns` result — treat it the same as `done` for dispatch purposes, but ensure the reviewer reads and evaluates the concerns. If the concerns are serious enough to affect correctness, the reviewer should reject with `needs_revision`.
@@ -139,14 +141,14 @@ the user's message alone.
 
 ### Step is CODING (agent was interrupted mid-work) → Re-dispatch
 
-If a step is stuck in CODING state because the previous coordinator session was interrupted before the agent returned, re-dispatch the coder agent (`subagent_type: "software-development-team:coder"`) with the same step context. The coder will check what was done and complete or redo the work, then call `team_submit_result`. Note this situation to the user: "Step N was mid-coding when interrupted — re-dispatching coder."
+If a step is stuck in CODING state because the previous coordinator session was interrupted before the agent returned, reconstruct the original role from persisted `assignedAgent` plus prior dispatch messages, and re-dispatch that same role with the exact `executionMode` and worktree tuple returned by `team_status`. Never infer mode from the recovered role. If the original role, mode, or any worktree field is missing or inconsistent, do not dispatch and do not recapture/recreate context; preserve artifacts and escalate. A `code` worker completes or redoes the work and calls `team_submit_result`; a `read_only` standalone reviewer returns findings without calling it. Note this situation to the user: "Step N was mid-coding when interrupted — re-dispatching the persisted worker role with its existing mode and worktree."
 
 ### Worker returned but step still `coding` → close it (safety net)
 
 After ANY worker Agent returns, refresh `team_status` before scheduling anything else. If that worker's step is still `coding`, the worker failed to submit its result (crashed, ran out of context, or never called `team_submit_result`). Never leave the step open:
 
-- **Read-only work** (findings only, no edits): close it with `team_advance(runId, stepId, action: "mark_reviewed", summary: "<one-line summary>")`.
-- **Code work with usable output**: if the worker's return text and the step worktree (`git -C .worktrees/{runId}/step-{N} status`) show completed work, call `team_submit_result` on the worker's behalf (`status: "done"`, summary taken from the worker's return text) so the step moves to `reviewing`, then dispatch the reviewer as normal.
+- **Persisted `executionMode: "read_only"`**: call `mark_reviewed` only if fresh status shows both `result` and `resultHistory` contain no submitted result and the exact persisted worktree is pristine: `git -C .worktrees/{runId}/step-{N} status --porcelain` is empty and `git -C .worktrees/{runId}/step-{N} rev-parse HEAD` equals the persisted `targetCommit`. If any check fails, never call `mark_reviewed`; preserve the worktree and escalate.
+- **Persisted `executionMode: "code"` with usable output**: if the worker's return text and the exact persisted step worktree show completed work, call `team_submit_result` on the worker's behalf (`status: "done"`, summary taken from the worker's return text) so the step moves to `reviewing`, then dispatch the reviewer as normal.
 - **No usable output**: call `team_submit_result` with `status: "blocked"` and the failure details, then follow Stuck Detection.
 
 ## Dispatch Context Checklist
@@ -154,13 +156,15 @@ After ANY worker Agent returns, refresh `team_status` before scheduling anything
 Every Agent dispatch prompt needs all of these — subagents have no inherited context.
 
 1. **Step description** — what to build
-2. **Files to touch** — exact paths from the plan
-3. **Acceptance criteria** — what "done" looks like
-4. **Verification commands** — exact test/lint commands to run
-5. **Relevant memory** — read `team_memory_read` for `decisions`, `context`, and `learnings` namespaces, paste relevant entries
-6. **Run ID and step ID** — so the subagent can call `team_submit_result`
-7. **Prior context** — any review feedback (for revisions) or user guidance
-8. **Tool name mapping** — remind the subagent that `team_X` means `mcp__plugin_software-development-team_software-development-team__team_X`
+2. **Execution mode** — the exact persisted `executionMode` from `team_status`; never infer mode from agent role
+3. **Files to touch** — exact paths from the plan
+4. **Acceptance criteria** — what "done" looks like
+5. **Verification commands** — exact test/lint commands to run
+6. **Relevant memory** — read `team_memory_read` for `decisions`, `context`, and `learnings` namespaces, paste relevant entries
+7. **Run ID and step ID** — so the subagent can call `team_submit_result`
+8. **Prior context** — any review feedback (for revisions) or user guidance
+9. **Tool name mapping** — remind the subagent that `team_X` means `mcp__plugin_software-development-team_software-development-team__team_X`
+10. **Persisted worktree lifecycle** — the actual `{targetBranch, targetCommit, path, branch}` values created at initial admission, plus the exact persisted execution mode and role/location rules. Verify that mode, path, branch, and captured target are present and consistent before dispatch; never recapture, recreate, or rewrite them during resume or retry.
 
 ## Lifecycle-v2 Execution Controls
 
@@ -230,9 +234,9 @@ Prefer `team_control(action: "retry_step")`; `team_advance(action:
 "resolve_escalation")` is a deprecated compatibility alias and must obey the
 same safety rules. Retry only when a fresh step `actionAvailability.retry_step`
 says the escalated step is eligible, the run phase is `none`, the persisted
-worktree tuple is present and consistent, the manual-attempt budget remains,
+worktree tuple and exact persisted execution mode are present and consistent, the manual-attempt budget remains,
 all dependencies are complete, and file claims can be reacquired without
-conflict. A retry reuses that worktree, preserves result/review/audit history,
+conflict. A retry reuses that worktree and execution mode without recapturing, recreating, inferring, or rewriting either one, preserves result/review/audit history,
 increments `manualAttempt`, resets per-attempt reviewer counters, and returns
 the step to coding. Refresh status after the command before spawning; a
 conflict or replay never authorizes a spawn by itself.
@@ -240,7 +244,7 @@ conflict or replay never authorizes a spawn by itself.
 ### Restart, interruption, and compatibility
 
 On begin-loop recovery or `resume`, reconstruct lifecycle phase, revision,
-receipts/history, step cancellation state, and worktree context from
+receipts/history, step cancellation state, execution mode, and worktree context from
 `team_status`; never reset them because the coordinator process restarted.
 If restored state is `pausing` or `cancelling`, continue the applicable
 drain-and-acknowledge protocol. First establish that workers from the prior
@@ -285,7 +289,7 @@ Every dispatched execution step uses a mandatory `.worktrees/{runId}/step-{N}` w
 
 ### Initial Pending Admission: Create and Persist Once
 
-Only when a PENDING execution step N is first selected for admission, capture the coordinator current target branch and exact commit, then create from that captured base:
+Only when a PENDING execution step N has never been admitted and therefore has no persisted worktree tuple may the coordinator capture its current target branch and exact commit, then create from that captured base. Its `executionMode` must already exist in `team_status` and remains unchanged. A resumed, retried, reviewing, or interrupted step is not an initial admission and must reuse its tuple instead:
 
 ```bash
 targetBranch=$(git branch --show-current)
@@ -302,10 +306,11 @@ Every coder, reviewer, researcher, and documentation dispatch reads the persiste
 - **Worktree path**: `.worktrees/{runId}/step-{N}`
 - **Branch name**: `team-{runId}-step-{N}`
 - **Captured target**: `{targetBranch}` at `{targetCommit}`
+- **Execution mode**: the exact persisted `code` or `read_only` value returned by `team_status`; never infer or change it based on agent role
 - **Role rules**: coder and documentation edit/commit only in this worktree; reviewer and researcher are read-only and inspect/run verification only here; reviewer approval is required before merge.
 - **Location rule**: all repository reads, writes, tests, and Git commands run in this worktree; do not modify the coordinator or another step's worktree.
 
-Reviewer, revision-coder, and interrupted-worker re-dispatches reuse this exact persisted context; never recapture a target or create another worktree. Before a later dispatch, verify its persisted path and branch are present and consistent. If context is missing or inconsistent, do not dispatch and do not recreate it; record the exact inconsistency and persisted values, block or escalate, and preserve artifacts for recovery.
+Reviewer, revision-coder, retried, and interrupted-worker re-dispatches reuse this exact persisted worktree and execution mode; never recapture a target, create another worktree, infer mode from role, or rewrite mode. Before a later dispatch, verify its persisted mode, path, branch, and captured target are present and consistent. If context is missing or inconsistent, do not dispatch and do not recreate it; record the exact inconsistency and persisted values, block or escalate, and preserve artifacts for recovery.
 
 ### Reviewer Approval, Merge, and Cleanup
 

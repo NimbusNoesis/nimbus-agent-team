@@ -68,6 +68,10 @@ const normalPlanSurfaces = [
   readRepositoryFile('plugins/software-development-team/commands/plan.md'),
   readRepositoryFile('codex/skills/plan/SKILL.md'),
 ] as const;
+const beginPlanningSurfaces = [
+  { host: 'Claude', content: readRepositoryFile('plugins/software-development-team/commands/begin.md') },
+  { host: 'Codex', content: readRepositoryFile('codex/skills/begin/SKILL.md') },
+] as const;
 
 const sectionBetween = (content: string, start: string, end?: string) => {
   const startIndex = content.indexOf(start);
@@ -192,6 +196,46 @@ describe('coordinator instruction contract', () => {
     expect(planner).toMatch(/prerun-<task-slug>-(?:draft|final)-plan-reflection/);
     expect(critic).toMatch(/prerun-<task-slug>-plan-critique-reflection/);
   });
+
+  it.each(beginPlanningSurfaces)(
+    '$host begin gives the initial planner an explicit pre-run, JSON-only handoff',
+    ({ content }) => {
+      const initialPlannerHandoff = sectionBetween(content, '3. Create plan steps', '**3a.');
+
+      expect(initialPlannerHandoff).toMatch(/initial planner/i);
+      expect(initialPlannerHandoff).toMatch(/no run(?: ID)? exists/i);
+      expect(initialPlannerHandoff).toMatch(/(?:do not|not to) require or fabricate a run ID/i);
+      expect(initialPlannerHandoff).toContain('`prerun-<task-slug>-draft-plan-reflection`');
+      expect(initialPlannerHandoff).toMatch(/progress, rationale, and reflection[\s\S]*`team_memory_write`/i);
+      expect(initialPlannerHandoff).toMatch(/never (?:call )?`team_send_message`/i);
+      expect(initialPlannerHandoff).toMatch(
+        /final (?:response|output)[\s\S]*only a valid JSON array[\s\S]*`id`[\s\S]*`description`[\s\S]*`files`[\s\S]*`acceptanceCriteria`[\s\S]*`dependsOn`[\s\S]*`executionMode`/i,
+      );
+    },
+  );
+
+  it.each(beginPlanningSurfaces)(
+    '$host begin keeps both planning handoffs explicitly pre-run and execution-mode complete',
+    ({ content }) => {
+      const criticHandoff = sectionBetween(content, '**3a.', '**3b.');
+      const finalPlannerHandoff = sectionBetween(content, '**3b.', '4. **Plan approval gate**');
+
+      expect(criticHandoff).toContain('No run exists yet. Do not require or fabricate a run ID.');
+      expect(criticHandoff).toContain(
+        'Reflection key override: `prerun-<task-slug>-plan-critique-reflection` (use this exact resolved key).',
+      );
+      expect(criticHandoff).toMatch(
+        /No dashboard relay yet:[\s\S]*team_send_message` requires an existing run ID[\s\S]*server rejects unknown ones/i,
+      );
+
+      expect(finalPlannerHandoff).toMatch(/no run exists yet, no run ID may be required or fabricated/i);
+      expect(finalPlannerHandoff).toContain(
+        '`prerun-<task-slug>-final-plan-reflection` (use the exact resolved key)',
+      );
+      expect(finalPlannerHandoff).toMatch(/never `team_send_message` — no run exists yet/i);
+      expect(finalPlannerHandoff).toMatch(/final response must be only a valid JSON array[\s\S]*containing `executionMode`/i);
+    },
+  );
 
   it('defines equivalent host-native recursive-planner protocols and read-only boundaries', () => {
     expect(claudeRecursivePlanner).toMatch(/^---\nname: recursive-planner\n/);
@@ -461,6 +505,39 @@ describe('coordinator instruction contract', () => {
     expect(standalone).toMatch(/perform every repository read, verification command, and Git inspection inside this worktree/is);
     expect(standalone).toMatch(/do NOT call `team_submit_result`/);
   });
+
+  it.each(instructions.filter(({ file }) => file.endsWith('/begin.md') || file.endsWith('/begin/SKILL.md')))(
+    '$file persists explicit execution modes and cannot broaden standalone completion',
+    ({ content }) => {
+      const standalone = sectionBetween(content, '## Standalone Review Task', '## Cost Awareness');
+      expect(standalone).toMatch(/team_start[\s\S]*executionMode:\s*["']read_only["']/i);
+      expect(standalone).toMatch(/do NOT call `team_submit_result`/i);
+      expect(content).toMatch(/implementation, research, or documentation step[\s\S]*executionMode:\s*["']code["']/i);
+      expect(content).toMatch(/normal code, research, and documentation steps use `code`/i);
+
+      expect(content).toMatch(/mark_reviewed[\s\S]*persisted `executionMode` is exactly `read_only`/i);
+      expect(content).toMatch(/mark_reviewed[\s\S]*(?:both )?`result` and `resultHistory`[\s\S]*no result has ever been submitted|no submitted result[\s\S]*`mark_reviewed`/i);
+      expect(content).toMatch(/status --porcelain[\s\S]*HEAD[\s\S]*(?:captured |persisted )?`targetCommit`/i);
+      expect(content).toMatch(/never use it for `executionMode:\s*["']code["']`/i);
+      expect(content).toMatch(/submitted result or result history/i);
+      expect(content).toMatch(/do not call `mark_reviewed`[\s\S]*preserve the worktree[\s\S]*escalate/i);
+    },
+  );
+
+  it.each(instructions.filter(({ file }) => file.endsWith('/resume.md') || file.endsWith('/resume/SKILL.md')))(
+    '$file reconstructs persisted mode and worktree without role inference or lifecycle bypasses',
+    ({ content }) => {
+      expect(content).toMatch(/team_status[\s\S]*exact persisted `executionMode`[\s\S]*\{targetBranch, targetCommit, path, branch\}/i);
+      expect(content).toMatch(/never infer (?:execution )?mode from (?:`assignedAgent`|agent role)/i);
+      expect(content).toMatch(/interrupted[\s\S]*same role[\s\S]*exact `executionMode` and worktree tuple returned by `team_status`/i);
+      expect(content).toMatch(/original role, mode, or any worktree field is missing or inconsistent[\s\S]*do not (?:spawn|dispatch)[\s\S]*do not recapture\/recreate/i);
+      expect(content).toMatch(/never been admitted[\s\S]*no persisted worktree tuple[\s\S]*resumed, retried, reviewing, or interrupted step is not an initial admission/i);
+      expect(content).toMatch(/retried[\s\S]*reuse this exact persisted worktree and execution mode[\s\S]*never recapture/i);
+      expect(content).toMatch(/`executionMode:\s*["']read_only["']`[\s\S]*`result` and `resultHistory`[\s\S]*status --porcelain[\s\S]*HEAD[\s\S]*`targetCommit`/i);
+      expect(content).toMatch(/any check fails[\s\S]*never call `mark_reviewed`[\s\S]*preserve the worktree[\s\S]*escalate/i);
+      expect(content).toMatch(/`executionMode:\s*["']code["']` with usable output[\s\S]*team_submit_result/i);
+    },
+  );
 
   it('requires complete recovered context for every resume dispatch', () => {
     const resume = codexSkills.find(({ file }) => file.endsWith('/resume/SKILL.md'))!.content;
