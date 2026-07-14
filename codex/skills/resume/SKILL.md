@@ -316,6 +316,8 @@ After all steps complete:
 
 ## Agent Message Relay
 
+**Hard rule:** in every relayed `team_send_message` call, the `from` value MUST be a fixed roster role name — `planner`, `coder`, `reviewer`, `researcher`, or `documentation` — or `coordinator` for the coordinator's own messages — never a task/spawn label, spawn identifier, attempt-suffixed worker name, or filesystem path such as `coder_step_3_attempt_2` or `/root/workspace/...`. The dashboard attributes messages by roster name only. A resumed coordinator re-anchors this relay contract before its first scheduling pass.
+
 The coordinator MUST relay messages on behalf of agents at every lifecycle point so the dashboard shows activity from all agents.
 
 **When spawning a coder:**
