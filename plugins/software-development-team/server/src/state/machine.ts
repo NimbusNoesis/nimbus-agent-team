@@ -160,6 +160,7 @@ export class StateMachine extends EventEmitter {
     if (stepState.worktree) {
       throw new Error(`Step ${stepId} worktree lifecycle context is already set`);
     }
+    this.validateWorktreeContext(runId, stepId, worktree);
     stepState.worktree = { ...worktree };
     logger.info('StateMachine', `Step ${stepId} worktree context persisted`, { runId, worktree });
     this.updateRunStatus(run);
@@ -178,6 +179,11 @@ export class StateMachine extends EventEmitter {
     if (stepState.status !== 'pending') {
       throw new Error(`Step ${stepId} cannot be started from status '${stepState.status}'`);
     }
+
+    if (!stepState.worktree) {
+      throw new Error(`Step ${stepId} cannot start without persisted worktree lifecycle context`);
+    }
+    this.validateWorktreeContext(runId, stepId, stepState.worktree);
 
     this.checkDependencies(run, stepState);
 
@@ -657,7 +663,10 @@ export class StateMachine extends EventEmitter {
   }
 
   private requireAdmissionsOpen(run: RunState): void {
-    const phase = this.requireLifecycle(run).controlPhase;
+    // Admission checks must be side-effect-free when they reject. Legacy runs
+    // without lifecycle-v2 state behave as the default open phase until a
+    // successful lifecycle mutation canonicalizes them.
+    const phase = run.lifecycle?.controlPhase ?? 'none';
     if (phase !== 'none') {
       throw new Error(`Run ${run.id} is not admitting work while control phase is '${phase}'`);
     }
@@ -682,6 +691,32 @@ export class StateMachine extends EventEmitter {
     const stepState = run.steps.find((s) => s.step.id === stepId);
     if (!stepState) throw new Error(`Step ${stepId} not found in run ${run.id}`);
     return stepState;
+  }
+
+  private validateWorktreeContext(
+    runId: string,
+    stepId: number,
+    worktree: WorktreeContext,
+  ): void {
+    const expectedPath = `.worktrees/${runId}/step-${stepId}`;
+    const expectedBranch = `team-${runId}-step-${stepId}`;
+
+    if (worktree.path !== expectedPath) {
+      throw new Error(
+        `Step ${stepId} worktree path must be '${expectedPath}', received ${JSON.stringify(worktree.path)}`,
+      );
+    }
+    if (worktree.branch !== expectedBranch) {
+      throw new Error(
+        `Step ${stepId} worktree branch must be '${expectedBranch}', received ${JSON.stringify(worktree.branch)}`,
+      );
+    }
+    if (typeof worktree.targetBranch !== 'string' || worktree.targetBranch.trim() === '') {
+      throw new Error(`Step ${stepId} worktree targetBranch must be a non-empty string`);
+    }
+    if (typeof worktree.targetCommit !== 'string' || worktree.targetCommit.trim() === '') {
+      throw new Error(`Step ${stepId} worktree targetCommit must be a non-empty string`);
+    }
   }
 
   private checkDependencies(run: RunState, stepState: StepState): void {

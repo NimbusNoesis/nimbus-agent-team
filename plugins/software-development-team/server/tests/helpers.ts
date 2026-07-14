@@ -3,7 +3,27 @@ import { StateMachine } from '../src/state/machine.js';
 import { MessageBus } from '../src/bus/message-bus.js';
 import { MemoryStore } from '../src/memory/store.js';
 import { ToolRegistry } from '../src/tools/registry.js';
-import type { RunState, Message, MemoryEntry } from '../src/types.js';
+import type { RunState, Message, MemoryEntry, WorktreeContext } from '../src/types.js';
+
+export const makeWorktree = (runId: string, stepId: number): WorktreeContext => ({
+  targetBranch: 'main',
+  targetCommit: 'abc123',
+  path: `.worktrees/${runId}/step-${stepId}`,
+  branch: `team-${runId}-step-${stepId}`,
+});
+
+export const startStepWithWorktree = (
+  sm: StateMachine,
+  runId: string,
+  stepId: number,
+  agent: string,
+): void => {
+  const step = sm.getRun(runId)?.steps.find((candidate) => candidate.step.id === stepId);
+  if (step?.status === 'pending' && !step.worktree) {
+    sm.setWorktree(runId, stepId, makeWorktree(runId, stepId));
+  }
+  sm.startStep(runId, stepId, agent);
+};
 
 export const makeRun = (id: string, overrides: Partial<RunState> = {}): RunState => ({
   id,

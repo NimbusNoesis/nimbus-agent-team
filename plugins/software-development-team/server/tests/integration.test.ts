@@ -4,6 +4,7 @@ import { MessageBus } from '../src/bus/message-bus.js';
 import { MemoryStore } from '../src/memory/store.js';
 import { ToolRegistry } from '../src/tools/registry.js';
 import { Database } from '../src/db/database.js';
+import { makeWorktree } from './helpers.js';
 
 describe('Integration: Full workflow', () => {
   let registry: ToolRegistry;
@@ -17,6 +18,17 @@ describe('Integration: Full workflow', () => {
     );
   });
 
+  const persistWorktrees = async (runId: string, ...stepIds: number[]): Promise<void> => {
+    for (const stepId of stepIds) {
+      await registry.handle('team_advance', {
+        runId,
+        stepId,
+        action: 'set_worktree',
+        worktree: makeWorktree(runId, stepId),
+      });
+    }
+  };
+
   it('completes a two-step run with one revision', async () => {
     const { runId } = await registry.handle('team_start', {
       steps: [
@@ -24,6 +36,7 @@ describe('Integration: Full workflow', () => {
         { id: 2, description: 'Create API', files: ['api.ts'], acceptanceCriteria: ['Endpoints work'], dependsOn: [1] },
       ],
     });
+    await persistWorktrees(runId, 1, 2);
 
     // Step 1: code
     await registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'coder' });
@@ -77,10 +90,7 @@ describe('Integration: Full workflow', () => {
       ],
     });
 
-    await registry.handle('team_advance', {
-      runId, stepId: 1, action: 'set_worktree',
-      worktree: { targetBranch: 'main', targetCommit: 'abc', path: '.worktrees/run/step-1', branch: 'team-run-step-1' },
-    });
+    await persistWorktrees(runId, 1);
 
     // First attempt: start from pending
     await registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'coder' });
@@ -124,6 +134,7 @@ describe('Integration: Full workflow', () => {
     const { runId } = await registry.handle('team_start', {
       steps: [{ id: 1, description: 'Active', files: ['active.ts'], acceptanceCriteria: [], dependsOn: [] }],
     });
+    await persistWorktrees(runId, 1);
     await registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'coder' });
     const requested = await registry.handle('team_control', {
       runId, action: 'cancel_run', target: { kind: 'run' }, commandId: 'cancel-run', expectedRevision: 0,
@@ -144,10 +155,7 @@ describe('Integration: Full workflow', () => {
     const { runId: retryRunId } = await registry.handle('team_start', {
       steps: [{ id: 1, description: 'Retryable', files: ['retry.ts'], acceptanceCriteria: [], dependsOn: [] }],
     });
-    await registry.handle('team_advance', {
-      runId: retryRunId, stepId: 1, action: 'set_worktree',
-      worktree: { targetBranch: 'main', targetCommit: 'abc', path: '.worktrees/retry/step-1', branch: 'team-retry-step-1' },
-    });
+    await persistWorktrees(retryRunId, 1);
     await registry.handle('team_advance', { runId: retryRunId, stepId: 1, action: 'start_coding', agent: 'coder' });
     await registry.handle('team_submit_result', {
       runId: retryRunId, stepId: 1, result: { status: 'blocked', summary: 'needs operator retry' },
@@ -165,6 +173,7 @@ describe('Integration: Full workflow', () => {
     const { runId } = await registry.handle('team_start', {
       steps: [{ id: 1, description: 'S1', files: [], acceptanceCriteria: [], dependsOn: [] }],
     });
+    await persistWorktrees(runId, 1);
 
     await registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'coder' });
     await registry.handle('team_submit_result', {
@@ -219,6 +228,7 @@ describe('Integration: Full workflow', () => {
         { id: 2, description: 'S2', files: [], acceptanceCriteria: [], dependsOn: [1] },
       ],
     });
+    await persistWorktrees(runId, 1, 2);
 
     // Start and submit step 1 — now reviewing
     await registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'coder' });
@@ -248,6 +258,7 @@ describe('Integration: Full workflow', () => {
         { id: 3, description: 'UI', files: ['ui.ts'], acceptanceCriteria: [], dependsOn: [] },
       ],
     });
+    await persistWorktrees(runId, 1, 2, 3);
 
     await Promise.all([
       registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'coder-1' }),
@@ -268,6 +279,7 @@ describe('Integration: Full workflow', () => {
         { id: 3, description: 'Overlapping', files: ['shared.ts'], acceptanceCriteria: [], dependsOn: [] },
       ],
     });
+    await persistWorktrees(runId, 1, 2, 3);
 
     await registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'coder-1' });
     await expect(registry.handle('team_advance', {
@@ -292,6 +304,7 @@ describe('Integration: Full workflow', () => {
         { id: 2, description: 'Second claimant', files: ['shared.ts'], acceptanceCriteria: [], dependsOn: [] },
       ],
     });
+    await persistWorktrees(runId, 1, 2);
 
     const stale = await registry.handle('team_status', { runId });
     expect(stale.steps[1].blockingReasons).toEqual([]);
@@ -313,6 +326,7 @@ describe('Integration: Full workflow', () => {
         { id: 2, description: 'Two', files: ['two.ts'], acceptanceCriteria: [], dependsOn: [] },
       ],
     });
+    await persistWorktrees(runId, 1, 2);
     await Promise.all([
       registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'agent-one' }),
       registry.handle('team_advance', { runId, stepId: 2, action: 'start_coding', agent: 'agent-two' }),
