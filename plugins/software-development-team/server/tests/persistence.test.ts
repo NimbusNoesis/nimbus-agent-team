@@ -460,9 +460,12 @@ describe('Persistence', () => {
     };
     await persistence.saveRunState(run);
     const { existsSync } = await import('node:fs');
+    const { readdir } = await import('node:fs/promises');
     const runDir = join(tmpDir, 'runs', 'r-atomic');
     expect(existsSync(join(runDir, 'state.json'))).toBe(true);
-    expect(existsSync(join(runDir, 'state.json.tmp'))).toBe(false);
+    // No temp file remains — neither the legacy shared name nor the unique
+    // per-process state.json.tmp.<pid>.<seq> names.
+    expect(await readdir(runDir)).toEqual(['state.json']);
   });
 
   // N2 — sanitizeKey throws on invalid keys
@@ -532,6 +535,222 @@ describe('Persistence', () => {
   it('loadAllRunStates returns empty array when runs dir does not exist', async () => {
     const all = await persistence.loadAllRunStates();
     expect(all).toEqual([]);
+  });
+
+  describe('concurrent multi-instance writers', () => {
+    const makeRun = (id: string): RunState => ({
+      id,
+      status: 'ready',
+      steps: [],
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    it('saveRunState embeds a writerStamp on disk without mutating the run argument', async () => {
+      const run = makeRun('r-stamp');
+      await persistence.saveRunState(run);
+
+      // The run object is shared with StateMachine/DB and WS state_update
+      // events — it must never gain a writerStamp own-property.
+      expect(Object.hasOwn(run, 'writerStamp')).toBe(false);
+
+      const onDisk = JSON.parse(await readFile(join(tmpDir, 'runs', 'r-stamp', 'state.json'), 'utf-8'));
+      expect(onDisk.writerStamp).toEqual({
+        pid: process.pid,
+        seq: expect.any(Number),
+        savedAt: expect.any(String),
+      });
+    });
+
+    it('loadRunState strips writerStamp so restored state never carries it', async () => {
+      const run = makeRun('r-strip');
+      await persistence.saveRunState(run);
+      const loaded = await persistence.loadRunState('r-strip');
+      expect(loaded).not.toHaveProperty('writerStamp');
+      expect(loaded?.id).toBe('r-strip');
+    });
+
+    it('detects a sibling write with a metadata-only stamp-mismatch warning and keeps state.json parseable', async () => {
+      const { logger } = await import('../src/logger.js');
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+
+      const secret = 'SECRET-RUN-PAYLOAD-do-not-log';
+      const run: RunState = { ...makeRun('r-race'), task: secret } as RunState;
+      const sibling = new Persistence(tmpDir);
+
+      await persistence.saveRunState(run); // A observes its own stamp
+      await sibling.saveRunState(run); // B overwrites (B: first observation, no detection)
+      await expect(persistence.saveRunState(run)).resolves.toBeUndefined(); // A: mismatch, no error propagates
+
+      const mismatchWarns = warnSpy.mock.calls.filter((call) => call[2]?.reasonCode === 'stamp_mismatch');
+      expect(mismatchWarns).toHaveLength(1);
+      expect(mismatchWarns[0][0]).toBe('Persistence');
+      expect(Object.keys(mismatchWarns[0][2] ?? {}).sort()).toEqual([
+        'expectedPid', 'expectedSeq', 'observedPid', 'observedSeq', 'reasonCode', 'runId',
+      ]);
+      expect(mismatchWarns[0][2]).toMatchObject({ runId: 'r-race' });
+      // Metadata-only: no run payload in any log call.
+      expect(JSON.stringify([...warnSpy.mock.calls, ...debugSpy.mock.calls])).not.toContain(secret);
+
+      // state.json is always parseable afterward (last writer wins).
+      const onDisk = JSON.parse(await readFile(join(tmpDir, 'runs', 'r-race', 'state.json'), 'utf-8'));
+      expect(onDisk.id).toBe('r-race');
+    });
+
+    it('demotes subsequent stamp mismatches for the same run to debug', async () => {
+      const { logger } = await import('../src/logger.js');
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+
+      const run = makeRun('r-demote');
+      const sibling = new Persistence(tmpDir);
+
+      await persistence.saveRunState(run);
+      await sibling.saveRunState(run);
+      await persistence.saveRunState(run); // A mismatch #1 -> warn
+      await sibling.saveRunState(run); // B's own first mismatch (separate instance)
+      await persistence.saveRunState(run); // A mismatch #2 -> debug
+
+      const warnMismatches = warnSpy.mock.calls.filter((call) => call[2]?.reasonCode === 'stamp_mismatch');
+      const debugMismatches = debugSpy.mock.calls.filter((call) => call[2]?.reasonCode === 'stamp_mismatch');
+      // One warn from A's first mismatch, one from B's first mismatch — A's
+      // second mismatch is demoted.
+      expect(warnMismatches).toHaveLength(2);
+      expect(debugMismatches).toHaveLength(1);
+      expect(debugMismatches[0][2]).toMatchObject({ runId: 'r-demote', reasonCode: 'stamp_mismatch' });
+    });
+
+    it('skips detection with reasonCode stamp_unreadable on pre-rename ENOENT and still saves', async () => {
+      const { logger } = await import('../src/logger.js');
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+      const run = makeRun('r-enoent');
+      await persistence.saveRunState(run); // establishes an expected stamp
+      // Simulate a sibling mid-rename: state.json momentarily absent.
+      const { unlink } = await import('node:fs/promises');
+      await unlink(join(tmpDir, 'runs', 'r-enoent', 'state.json'));
+
+      await expect(persistence.saveRunState(run)).resolves.toBeUndefined();
+
+      const unreadable = warnSpy.mock.calls.filter((call) => call[2]?.reasonCode === 'stamp_unreadable');
+      expect(unreadable).toHaveLength(1);
+      expect(Object.keys(unreadable[0][2] ?? {}).sort()).toEqual(['reasonCode', 'runId']);
+      const onDisk = JSON.parse(await readFile(join(tmpDir, 'runs', 'r-enoent', 'state.json'), 'utf-8'));
+      expect(onDisk.id).toBe('r-enoent');
+    });
+
+    it('skips detection with reasonCode stamp_unreadable on pre-rename parse failure and still saves', async () => {
+      const { logger } = await import('../src/logger.js');
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+      const run = makeRun('r-garbled');
+      await persistence.saveRunState(run); // establishes an expected stamp
+      // Simulate a legacy trailing-garbage/partial file a sibling left behind.
+      await writeFile(join(tmpDir, 'runs', 'r-garbled', 'state.json'), '{"id":"r-garbled","status"');
+
+      await expect(persistence.saveRunState(run)).resolves.toBeUndefined();
+
+      const unreadable = warnSpy.mock.calls.filter((call) => call[2]?.reasonCode === 'stamp_unreadable');
+      expect(unreadable).toHaveLength(1);
+      const onDisk = JSON.parse(await readFile(join(tmpDir, 'runs', 'r-garbled', 'state.json'), 'utf-8'));
+      expect(onDisk.id).toBe('r-garbled');
+    });
+
+    it('genuine write I/O errors still propagate from saveRunState', async () => {
+      const run = makeRun('r-io-error');
+      // Make the run directory path unusable: a FILE where the dir must go.
+      await mkdir(join(tmpDir, 'runs'), { recursive: true });
+      await writeFile(join(tmpDir, 'runs', 'r-io-error'), 'not a directory');
+      await expect(persistence.saveRunState(run)).rejects.toThrow();
+    });
+
+    it('compactMessages uses a unique temp name and leaves no temp file behind', async () => {
+      const { readdir } = await import('node:fs/promises');
+      const runId = 'r-compact-tmp';
+      const dir = join(tmpDir, 'runs', runId);
+      await mkdir(dir, { recursive: true });
+      const lines = Array.from({ length: MAX_MESSAGES_PER_RUN + 10 }, (_, i) => JSON.stringify({
+        id: `m${i}`, runId, from: 'coder', to: 'all', type: 'info',
+        body: `msg ${i}`, timestamp: new Date(Date.UTC(2026, 0, 1) + i).toISOString(),
+      }));
+      await writeFile(join(dir, 'messages.jsonl'), lines.join('\n') + '\n');
+
+      const fresh = new Persistence(tmpDir);
+      await fresh.appendMessage(runId, {
+        id: 'm-new', runId, from: 'coder', to: 'all', type: 'info',
+        body: 'trigger first-touch compaction', timestamp: new Date().toISOString(),
+      });
+
+      expect(await readdir(dir)).toEqual(['messages.jsonl']);
+    });
+  });
+
+  describe('trailing-garbage salvage', () => {
+    const validRun = {
+      id: 'r-salvage', status: 'in_progress',
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:05.000Z',
+      steps: [{
+        step: {
+          id: 1, description: 'salvageable step with "quoted {braces}" in text',
+          files: ['src/a.ts'], acceptanceCriteria: ['works'], dependsOn: [],
+        },
+        status: 'coding', retryCount: 0, assignedAgent: 'coder', result: null,
+        claimedFiles: ['src/a.ts'], consecutiveSameError: 0,
+      }],
+    };
+
+    it('salvages the leading valid document from a trailing-garbage state.json', async () => {
+      const { logger } = await import('../src/logger.js');
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      const dir = join(tmpDir, 'runs', 'r-salvage');
+      await mkdir(dir, { recursive: true });
+      // Realistic incident fixture: a complete serialized run followed by the
+      // tail of a partial second document (the shared-tmp interleave class).
+      const trailingGarbage = JSON.stringify(validRun, null, 2)
+        + '\n  "status": "ready",\n  "steps": [{"step": {"id": 1';
+      await writeFile(join(dir, 'state.json'), trailingGarbage);
+
+      const loaded = await persistence.loadRunState('r-salvage');
+
+      expect(loaded?.id).toBe('r-salvage');
+      expect(loaded?.status).toBe('in_progress');
+      expect(loaded?.steps).toHaveLength(1);
+      // Salvage flows through normal normalization.
+      expect(loaded?.steps[0].step.executionMode).toBe('code');
+      expect(loaded?.lifecycle.controlPhase).toBe('none');
+      const salvageWarns = warnSpy.mock.calls.filter(
+        (call) => call[2]?.reasonCode === 'trailing_garbage_salvaged',
+      );
+      expect(salvageWarns).toHaveLength(1);
+      expect(Object.keys(salvageWarns[0][2] ?? {}).sort()).toEqual(['reasonCode', 'runId']);
+    });
+
+    it('rethrows when no leading document can be salvaged, and loadAllRunStates skips it while returning other runs', async () => {
+      const { logger } = await import('../src/logger.js');
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+      const good: RunState = {
+        id: 'r-good', status: 'ready', steps: [],
+        createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      };
+      await persistence.saveRunState(good);
+
+      const dir = join(tmpDir, 'runs', 'r-unsalvageable');
+      await mkdir(dir, { recursive: true });
+      // Never closes its top-level object: salvage cannot recover a document.
+      await writeFile(join(dir, 'state.json'), '{"id": "r-unsalvageable", "steps": [');
+
+      await expect(persistence.loadRunState('r-unsalvageable')).rejects.toThrow();
+
+      const all = await persistence.loadAllRunStates();
+      expect(all.map((r) => r.id)).toEqual(['r-good']);
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Persistence',
+        expect.stringContaining('Skipping malformed run state'),
+        expect.objectContaining({ runId: 'r-unsalvageable' }),
+      );
+    });
   });
 
   describe('message log compaction across restarts', () => {
