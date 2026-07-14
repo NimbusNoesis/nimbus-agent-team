@@ -119,7 +119,12 @@ function isValidIsoTimestamp(value: string): boolean {
   return day >= 1 && day <= daysInMonth[month - 1];
 }
 
-function restoreMessage(value: unknown, expectedRunId: string): Message | MessageRestoreFailure {
+/**
+ * Validates one parsed messages.jsonl payload. Exported so MessageLogSync
+ * (bus/message-sync.ts) applies EXACTLY the same validation to sibling-process
+ * appends that startup restore (loadMessages below) applies to history.
+ */
+export function restoreMessage(value: unknown, expectedRunId: string): Message | MessageRestoreFailure {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return 'non_object';
   const record = value as Record<string, unknown>;
 
