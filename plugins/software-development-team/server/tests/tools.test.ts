@@ -7,6 +7,7 @@ import { Database } from '../src/db/database.js';
 import { logger } from '../src/logger.js';
 import { readFileSync } from 'node:fs';
 import { makeWorktree } from './helpers.js';
+import { PersistQueue, PersistenceUnavailableError } from '../src/state/persist-queue.js';
 
 describe('ToolRegistry', () => {
   let registry: ToolRegistry;
@@ -49,6 +50,7 @@ describe('ToolRegistry', () => {
     });
     const status = await registry.handle('team_status', { runId });
     expect(status.status).toBe('ready');
+    expect(status.persistence).toEqual({ status: 'healthy', restartRequired: false });
     expect(status.steps).toHaveLength(1);
     expect(status.steps[0].executionMode).toBe('code');
   });
@@ -483,5 +485,102 @@ describe('ToolRegistry', () => {
     } finally {
       errorSpy.mockRestore();
     }
+  });
+});
+
+describe('ToolRegistry persistence health', () => {
+  it('fails the triggering mutation, exposes health to reads, and blocks every later mutation before dispatch', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    try {
+      const db = await Database.create();
+      const sm = new StateMachine(db);
+      const bus = new MessageBus(db);
+      const memory = new MemoryStore(db);
+      const persistence = new PersistQueue();
+      const registry = new ToolRegistry(sm, bus, memory, persistence);
+      let failNextWrite = true;
+
+      sm.on('state_update', (run) => {
+        persistence.enqueue(async () => {
+          if (failNextWrite) {
+            failNextWrite = false;
+            throw new Error('private disk failure');
+          }
+        }, { kind: 'run_state', runId: run.id });
+      });
+
+      await expect(registry.handle('team_start', {
+        steps: [{ id: 1, description: 'volatile', files: [], acceptanceCriteria: [], dependsOn: [] }],
+      })).rejects.toBeInstanceOf(PersistenceUnavailableError);
+
+      const volatileRun = sm.getAllRuns()[0];
+      expect(volatileRun).toBeDefined();
+      const status = await registry.handle('team_status', { runId: volatileRun.id });
+      expect(status.persistence).toMatchObject({
+        status: 'failed',
+        restartRequired: true,
+        code: 'persistence_failed',
+        operationKind: 'run_state',
+      });
+
+      const runCount = sm.getAllRuns().length;
+      const mutationCalls: Array<[string, Record<string, unknown>]> = [
+        ['team_start', { steps: [{ id: 1, description: 'blocked', files: [], acceptanceCriteria: [], dependsOn: [] }] }],
+        ['team_advance', {}],
+        ['team_control', {}],
+        ['team_submit_result', {}],
+        ['team_send_message', {}],
+        ['team_memory_write', { key: 'blocked', namespace: 'decisions', value: 'blocked' }],
+        ['team_memory_delete', { key: 'blocked', namespace: 'decisions' }],
+      ];
+      for (const [tool, args] of mutationCalls) {
+        await expect(registry.handle(tool, args)).rejects.toBeInstanceOf(PersistenceUnavailableError);
+      }
+
+      expect(sm.getAllRuns()).toHaveLength(runCount);
+      expect(memory.getAll()).toEqual([]);
+      expect(bus.getAllMessages(volatileRun.id)).toEqual([]);
+      await expect(registry.handle('team_get_messages', { runId: volatileRun.id, to: 'all' })).resolves.toBeDefined();
+      await expect(registry.handle('team_memory_read', {})).resolves.toEqual({ entries: [] });
+      await expect(registry.handle('team_dashboard_url', {})).resolves.toEqual({ url: 'http://localhost:0' });
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('does not resolve a memory mutation until its synchronously emitted persistence work completes', async () => {
+    const db = await Database.create();
+    const sm = new StateMachine(db);
+    const bus = new MessageBus(db);
+    const memory = new MemoryStore(db);
+    const persistence = new PersistQueue();
+    const registry = new ToolRegistry(sm, bus, memory, persistence);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let durable = false;
+
+    memory.on('entry_change', (entry) => {
+      persistence.enqueue(async () => {
+        await gate;
+        durable = true;
+      }, { kind: 'memory_entry', key: entry.key });
+    });
+
+    let responseSettled = false;
+    const response = registry.handle('team_memory_write', {
+      key: 'durable', namespace: 'decisions', value: 'persist me',
+    }).finally(() => { responseSettled = true; });
+    await Promise.resolve();
+
+    expect(memory.read('decisions', 'durable')).toBeDefined();
+    expect(durable).toBe(false);
+    expect(responseSettled).toBe(false);
+    await expect(registry.handle('team_memory_read', {
+      namespace: 'decisions', key: 'durable',
+    })).resolves.toMatchObject({ entry: { value: 'persist me' } });
+
+    release();
+    await expect(response).resolves.toMatchObject({ success: true });
+    expect(durable).toBe(true);
   });
 });

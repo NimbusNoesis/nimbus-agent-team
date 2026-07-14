@@ -8,6 +8,9 @@ import { MessageBus } from '../src/bus/message-bus.js';
 import { MemoryStore } from '../src/memory/store.js';
 import { startDashboard } from '../src/dashboard/server.js';
 import { makeWorktree } from './helpers.js';
+import { PersistQueue, PersistenceUnavailableError } from '../src/state/persist-queue.js';
+import { logger } from '../src/logger.js';
+import { ToolRegistry } from '../src/tools/registry.js';
 
 describe('Dashboard server', () => {
   let sm: StateMachine;
@@ -590,5 +593,129 @@ describe('Dashboard server', () => {
         ws.close();
       }
     });
+  });
+});
+
+describe('Dashboard persistence health', () => {
+  it('fails a volatile control response, blocks later control and guidance, and keeps reads available', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    try {
+      const db = await Database.create();
+      const sm = new StateMachine(db);
+      const bus = new MessageBus(db);
+      const memory = new MemoryStore(db);
+      const persistence = new PersistQueue();
+      const run = sm.createRun([{
+        id: 1, description: 'Durability test', files: [], acceptanceCriteria: [], dependsOn: [],
+      }]);
+      let failNextWrite = true;
+      sm.on('state_update', (updated) => {
+        persistence.enqueue(async () => {
+          if (failNextWrite) {
+            failNextWrite = false;
+            throw new Error('private persistence details');
+          }
+        }, { kind: 'run_state', runId: updated.id });
+      });
+      const port = await startDashboard(sm, bus, memory, persistence);
+      const baseUrl = `http://localhost:${port}`;
+
+      const first = await fetch(`${baseUrl}/api/runs/${run.id}/control`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'pause_run',
+          target: { kind: 'run' },
+          commandId: randomUUID(),
+          expectedRevision: 0,
+        }),
+      });
+      expect(first.status).toBe(503);
+      expect(await first.json()).toMatchObject({
+        error: { code: 'persistence_failed' },
+      });
+      expect(sm.getRun(run.id)?.lifecycle).toMatchObject({ revision: 1, controlPhase: 'paused' });
+
+      const historyLength = sm.getRun(run.id)!.lifecycle!.history.length;
+      const laterControl = await fetch(`${baseUrl}/api/runs/${run.id}/control`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'resume_run',
+          target: { kind: 'run' },
+          commandId: randomUUID(),
+          expectedRevision: 1,
+        }),
+      });
+      expect(laterControl.status).toBe(503);
+      expect(sm.getRun(run.id)!.lifecycle!.history).toHaveLength(historyLength);
+
+      const guidance = await fetch(`${baseUrl}/api/guidance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId: run.id, body: 'must not be inserted' }),
+      });
+      expect(guidance.status).toBe(503);
+      expect(await guidance.json()).toMatchObject({ error: { code: 'persistence_failed' } });
+      expect(bus.getAllMessages(run.id)).toEqual([]);
+
+      const reads = await fetch(`${baseUrl}/api/runs`);
+      expect(reads.status).toBe(200);
+      expect(await reads.json()).toHaveLength(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('shares one mutation admission lane between dashboard and MCP requests', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    try {
+      const db = await Database.create();
+      const sm = new StateMachine(db);
+      const bus = new MessageBus(db);
+      const memory = new MemoryStore(db);
+      const persistence = new PersistQueue();
+      const registry = new ToolRegistry(sm, bus, memory, persistence);
+      const run = sm.createRun([{
+        id: 1, description: 'Cross-surface race', files: [], acceptanceCriteria: [], dependsOn: [],
+      }]);
+      let observeGuidance!: () => void;
+      const guidanceObserved = new Promise<void>((resolve) => { observeGuidance = resolve; });
+      let releaseFailure!: () => void;
+      const failureGate = new Promise<void>((resolve) => { releaseFailure = resolve; });
+
+      bus.on('message', (message) => {
+        observeGuidance();
+        persistence.enqueue(async () => {
+          await failureGate;
+          throw new Error('private cross-surface failure');
+        }, { kind: 'message', runId: message.runId });
+      });
+
+      const port = await startDashboard(sm, bus, memory, persistence);
+      const dashboardMutation = fetch(`http://localhost:${port}/api/guidance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId: run.id, body: 'volatile dashboard mutation' }),
+      });
+      await guidanceObserved;
+
+      const mcpMutation = registry.handle('team_memory_write', {
+        key: 'must-not-exist', namespace: 'decisions', value: 'blocked by shared lane',
+      });
+      const mcpOutcome = mcpMutation.then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      releaseFailure();
+
+      const dashboardResponse = await dashboardMutation;
+      expect(dashboardResponse.status).toBe(503);
+      expect(await mcpOutcome).toBeInstanceOf(PersistenceUnavailableError);
+      expect(bus.getAllMessages(run.id)).toHaveLength(1);
+      expect(memory.getAll()).toEqual([]);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

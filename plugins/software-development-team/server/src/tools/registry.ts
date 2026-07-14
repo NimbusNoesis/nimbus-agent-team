@@ -6,6 +6,17 @@ import { handleTeamSubmitResult } from './results.js';
 import { handleTeamSendMessage, handleTeamGetMessages } from './messages.js';
 import { handleTeamMemoryWrite, handleTeamMemoryRead, handleTeamMemoryDelete } from './memory.js';
 import { logger } from '../logger.js';
+import { PersistQueue } from '../state/persist-queue.js';
+
+const MUTATING_TOOLS = new Set([
+  'team_start',
+  'team_advance',
+  'team_control',
+  'team_submit_result',
+  'team_send_message',
+  'team_memory_write',
+  'team_memory_delete',
+]);
 
 // Small identifying fields that are safe to include in failure logs. Free-text
 // payloads (value, body, summary, details, memory values, message bodies) must
@@ -27,6 +38,7 @@ export class ToolRegistry {
     private sm: StateMachine,
     private bus: MessageBus,
     private memory: MemoryStore,
+    private persistence: PersistQueue = new PersistQueue(),
   ) {}
 
   setDashboardUrl(url: string): void {
@@ -36,7 +48,10 @@ export class ToolRegistry {
   async handle(tool: string, args: Record<string, unknown>): Promise<any> {
     logger.debug('ToolRegistry', `→ ${tool}`, { keys: Object.keys(args) });
     try {
-      const result = await this.dispatch(tool, args);
+      const mutating = MUTATING_TOOLS.has(tool);
+      const result = mutating
+        ? await this.persistence.runMutation(() => this.dispatch(tool, args))
+        : await this.dispatch(tool, args);
       logger.debug('ToolRegistry', `← ${tool} OK`);
       return result;
     } catch (err: any) {
@@ -50,7 +65,7 @@ export class ToolRegistry {
       case 'team_start':
         return handleTeamStart(this.sm, args);
       case 'team_status':
-        return handleTeamStatus(this.sm, args);
+        return handleTeamStatus(this.sm, args, this.persistence.health);
       case 'team_advance':
         return handleTeamAdvance(this.sm, args);
       case 'team_control':

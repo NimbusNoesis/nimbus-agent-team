@@ -7,6 +7,7 @@ import type {
   StepState,
 } from '../types.js';
 import { positiveInt } from './schemas.js';
+import type { PersistenceHealth } from '../state/persist-queue.js';
 
 // Worker-slot capacity of this host, reported to coordinators via team_status.
 // Both hosts' coordinator instructions size their worker pool from this value
@@ -118,7 +119,11 @@ export function handleTeamStart(sm: StateMachine, args: unknown) {
   return { runId: run.id, task: run.task, status: run.status, stepCount: run.steps.length };
 }
 
-export function handleTeamStatus(sm: StateMachine, args: unknown): Record<string, unknown> {
+export function handleTeamStatus(
+  sm: StateMachine,
+  args: unknown,
+  persistence: PersistenceHealth = { status: 'healthy', restartRequired: false },
+): Record<string, unknown> {
   const parsed = TeamStatusSchema.parse(args);
   const run = sm.getRun(parsed.runId);
   if (!run) throw new Error(`Run ${parsed.runId} not found`);
@@ -155,6 +160,7 @@ export function handleTeamStatus(sm: StateMachine, args: unknown): Record<string
       admissionsFrozen: lifecycle.controlPhase !== 'none',
     },
     ...(capacity === undefined ? {} : { hostCapacity: capacity }),
+    persistence,
     steps: run.steps.map((s) => ({
       id: s.step.id,
       description: s.step.description,

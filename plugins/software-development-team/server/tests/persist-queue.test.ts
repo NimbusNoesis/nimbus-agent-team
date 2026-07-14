@@ -111,6 +111,20 @@ describe('PersistQueue', () => {
     }
   });
 
+  it.each(['memory_entry', 'memory_delete'])('retains the safe %s operation kind', async (kind) => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    try {
+      const queue = new PersistQueue();
+      await expect(queue.enqueue(
+        async () => { throw new Error('write failed'); },
+        context(kind),
+      )).rejects.toBeInstanceOf(PersistenceUnavailableError);
+      expect(queue.health).toMatchObject({ status: 'failed', operationKind: kind });
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('preserves the first failure and rejects later work before side effects', async () => {
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
     try {
@@ -156,6 +170,37 @@ describe('PersistQueue', () => {
         status: 'failed',
         operationKind: 'unknown',
       });
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('serializes complete mutation transactions and rejects the next admission before side effects', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    try {
+      const queue = new PersistQueue();
+      const sideEffects: string[] = [];
+      let firstAdmitted!: () => void;
+      const admitted = new Promise<void>((resolve) => { firstAdmitted = resolve; });
+      let releaseFailure!: () => void;
+      const failureGate = new Promise<void>((resolve) => { releaseFailure = resolve; });
+
+      const first = queue.runMutation(() => {
+        sideEffects.push('first');
+        queue.enqueue(async () => {
+          firstAdmitted();
+          await failureGate;
+          throw new Error('write failed');
+        }, context('run_state'));
+      });
+      await admitted;
+      const second = queue.runMutation(() => { sideEffects.push('second'); });
+
+      expect(sideEffects).toEqual(['first']);
+      releaseFailure();
+      await expect(first).rejects.toBeInstanceOf(PersistenceUnavailableError);
+      await expect(second).rejects.toBeInstanceOf(PersistenceUnavailableError);
+      expect(sideEffects).toEqual(['first']);
     } finally {
       errorSpy.mockRestore();
     }
