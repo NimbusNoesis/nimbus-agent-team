@@ -1,4 +1,4 @@
-# Claude Coding Team
+# NimbusNoesis Agent Coding Team
 
 A [Claude Code](https://claude.ai/claude-code) plugin that orchestrates a multi-agent coding team. A coordinator dispatches planner, plan-critic, coder, reviewer, researcher, and documentation agents that work autonomously through a structured plan with shared memory, a real-time dashboard, and built-in quality gates. A separate pre-run `recursive-planner` supports exhaustive deep planning without entering the execution lifecycle.
 

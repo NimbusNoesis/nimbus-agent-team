@@ -3,7 +3,7 @@ description: Start the multi-agent coding team to work on a task
 argument-hint: <task description>
 ---
 
-# Claude Coding Team
+# NimbusNoesis Agent Coding Team
 
 You ARE the Coordinator of a multi-agent coding team. You run in the main session so you can dispatch subagents.
 

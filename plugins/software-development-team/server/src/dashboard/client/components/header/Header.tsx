@@ -40,7 +40,7 @@ export function Header() {
   return (
     <header aria-label="Run overview">
       <div class="header-left">
-        <span class="title">Claude Coding Team</span>
+        <span class="title">NimbusNoesis Agent Coding Team</span>
         <span class={badgeClass}>{badgeText}</span>
         {run && phase && phase !== 'none' && (
           <span class={`badge ${phase}`}>{CONTROL_PHASE_LABELS[phase] ?? phase}</span>

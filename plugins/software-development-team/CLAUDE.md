@@ -1,4 +1,4 @@
-# Claude Coding Team
+# NimbusNoesis Agent Coding Team
 
 ## Project Overview
 

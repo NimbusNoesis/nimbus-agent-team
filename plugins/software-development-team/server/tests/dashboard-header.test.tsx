@@ -69,9 +69,9 @@ beforeEach(() => {
 });
 
 describe('Header', () => {
-  it('renders title "Claude Coding Team" when no run', () => {
+  it('renders title "NimbusNoesis Agent Coding Team" when no run', () => {
     render(<Header />);
-    expect(screen.getByText('Claude Coding Team')).toBeTruthy();
+    expect(screen.getByText('NimbusNoesis Agent Coding Team')).toBeTruthy();
   });
 
   it('shows badge with "hidden" class when no run', () => {
