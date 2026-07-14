@@ -40,6 +40,7 @@ describe('ToolRegistry', () => {
     expect(result.runId).toBeDefined();
     expect(result.status).toBe('ready');
     expect(result.stepCount).toBe(1);
+    expect(sm.getRun(result.runId)!.steps[0].step.executionMode).toBe('code');
   });
 
   it('team_status returns current run state', async () => {
@@ -49,6 +50,23 @@ describe('ToolRegistry', () => {
     const status = await registry.handle('team_status', { runId });
     expect(status.status).toBe('ready');
     expect(status.steps).toHaveLength(1);
+    expect(status.steps[0].executionMode).toBe('code');
+  });
+
+  it('team_start and team_status preserve an explicit read-only execution mode', async () => {
+    const { runId } = await registry.handle('team_start', {
+      steps: [{
+        id: 1,
+        description: 'Review',
+        files: ['src/review.ts'],
+        acceptanceCriteria: ['Report findings'],
+        dependsOn: [],
+        executionMode: 'read_only',
+      }],
+    });
+    const status = await registry.handle('team_status', { runId });
+    expect(sm.getRun(runId)!.steps[0].step.executionMode).toBe('read_only');
+    expect(status.steps[0].executionMode).toBe('read_only');
   });
 
   it('team_status reports pending dependency and file conflict blockers', async () => {
@@ -159,6 +177,19 @@ describe('ToolRegistry', () => {
     expect(source).not.toMatch(/team_control'[\s\S]{0,300}teamControlShape/);
   });
 
+  it.each([
+    ['team_start', 'teamStartSchema'],
+    ['team_advance', 'teamAdvanceSchema'],
+  ])('registers %s with its complete schema in the production MCP entry point', (tool, schema) => {
+    const source = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8');
+    const registration = new RegExp(
+      `server\\.registerTool\\(\\s*'${tool}'[\\s\\S]{0,300}inputSchema:\\s*${schema}`,
+    );
+    expect(source.match(new RegExp(`server\\.registerTool\\(\\s*'${tool}'`, 'g'))).toHaveLength(1);
+    expect(source).toMatch(registration);
+    expect(source).not.toMatch(new RegExp(`server\\.tool\\(\\s*'${tool}'`));
+  });
+
   it('team_advance with resolve_escalation works on escalated step', async () => {
     const { runId } = await registry.handle('team_start', {
       steps: [{ id: 1, description: 'S1', files: [], acceptanceCriteria: [], dependsOn: [] }],
@@ -184,11 +215,35 @@ describe('ToolRegistry', () => {
       revision: 0,
       phase: 'none',
       capabilities: { pause_run: true, retry_step: true },
+      controlHistory: [],
+      controlReceipts: [],
       workers: {
         truthSource: 'lifecycle_assignments', nativeProcessState: 'not_observed',
         activeCount: 0, active: [], admissionsFrozen: false,
       },
       actionAvailability: { pause_run: { available: true } },
+      createdAt: expect.any(String),
+      updatedAt: expect.any(String),
+    });
+    expect(status.steps[0]).toMatchObject({
+      id: 1,
+      description: 'S1',
+      executionMode: 'code',
+      status: 'pending',
+      retryCount: 0,
+      assignedAgent: null,
+      result: null,
+      claimedFiles: [],
+      consecutiveSameError: 0,
+      manualAttempt: 0,
+      resultHistory: [],
+      actionAvailability: {
+        cancel_step: { available: true },
+        retry_step: { available: false },
+      },
+      fileConflicts: [],
+      blockingReasons: [],
+      dependsOn: [],
     });
     expect(status.steps[0].actionAvailability.cancel_step.available).toBe(true);
     expect(status.steps[0].actionAvailability.retry_step).toMatchObject({

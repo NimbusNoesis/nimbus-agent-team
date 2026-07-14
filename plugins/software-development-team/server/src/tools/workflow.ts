@@ -24,18 +24,20 @@ const PlanStepSchema = z.object({
   files: z.array(z.string()),
   acceptanceCriteria: z.array(z.string()),
   dependsOn: z.array(positiveInt),
-});
+  executionMode: z.enum(['code', 'read_only']).default('code'),
+}).strict();
 
-// Raw shapes are exported for the legacy server.tool() registrations. Schemas
-// with object-level refinements must instead be registered through
-// server.registerTool({ inputSchema }) so the SDK enforces the complete schema
+// Keep the raw shape available for direct schema-parity tests. Production
+// registration must use the complete schema below so root strictness survives
 // at the public MCP boundary.
 export const teamStartShape = {
   task: z.string().optional().describe('Human-readable task description shown in the dashboard'),
   steps: z.array(PlanStepSchema).min(1),
 };
 
-const TeamStartSchema = z.object(teamStartShape);
+// A raw shape cannot retain object-level strictness when spread into a new
+// object, so production callers register this complete schema.
+export const teamStartSchema = z.object(teamStartShape).strict();
 
 export const teamStatusShape = {
   runId: z.string().min(1),
@@ -90,7 +92,7 @@ const WorktreeSchema = z.object({
   targetCommit: z.string().min(1),
   path: z.string().min(1),
   branch: z.string().min(1),
-});
+}).strict();
 
 export const teamAdvanceShape = {
   runId: z.string().min(1),
@@ -101,17 +103,17 @@ export const teamAdvanceShape = {
   worktree: WorktreeSchema.optional(),
 };
 
-// The set_worktree cross-field requirement can only live on the handler-side
-// ZodObject (a raw shape has nowhere to hang superRefine), so the MCP layer
-// accepts set_worktree without a worktree and the handler rejects it.
-const TeamAdvanceSchema = z.object(teamAdvanceShape).superRefine((value, ctx) => {
+// The set_worktree cross-field requirement cannot live on the raw legacy
+// shape. Keep it on the complete schema so registerTool() and the handler
+// reject the same input before dispatch or mutation.
+export const teamAdvanceSchema = z.object(teamAdvanceShape).strict().superRefine((value, ctx) => {
   if (value.action === 'set_worktree' && !value.worktree) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['worktree'], message: 'worktree is required for set_worktree' });
   }
 });
 
 export function handleTeamStart(sm: StateMachine, args: unknown) {
-  const parsed = TeamStartSchema.parse(args);
+  const parsed = teamStartSchema.parse(args);
   const run = sm.createRun(parsed.steps, parsed.task);
   return { runId: run.id, task: run.task, status: run.status, stepCount: run.steps.length };
 }
@@ -156,6 +158,7 @@ export function handleTeamStatus(sm: StateMachine, args: unknown): Record<string
     steps: run.steps.map((s) => ({
       id: s.step.id,
       description: s.step.description,
+      executionMode: s.step.executionMode,
       status: s.status,
       retryCount: s.retryCount,
       assignedAgent: s.assignedAgent,
@@ -273,7 +276,7 @@ export function handleTeamControl(sm: StateMachine, args: unknown) {
 }
 
 export function handleTeamAdvance(sm: StateMachine, args: unknown) {
-  const parsed = TeamAdvanceSchema.parse(args);
+  const parsed = teamAdvanceSchema.parse(args);
   switch (parsed.action) {
     case 'set_worktree':
       sm.setWorktree(parsed.runId, parsed.stepId, parsed.worktree!);
