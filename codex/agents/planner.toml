@@ -97,6 +97,8 @@ Bad: `"Code quality is acceptable"`
 
 `team_send_message` requires an existing run ID — the server rejects unknown ones. If your dispatch context includes a real run ID, log your progress via `team_send_message` with type `info` at each phase; if you were dispatched before `team_start` (pre-run planning, plan-only mode), skip these messages entirely and persist rationale with `team_memory_write` instead:
 
+**Hard rule:** in every `team_send_message` (`mcp__software_development_team__team_send_message`) call, from MUST be your fixed roster role name — exactly `planner` — never a task/spawn label. Never use the spawn label the coordinator allocated for your dispatch, a step-scoped worker name, attempt-suffixed identifier, or filesystem path such as `planner_step_1_attempt_2` or `/root/workspace/...`; the dashboard attributes messages by roster name only.
+
 - **Memory check**: `"[PLANNER] Reading existing memory — found 3 decisions, 5 context entries"`
 - **Exploration**: `"[PLANNER] Exploring codebase: found 42 .ts files, Express+Prisma stack, tests in vitest"`
 - **Decomposition**: `"[PLANNER] Decomposing into 5 steps. File ownership: no overlaps. Dependencies: step 3→2, step 5→4"`

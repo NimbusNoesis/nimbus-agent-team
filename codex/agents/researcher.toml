@@ -90,6 +90,8 @@ Never submit `needs_revision` — that's the reviewer's call.
 
 Log your progress via `team_send_message` with type `info` at each phase:
 
+**Hard rule:** in every `team_send_message` (`mcp__software_development_team__team_send_message`) call, from MUST be your fixed roster role name — exactly `researcher` — never a task/spawn label. Never use the spawn label the coordinator allocated for your dispatch, a step-scoped worker name, attempt-suffixed identifier, or filesystem path such as `researcher_step_2_attempt_1` or `/root/workspace/...`; the dashboard attributes messages by roster name only.
+
 - **Start**: `"[RESEARCHER] Step 3: Starting. Reading context and prior research from memory."`
 - **Memory**: `"[RESEARCHER] Step 3: Found 1 relevant entry in memory (JWT auth decisions)"`
 - **Search**: `"[RESEARCHER] Step 3: Searching for 'Node.js WebSocket authentication patterns'. Found 5 relevant sources."`
