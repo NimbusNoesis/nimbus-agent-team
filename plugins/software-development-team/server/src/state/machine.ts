@@ -7,6 +7,7 @@ import {
   RUN_LIFECYCLE_VERSION,
   type ExecutionControlAction,
   type ExecutionControlTarget,
+  type ExecutionMode,
   type LifecycleCommandReceipt,
   type PlanStep,
   type RunLifecycleV2,
@@ -47,12 +48,13 @@ export class StateMachine extends EventEmitter {
   }
 
   createRun(steps: PlanStep[], task?: string): RunState {
-    this.validatePlan(steps);
+    const canonicalSteps = steps.map((step) => this.canonicalizePlanStep(step));
+    this.validatePlan(canonicalSteps);
     const run: RunState = {
       id: randomUUID(),
       task,
       status: 'ready',
-      steps: steps.map((step) => ({
+      steps: canonicalSteps.map((step) => ({
         step,
         status: 'pending',
         retryCount: 0,
@@ -120,8 +122,23 @@ export class StateMachine extends EventEmitter {
     }
   }
 
+  private canonicalizePlanStep(step: PlanStep): PlanStep & { executionMode: ExecutionMode } {
+    const executionMode: unknown = step.executionMode;
+    if (executionMode !== undefined && executionMode !== 'code' && executionMode !== 'read_only') {
+      throw new Error(
+        `Plan invalid: step ${step.id} has unsupported execution mode ${JSON.stringify(executionMode)}`,
+      );
+    }
+    return { ...step, executionMode: executionMode ?? 'code' };
+  }
+
   restoreRun(run: RunState): void {
-    this.db.insertRun(structuredClone(run));
+    const restored = structuredClone(run);
+    restored.steps = restored.steps.map((stepState) => ({
+      ...stepState,
+      step: this.canonicalizePlanStep(stepState.step),
+    }));
+    this.db.insertRun(restored);
     logger.info('StateMachine', `Run restored from disk`, { runId: run.id, status: run.status });
   }
 
@@ -308,16 +325,16 @@ export class StateMachine extends EventEmitter {
     const run = this.requireRun(runId);
     const stepState = this.requireStep(run, stepId);
 
-    if (stepState.status !== 'coding' && stepState.status !== 'reviewing') {
+    if (stepState.step.executionMode !== 'read_only') {
+      throw new Error(
+        `Step ${stepId} cannot be marked reviewed with execution mode '${stepState.step.executionMode}'`,
+      );
+    }
+    if (stepState.status !== 'coding') {
       throw new Error(`Step ${stepId} cannot be marked reviewed from status '${stepState.status}'`);
     }
-
-    // Preserve a genuinely submitted result (markReviewed is callable from
-    // 'reviewing', which is only reachable via submitResult) so the synthetic
-    // result below doesn't silently discard it — same audit-trail pattern as
-    // submitResult.
-    if (stepState.result) {
-      stepState.resultHistory = [...(stepState.resultHistory ?? []), stepState.result];
+    if (stepState.result !== null) {
+      throw new Error(`Step ${stepId} cannot be marked reviewed after a result has been submitted`);
     }
 
     // Read-only review steps never submit a coder result. Record a synthetic
