@@ -462,6 +462,39 @@ describe('coordinator instruction contract', () => {
     expect(standalone).toMatch(/do NOT call `team_submit_result`/);
   });
 
+  it.each(instructions.filter(({ file }) => file.endsWith('/begin.md') || file.endsWith('/begin/SKILL.md')))(
+    '$file persists explicit execution modes and cannot broaden standalone completion',
+    ({ content }) => {
+      const standalone = sectionBetween(content, '## Standalone Review Task', '## Cost Awareness');
+      expect(standalone).toMatch(/team_start[\s\S]*executionMode:\s*["']read_only["']/i);
+      expect(standalone).toMatch(/do NOT call `team_submit_result`/i);
+      expect(content).toMatch(/implementation, research, or documentation step[\s\S]*executionMode:\s*["']code["']/i);
+      expect(content).toMatch(/normal code, research, and documentation steps use `code`/i);
+
+      expect(content).toMatch(/mark_reviewed[\s\S]*persisted `executionMode` is exactly `read_only`/i);
+      expect(content).toMatch(/mark_reviewed[\s\S]*(?:both )?`result` and `resultHistory`[\s\S]*no result has ever been submitted|no submitted result[\s\S]*`mark_reviewed`/i);
+      expect(content).toMatch(/status --porcelain[\s\S]*HEAD[\s\S]*(?:captured |persisted )?`targetCommit`/i);
+      expect(content).toMatch(/never use it for `executionMode:\s*["']code["']`/i);
+      expect(content).toMatch(/submitted result or result history/i);
+      expect(content).toMatch(/do not call `mark_reviewed`[\s\S]*preserve the worktree[\s\S]*escalate/i);
+    },
+  );
+
+  it.each(instructions.filter(({ file }) => file.endsWith('/resume.md') || file.endsWith('/resume/SKILL.md')))(
+    '$file reconstructs persisted mode and worktree without role inference or lifecycle bypasses',
+    ({ content }) => {
+      expect(content).toMatch(/team_status[\s\S]*exact persisted `executionMode`[\s\S]*\{targetBranch, targetCommit, path, branch\}/i);
+      expect(content).toMatch(/never infer (?:execution )?mode from (?:`assignedAgent`|agent role)/i);
+      expect(content).toMatch(/interrupted[\s\S]*same role[\s\S]*exact `executionMode` and worktree tuple returned by `team_status`/i);
+      expect(content).toMatch(/original role, mode, or any worktree field is missing or inconsistent[\s\S]*do not (?:spawn|dispatch)[\s\S]*do not recapture\/recreate/i);
+      expect(content).toMatch(/never been admitted[\s\S]*no persisted worktree tuple[\s\S]*resumed, retried, reviewing, or interrupted step is not an initial admission/i);
+      expect(content).toMatch(/retried[\s\S]*reuse this exact persisted worktree and execution mode[\s\S]*never recapture/i);
+      expect(content).toMatch(/`executionMode:\s*["']read_only["']`[\s\S]*`result` and `resultHistory`[\s\S]*status --porcelain[\s\S]*HEAD[\s\S]*`targetCommit`/i);
+      expect(content).toMatch(/any check fails[\s\S]*never call `mark_reviewed`[\s\S]*preserve the worktree[\s\S]*escalate/i);
+      expect(content).toMatch(/`executionMode:\s*["']code["']` with usable output[\s\S]*team_submit_result/i);
+    },
+  );
+
   it('requires complete recovered context for every resume dispatch', () => {
     const resume = codexSkills.find(({ file }) => file.endsWith('/resume/SKILL.md'))!.content;
     const checklist = resume.slice(resume.indexOf('## Spawn Context Checklist'), resume.indexOf('## Pipeline Parallelism'));
