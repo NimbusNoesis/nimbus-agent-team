@@ -14,7 +14,7 @@ import {
 import { handleTeamSubmitResult } from '../src/tools/results.js';
 import { handleTeamSendMessage, handleTeamGetMessages, teamGetMessagesShape } from '../src/tools/messages.js';
 import { handleTeamMemoryWrite, handleTeamMemoryRead, handleTeamMemoryDelete } from '../src/tools/memory.js';
-import { createTestStack } from './helpers.js';
+import { createTestStack, makeWorktree } from './helpers.js';
 import type { StateMachine } from '../src/state/machine.js';
 import type { MessageBus } from '../src/bus/message-bus.js';
 import type { MemoryStore } from '../src/memory/store.js';
@@ -122,6 +122,7 @@ describe('Zod schema validation', () => {
       const { runId } = handleTeamStart(sm, {
         steps: [{ id: 1, description: 'x', files: [], acceptanceCriteria: [], dependsOn: [] }],
       });
+      sm.setWorktree(runId, 1, makeWorktree(runId, 1));
       const result = handleTeamAdvance(sm, {
         runId, stepId: 1, action: 'start_coding',
       });
@@ -236,6 +237,7 @@ describe('Zod schema validation', () => {
       const { runId } = handleTeamStart(sm, {
         steps: [{ id: 1, description: 'x', files: [], acceptanceCriteria: [], dependsOn: [] }],
       });
+      sm.setWorktree(runId, 1, makeWorktree(runId, 1));
       handleTeamAdvance(sm, { runId, stepId: 1, action: 'start_coding' });
       const result = handleTeamSubmitResult(sm, {
         runId, stepId: 1, result: { status: 'done', summary: 'done', details: 'extra info' },

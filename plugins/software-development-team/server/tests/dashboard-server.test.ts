@@ -7,6 +7,7 @@ import { StateMachine } from '../src/state/machine.js';
 import { MessageBus } from '../src/bus/message-bus.js';
 import { MemoryStore } from '../src/memory/store.js';
 import { startDashboard } from '../src/dashboard/server.js';
+import { makeWorktree } from './helpers.js';
 
 describe('Dashboard server', () => {
   let sm: StateMachine;
@@ -197,12 +198,7 @@ describe('Dashboard server', () => {
     }
 
     function activateStep(runId: string): void {
-      sm.setWorktree(runId, 1, {
-        targetBranch: 'main',
-        targetCommit: 'abc123',
-        path: '/tmp/control-step',
-        branch: 'control-step',
-      });
+      sm.setWorktree(runId, 1, makeWorktree(runId, 1));
       sm.startStep(runId, 1, 'coder');
     }
 

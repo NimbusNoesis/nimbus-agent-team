@@ -6,6 +6,7 @@ import { MemoryStore } from '../src/memory/store.js';
 import { Database } from '../src/db/database.js';
 import { logger } from '../src/logger.js';
 import { readFileSync } from 'node:fs';
+import { makeWorktree } from './helpers.js';
 
 describe('ToolRegistry', () => {
   let registry: ToolRegistry;
@@ -20,6 +21,15 @@ describe('ToolRegistry', () => {
       new MemoryStore(db),
     );
   });
+
+  async function persistWorktree(runId: string, stepId = 1): Promise<void> {
+    await registry.handle('team_advance', {
+      runId,
+      stepId,
+      action: 'set_worktree',
+      worktree: makeWorktree(runId, stepId),
+    });
+  }
 
   it('team_start creates a run and returns run ID', async () => {
     const result = await registry.handle('team_start', {
@@ -48,6 +58,7 @@ describe('ToolRegistry', () => {
         { id: 2, description: 'Blocked work', files: ['shared.ts'], acceptanceCriteria: [], dependsOn: [1] },
       ],
     });
+    await persistWorktree(runId);
     await registry.handle('team_advance', {
       runId, stepId: 1, action: 'start_coding', agent: 'coder',
     });
@@ -86,6 +97,7 @@ describe('ToolRegistry', () => {
         { id: 2, description: 'Runnable work', files: ['other.ts'], acceptanceCriteria: [], dependsOn: [] },
       ],
     });
+    await persistWorktree(runId);
     await registry.handle('team_advance', {
       runId, stepId: 1, action: 'start_coding', agent: 'coder',
     });
@@ -101,6 +113,7 @@ describe('ToolRegistry', () => {
     const { runId } = await registry.handle('team_start', {
       steps: [{ id: 1, description: 'S1', files: [], acceptanceCriteria: [], dependsOn: [] }],
     });
+    await persistWorktree(runId);
     await registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'coder' });
     await registry.handle('team_submit_result', {
       runId, stepId: 1, result: { status: 'done', summary: 'implemented' },
@@ -150,10 +163,7 @@ describe('ToolRegistry', () => {
     const { runId } = await registry.handle('team_start', {
       steps: [{ id: 1, description: 'S1', files: [], acceptanceCriteria: [], dependsOn: [] }],
     });
-    await registry.handle('team_advance', {
-      runId, stepId: 1, action: 'set_worktree',
-      worktree: { targetBranch: 'main', targetCommit: 'abc', path: '.worktrees/run/step-1', branch: 'team-run-step-1' },
-    });
+    await persistWorktree(runId);
     await registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding' });
     await registry.handle('team_submit_result', {
       runId, stepId: 1, result: { status: 'blocked', summary: 'stuck' },
@@ -186,6 +196,7 @@ describe('ToolRegistry', () => {
       reason: 'Step is not escalated',
     });
 
+    await persistWorktree(runId);
     await registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'coder-one' });
     status = await registry.handle('team_status', { runId });
     expect(status.workers).toMatchObject({ activeCount: 1, admissionsFrozen: false });
@@ -199,6 +210,8 @@ describe('ToolRegistry', () => {
         { id: 2, description: 'Waiting', files: ['b.ts'], acceptanceCriteria: [], dependsOn: [] },
       ],
     });
+    await persistWorktree(runId);
+    await persistWorktree(runId, 2);
     await registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'coder' });
     const execute = vi.spyOn(sm, 'executeControl');
     const pause = {
@@ -270,9 +283,15 @@ describe('ToolRegistry', () => {
   });
 
   it('team_advance with mark_reviewed closes a read-only review step', async () => {
-    const { runId } = await registry.handle('team_start', {
-      steps: [{ id: 1, description: 'S1', files: [], acceptanceCriteria: [], dependsOn: [] }],
-    });
+    const runId = sm.createRun([{
+      id: 1,
+      description: 'S1',
+      files: [],
+      acceptanceCriteria: [],
+      dependsOn: [],
+      executionMode: 'read_only',
+    }]).id;
+    await persistWorktree(runId);
     await registry.handle('team_advance', { runId, stepId: 1, action: 'start_coding', agent: 'reviewer' });
     const result = await registry.handle('team_advance', {
       runId, stepId: 1, action: 'mark_reviewed', summary: 'Findings delivered; no code changes.',
@@ -343,10 +362,7 @@ describe('ToolRegistry', () => {
     const { runId } = await registry.handle('team_start', {
       steps: [{ id: 1, description: 'S1', files: [], acceptanceCriteria: [], dependsOn: [] }],
     });
-    const worktree = {
-      targetBranch: 'main', targetCommit: 'abc123',
-      path: '.worktrees/run/step-1', branch: 'team-run-step-1',
-    };
+    const worktree = makeWorktree(runId, 1);
     await registry.handle('team_advance', { runId, stepId: 1, action: 'set_worktree', worktree });
     expect((await registry.handle('team_status', { runId })).steps[0].worktree).toEqual(worktree);
     await expect(registry.handle('team_advance', {
