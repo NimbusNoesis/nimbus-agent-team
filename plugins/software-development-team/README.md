@@ -18,6 +18,8 @@ A [Claude Code](https://claude.ai/claude-code) plugin that orchestrates a multi-
 - **Stuck detection** -- automatic escalation when agents repeat the same error or exhaust retries
 - **File conflict detection** -- prevents two steps from editing the same file concurrently
 - **Git worktree isolation** -- mandatory run-scoped worktrees for isolated execution and reviewer-gated merge-back
+- **Explicit execution modes** -- every step is canonically `code` or `read_only`, with strict completion rules for each mode
+- **Fail-closed durability** -- MCP and dashboard mutations share one serialized admission lane and are acknowledged only after their persistence barrier succeeds
 
 ## Dashboard
 
@@ -47,7 +49,7 @@ Every mutation carries a unique `commandId` and the caller's `expectedRevision`.
 
 ### Local security model
 
-The dashboard is intentionally local and is not an authenticated multi-user service. Bind it only to loopback. Browser mutation requests must have a loopback `Host` and an exact same-origin HTTP `Origin`. Non-browser/local clients may omit `Origin`, but they still require a loopback host; an omitted Origin is not permission to expose the service remotely. WebSocket upgrades accept local no-Origin clients and explicitly allowed localhost/127.0.0.1 origins. Mutation JSON is size-bounded and strict, destructive controls require an exact target phrase, and the response uses structured `200`, `400`, `404`, or `409` outcomes. The dashboard also sends a restrictive local Content Security Policy and does not load remote scripts, fonts, styles, or images.
+The dashboard is intentionally local and is not an authenticated multi-user service. Bind it only to loopback. Browser mutation requests must have a loopback `Host` and an exact same-origin HTTP `Origin`. Non-browser/local clients may omit `Origin`, but they still require a loopback host; an omitted Origin is not permission to expose the service remotely. WebSocket upgrades accept local no-Origin clients and explicitly allowed localhost/127.0.0.1 origins. Mutation JSON is size-bounded and strict, destructive controls require an exact target phrase, and the response uses structured `200`, `400`, `404`, `409`, or persistence-failure `503` outcomes. The dashboard also sends a restrictive local Content Security Policy and does not load remote scripts, fonts, styles, or images.
 
 ### Operator troubleshooting
 
@@ -57,6 +59,7 @@ The dashboard is intentionally local and is not an authenticated multi-user serv
 - **Stuck in `pausing` or `cancelling`:** inspect active workers, held claims, recent messages, coordinator health, and control audit revision. The coordinator must observe quiescence and acknowledge; do not release claims or edit persisted state manually.
 - **Reconnect or stale data:** retain the visible last-known state for context, but wait for `Online` and `Current` before mutating. Activity history is deduplicated after reconnect.
 - **Restart recovery:** restart the same or newer compatible server against the existing `.team/` directory. Runs, receipts, history, results, claims, and worktree metadata are persisted. A future lifecycle version fails closed rather than being rewritten.
+- **Persistence reports `failed`:** stop mutations and restart the server. The triggering request may already be present only in volatile memory; it is not rolled back. Later mutations are rejected before side effects, while status, messages, memory reads, and dashboard reads remain available for diagnosis.
 
 ### Release verification matrix
 
@@ -201,8 +204,8 @@ dashboard card or execution/worktree role; the controller owns recursion and lif
 | Tool | Description |
 |------|-------------|
 | `team_start` | Initialize a run with plan steps |
-| `team_status` | Get current run state with timing, blocking reasons, and conflicts |
-| `team_advance` | Advance a step: start coding, approve, request revision, or resolve escalation |
+| `team_status` | Get current run state with timing, blockers, conflicts, execution modes, and non-sensitive persistence health |
+| `team_advance` | Set the structural worktree tuple or advance a step; `mark_reviewed` is restricted to eligible read-only steps |
 | `team_control` | Apply lifecycle-v2 pause, resume, cancellation, acknowledgement, or retry commands with idempotency and revision checks |
 | `team_submit_result` | Submit coder/reviewer results for a step |
 | `team_send_message` | Post a message to the team bus |
@@ -227,9 +230,11 @@ pending --> coding --> reviewing --> complete
               coding/reviewing -> cancelling -> cancelled (after worker drain and acknowledgement)
 ```
 
+Every plan step is normalized to one canonical `executionMode`: `code` or `read_only`. Omitted values default to `code`, including restored legacy runs. Code steps use the result/reviewer lifecycle and cannot use `mark_reviewed`. A read-only step may use `mark_reviewed` only while it is `coding` and before any result has been submitted; the server records a synthetic successful result and completes it. This strict split prevents a coordinator from bypassing code review with the read-only shortcut.
+
 ### Git Worktree Isolation
 
-Every execution step receives one mandatory run-scoped worktree, `.worktrees/{runId}/step-{N}`, on branch `team-{runId}-step-{N}`. The coordinator creates it only when the pending step is first admitted: it captures the current target branch and exact commit, creates from that commit, and persists `{targetBranch, targetCommit, path, branch}` before `start_coding`. Re-dispatches reuse that context; missing or inconsistent context blocks or escalates the step rather than recapturing or creating another worktree.
+Every execution step receives one mandatory run-scoped worktree, `.worktrees/{runId}/step-{N}`, on branch `team-{runId}-step-{N}`. The coordinator creates it only when the pending step is first admitted: it captures the current target branch and exact commit, creates from that commit, and persists `{targetBranch, targetCommit, path, branch}` before `start_coding`. The server structurally enforces the exact run/step path and branch plus non-empty target branch and commit, and rejects `start_coding` without that set-once tuple. Re-dispatches reuse that context; missing or inconsistent context blocks or escalates the step rather than recapturing or creating another worktree.
 
 | Role | Repository location and authority |
 | --- | --- |
@@ -240,6 +245,14 @@ Every execution step receives one mandatory run-scoped worktree, `.worktrees/{ru
 Exact declared file strings remain the scheduling contract: overlapping claims serialize even in separate worktrees. The StateMachine manages workflow state, not Git; it never creates, removes, switches, commits, or merges worktrees or branches.
 
 Only an explicit reviewer approval permits the coordinator to switch to the captured target branch and merge the step branch there with `--no-ff`. A merge conflict is aborted, recorded with its exact conflicting files, and escalated while the worktree and branch are preserved; the coordinator never auto-resolves conflicts. After a successful merge, remove the worktree and then delete the branch. A confirmed abandoned, unmerged step is never merged: remove its worktree first, then force-delete its branch. On either cleanup failure, preserve artifacts and report the exact path, branch, and error.
+
+### Persistence, messages, and failure recovery
+
+Run state, messages, and memory changes are synchronously enqueued on one process-wide `PersistQueue`. Every MCP mutation and dashboard control/guidance mutation enters the same serialized admission lane, checks health before side effects, and waits for the global durability barrier before reporting success. Reads do not enter the lane. If the first disk write fails, its in-memory mutation may be volatile—there is deliberately no atomic rollback—but the request fails, the health latch becomes `{ status: "failed", restartRequired: true, code: "persistence_failed", failedAt, operationKind }`, queued and later mutations are rejected before side effects, and recovery requires a server restart. Shutdown drains all queued work and exits unsuccessfully if durability cannot be confirmed.
+
+Message startup restore processes `messages.jsonl` line by line. Blank lines are ignored; malformed JSON, invalid payload shapes/types, invalid message types or timestamps, and mismatched run IDs are skipped without aborting startup. Warnings contain only run ID, line number, and a bounded reason code—never the persisted payload. Message bodies, result summaries/details, memory values, prompts, credentials, operator reasons, and exception text are likewise excluded from MessageBus, StateMachine, and persistence-failure logs; logs retain only bounded metadata. `team_get_messages.since` accepts valid ISO datetimes with timezone offsets and compares parsed epoch instants exclusively, so offset-equivalent timestamps behave identically.
+
+This durability work does not change server locking. `.team/server.lock` remains advisory warning-only detection for concurrent live instances; it does not refuse startup or serialize separate Claude Code/Codex processes. Continue using one host session at a time per project.
 
 ### Coordinator scheduling
 

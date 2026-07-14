@@ -131,7 +131,7 @@ never calls `team_start`, starts a run, creates a worktree, or modifies the repo
 - **Subagent spawning** performs the work. The two systems are separate: the `agent`
   argument to `team_advance` is just a label; a native `spawn_agent` request is what
   makes a coder actually run.
-- Run state and memory persist to a `.team/` directory in your project (gitignored).
+- Run state, messages, and memory persist to a `.team/` directory in your project (gitignored). `team_status` also reports non-sensitive process-wide persistence health.
 
 ### Scheduling contract
 
@@ -139,17 +139,25 @@ The coordinator's `maxParallel` is a simultaneous-worker limit, excluding the co
 
 **Tool scoping is instruction-only on Codex.** Claude Code enforces each agent's tool list via `tools:` frontmatter; Codex role templates carry only `developer_instructions`, so every spawned subagent can technically call any team MCP tool. The role prompts define who may write which memory namespace and who submits results — treat violations in transcripts as bugs.
 
-**One session at a time per project.** Codex and Claude Code share the same `.team/` state directory but each session runs its own server instance with an independent in-memory DB. Concurrent sessions race on state and cannot see each other's runs; the server warns via `.team/server.lock` when it detects another live instance. Launch `codex` from the project root — `.team/` resolves from the working directory.
+**One session at a time per project.** Codex and Claude Code share the same `.team/` state directory but each session runs its own server instance with an independent in-memory DB. Concurrent sessions race on state and cannot see each other's runs; the server warns via `.team/server.lock` when it detects another live instance. The durability changes described below do not alter this advisory warning-only lock behavior: it still does not refuse startup or serialize separate processes. Launch `codex` from the project root — `.team/` resolves from the working directory.
 
 On every fresh status snapshot, the scheduler gives eligible review/revision lifecycle work priority, then selects dependency-complete pending steps in plan order. Claimed files are compared as exact declared strings: blockers, conflicts, and overlap with active or same-batch claims serialize work even when worktrees are used. `start_coding` is authoritative, so rejection refreshes status and reschedules; a spawn failure is submitted as `blocked`; and freed capacity is refilled without pause or cancel semantics.
+
+Each plan step has a canonical `executionMode` of `code` or `read_only`; omission defaults to `code`, including restored legacy runs. Code steps must submit a result and pass reviewer approval. The `mark_reviewed` shortcut is valid only for a read-only step still in `coding` with no submitted result, where it records a synthetic success and completes the step. It cannot be used to bypass review for code work.
 
 ### Mandatory run-scoped worktrees
 
 Every execution step has one mandatory worktree at `.worktrees/{runId}/step-{N}` on branch `team-{runId}-step-{N}`. Planner, plan-critic, and recursive-planner are pre-run/pre-approval, read-only roles in the primary workspace and never receive execution worktrees. Coder and documentation are mutating roles that read, write, verify, and commit only in the supplied worktree. Reviewer and researcher use the supplied worktree only for read-only inspection and verification. Worktrees do not relax exact-claim serialization: two steps whose declared file strings overlap exactly must not run concurrently.
 
-When a pending execution step is first admitted, the coordinator captures its current target branch and exact commit, creates the worktree from that commit, and persists `{targetBranch, targetCommit, path, branch}` before `start_coding`. That capture and creation happen once; reviewer, revision-coder, researcher, documentation, and interrupted-worker dispatches reuse the same persisted context. Missing or inconsistent context blocks or escalates the step rather than creating a replacement worktree.
+When a pending execution step is first admitted, the coordinator captures its current target branch and exact commit, creates the worktree from that commit, and persists `{targetBranch, targetCommit, path, branch}` before `start_coding`. The server requires the exact `.worktrees/{runId}/step-{N}` path and `team-{runId}-step-{N}` branch plus non-empty target branch and commit, stores the tuple once, and revalidates it at admission. That capture and creation happen once; reviewer, revision-coder, researcher, documentation, and interrupted-worker dispatches reuse the same persisted context. Missing or inconsistent context blocks or escalates the step rather than creating a replacement worktree.
 
 The StateMachine manages workflow state only; it never creates, removes, switches, commits, merges, or otherwise manages Git. After explicit reviewer approval, the coordinator switches to the captured target branch and merges the step branch there with `--no-ff`. On a merge conflict it aborts, preserves the worktree and branch, records the exact conflict, and escalates—never auto-resolves. A successful merge removes the worktree and then deletes the branch. A confirmed abandoned, unmerged step is never merged; its worktree is removed first and its branch is force-deleted. Cleanup failures preserve artifacts and report their exact path, branch, and error.
+
+### Persistence and message safety
+
+All live run-state, message, and memory changes enqueue persistence synchronously. One process-wide coordinator owns a shared mutation admission lane used by every MCP mutation and by dashboard control/guidance. It serializes the health check, in-memory handler, and global durability barrier; reads stay outside the lane and remain available. If the first disk operation fails, that request fails but its in-memory change may be volatile—there is no atomic rollback. The server latches safe `persistence_failed` health with `restartRequired: true`, rejects queued and later mutations before side effects, and requires restart for recovery. Shutdown drains late work and exits unsuccessfully if durability cannot be confirmed.
+
+On startup, `messages.jsonl` is restored one line at a time: blank lines are ignored and malformed JSON or invalid message payloads are skipped without aborting the server. Restore warnings plus MessageBus, StateMachine, and persistence-failure logs use only bounded metadata; they do not include message bodies, result summaries/details, memory values, prompts, credentials, operator reasons, persisted payloads, or raw persistence exceptions. The `team_get_messages.since` filter accepts ISO timestamps with offsets and compares parsed epoch instants exclusively, so offset-equivalent timestamps have identical results.
 
 ### MCP server config
 
