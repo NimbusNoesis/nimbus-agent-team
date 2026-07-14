@@ -10,6 +10,7 @@ import {
   type RunControlPhase,
   type RunLifecycleV2,
   type Message,
+  type MessageType,
   type MemoryEntry,
 } from '../types.js';
 import { MAX_MESSAGES_PER_RUN } from '../bus/message-bus.js';
@@ -28,6 +29,27 @@ const CONTROL_PHASES = new Set<RunControlPhase>([
   'cancelling',
   'cancelled',
 ]);
+
+const MESSAGE_TYPES = new Set<MessageType>([
+  'info',
+  'review',
+  'escalation',
+  'guidance',
+  'result',
+]);
+
+const MESSAGE_STRING_FIELDS = ['id', 'runId', 'from', 'to', 'body', 'timestamp'] as const;
+const ISO_TIMESTAMP_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+type MessageRestoreFailure =
+  | 'malformed_json'
+  | 'non_object'
+  | 'missing_required_field'
+  | 'invalid_field_type'
+  | 'empty_required_field'
+  | 'invalid_message_type'
+  | 'invalid_timestamp'
+  | 'mismatched_run_id';
 
 class UnsupportedLifecycleVersionError extends Error {
   constructor(version: number) {
@@ -77,6 +99,51 @@ function lifecycleArray<T>(value: unknown, limit: number, label: string): T[] {
     throw new Error(`Invalid persisted run state: lifecycle ${label} must be an array`);
   }
   return value.slice(-limit) as T[];
+}
+
+function isValidIsoTimestamp(value: string): boolean {
+  const match = ISO_TIMESTAMP_RE.exec(value);
+  if (!match || !Number.isFinite(Date.parse(value))) return false;
+
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return false;
+
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day >= 1 && day <= daysInMonth[month - 1];
+}
+
+function restoreMessage(value: unknown, expectedRunId: string): Message | MessageRestoreFailure {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return 'non_object';
+  const record = value as Record<string, unknown>;
+
+  for (const field of [...MESSAGE_STRING_FIELDS, 'type'] as const) {
+    if (!Object.hasOwn(record, field)) return 'missing_required_field';
+  }
+  for (const field of MESSAGE_STRING_FIELDS) {
+    if (typeof record[field] !== 'string') return 'invalid_field_type';
+    if (record[field].length === 0) return 'empty_required_field';
+  }
+  if (typeof record.type !== 'string') return 'invalid_field_type';
+  if (!MESSAGE_TYPES.has(record.type as MessageType)) return 'invalid_message_type';
+  if (!isValidIsoTimestamp(record.timestamp as string)) return 'invalid_timestamp';
+  if (record.runId !== expectedRunId) return 'mismatched_run_id';
+
+  return {
+    id: record.id as string,
+    runId: record.runId as string,
+    from: record.from as string,
+    to: record.to as string,
+    type: record.type as MessageType,
+    body: record.body as string,
+    timestamp: record.timestamp as string,
+  };
 }
 
 /**
@@ -155,6 +222,25 @@ export function normalizeRunState(value: unknown): RestoredRunState {
   } as unknown as RestoredRunState;
 }
 
+function normalizeDiskExecutionModes(run: RestoredRunState): RestoredRunState {
+  return {
+    ...run,
+    steps: run.steps.map((stepState, index) => {
+      const planStep = requireRecord(stepState.step, `steps[${index}].step`);
+      const executionMode = planStep.executionMode;
+      if (executionMode !== undefined && executionMode !== 'code' && executionMode !== 'read_only') {
+        throw new Error(
+          `Invalid persisted run state: steps[${index}].step.executionMode must be code or read_only`,
+        );
+      }
+      return {
+        ...stepState,
+        step: { ...planStep, executionMode: executionMode ?? 'code' },
+      };
+    }),
+  } as RestoredRunState;
+}
+
 function sanitizeKey(key: string): string {
   if (!SAFE_KEY_RE.test(key)) {
     throw new Error(`Invalid key "${key}": must contain only alphanumeric characters, dashes, or underscores`);
@@ -211,7 +297,7 @@ export class Persistence {
   async loadRunState(runId: string): Promise<RestoredRunState | null> {
     try {
       const data = await readFile(join(this.runDir(runId), 'state.json'), 'utf-8');
-      return normalizeRunState(JSON.parse(data));
+      return normalizeDiskExecutionModes(normalizeRunState(JSON.parse(data)));
     } catch (err: any) {
       if (err.code === 'ENOENT') return null;
       throw err;
@@ -258,7 +344,35 @@ export class Persistence {
   async loadMessages(runId: string): Promise<Message[]> {
     try {
       const data = await readFile(join(this.runDir(runId), 'messages.jsonl'), 'utf-8');
-      const all = data.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      const all: Message[] = [];
+      const lines = data.split(/\r?\n/);
+      for (let index = 0; index < lines.length; index++) {
+        const line = lines[index];
+        if (line.trim().length === 0) continue;
+
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          logger.warn('Persistence', 'Skipping invalid persisted message', {
+            runId,
+            lineNumber: index + 1,
+            reasonCode: 'malformed_json',
+          });
+          continue;
+        }
+
+        const restored = restoreMessage(parsed, runId);
+        if (typeof restored === 'string') {
+          logger.warn('Persistence', 'Skipping invalid persisted message', {
+            runId,
+            lineNumber: index + 1,
+            reasonCode: restored,
+          });
+          continue;
+        }
+        all.push(restored);
+      }
       // Cap restored history to the per-run limit so the DB never re-exceeds it.
       return all.length > MAX_MESSAGES_PER_RUN ? all.slice(all.length - MAX_MESSAGES_PER_RUN) : all;
     } catch (err: any) {
