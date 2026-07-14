@@ -176,7 +176,7 @@ Startup restore uses `MemoryStore.restore()`, which writes the entry exactly as 
 
 ### Step results keep an audit trail
 
-`submitResult` pushes any displaced result onto `stepState.resultHistory` before overwriting `result` (reviewer verdicts overwrite coder submissions by design). `markReviewed` does the same — it preserves any genuinely submitted result in `resultHistory` before recording its synthetic `done` result. The history is persisted in `state.json` for post-run inspection but intentionally excluded from the `team_status` response to keep it small. Relatedly, `resolveEscalation` re-claims the step's planned files when moving `escalated` -> `coding` (escalation cleared the claims), and rejects with a file-conflict error — before any mutation — if those files are now claimed by another active step.
+`submitResult` pushes any displaced result onto `stepState.resultHistory` before overwriting `result` (reviewer verdicts overwrite coder submissions by design). `markReviewed` never archives an existing result: it rejects whenever `result` is non-null and succeeds only for a pristine eligible `read_only` step still in `coding`, writing its synthetic `done` result directly. The history is persisted in `state.json` and included per step in the `team_status` response for audit and recovery. Relatedly, `resolveEscalation` re-claims the step's planned files when moving `escalated` -> `coding` (escalation cleared the claims), and rejects with a file-conflict error — before any mutation — if those files are now claimed by another active step.
 
 ### Message log compaction spans restarts
 
