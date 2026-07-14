@@ -1,7 +1,15 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { StateMachine } from '../src/state/machine.js';
 import { Database } from '../src/db/database.js';
-import type { ExecutionControlAction, ExecutionMode, PlanStep, RunState, StepState } from '../src/types.js';
+import type {
+  ExecutionControlAction,
+  ExecutionMode,
+  PlanStep,
+  RunState,
+  StepState,
+  WorktreeContext,
+} from '../src/types.js';
+import { makeWorktree, startStepWithWorktree } from './helpers.js';
 
 const makeStep = (
   id: number,
@@ -26,12 +34,7 @@ describe('StateMachine', () => {
     sm = new StateMachine(db);
   });
 
-  const worktree = (stepId: number) => ({
-    targetBranch: 'main',
-    targetCommit: 'abc123',
-    path: `/tmp/run/step-${stepId}`,
-    branch: `team-run-step-${stepId}`,
-  });
+  const worktree = (runId: string, stepId: number) => makeWorktree(runId, stepId);
 
   describe('createRun', () => {
     it('creates a run with pending steps', () => {
@@ -75,9 +78,75 @@ describe('StateMachine', () => {
   });
 
   describe('startStep', () => {
+    it('requires an exact persisted run-scoped worktree for code and read-only steps', () => {
+      const cases: Array<{ label: string; worktree?: WorktreeContext }> = [
+        { label: 'missing' },
+        {
+          label: 'partial',
+          worktree: {
+            path: '.worktrees/placeholder/step-1',
+          } as WorktreeContext,
+        },
+        {
+          label: 'wrong run',
+          worktree: makeWorktree('another-run', 1),
+        },
+        {
+          label: 'wrong step',
+          worktree: makeWorktree('placeholder', 2),
+        },
+        {
+          label: 'wrong branch',
+          worktree: {
+            ...makeWorktree('placeholder', 1),
+            branch: 'team-placeholder-step-2',
+          },
+        },
+        {
+          label: 'empty target branch',
+          worktree: { ...makeWorktree('placeholder', 1), targetBranch: '   ' },
+        },
+        {
+          label: 'empty target commit',
+          worktree: { ...makeWorktree('placeholder', 1), targetCommit: '' },
+        },
+      ];
+
+      for (const executionMode of ['code', 'read_only'] as const) {
+        for (const testCase of cases) {
+          const source = sm.createRun([makeStep(1, [], undefined, executionMode)]);
+          const malformed = sm.getRun(source.id)!;
+          malformed.id = `invalid-${executionMode}-${testCase.label.replaceAll(' ', '-')}`;
+          if (testCase.worktree) {
+            malformed.steps[0].worktree = {
+              ...testCase.worktree,
+              path: testCase.worktree.path?.replace('placeholder', malformed.id),
+              branch: testCase.worktree.branch?.replace('placeholder', malformed.id),
+            } as WorktreeContext;
+          }
+          sm.restoreRun(malformed);
+
+          const before = sm.getRun(malformed.id)!;
+          const updateSpy = vi.spyOn(db, 'updateRun');
+          const events: RunState[] = [];
+          sm.on('state_update', (state: RunState) => events.push(state));
+
+          expect(() => sm.startStep(malformed.id, 1, 'worker'), testCase.label).toThrow(
+            /worktree|targetBranch|targetCommit/,
+          );
+          expect(sm.getRun(malformed.id)).toEqual(before);
+          expect(updateSpy).not.toHaveBeenCalled();
+          expect(events).toHaveLength(0);
+
+          updateSpy.mockRestore();
+          sm.removeAllListeners('state_update');
+        }
+      }
+    });
+
     it('transitions a pending step to coding', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       const updated = sm.getRun(run.id)!;
       expect(updated.steps[0].status).toBe('coding');
       expect(updated.steps[0].assignedAgent).toBe('coder');
@@ -86,14 +155,14 @@ describe('StateMachine', () => {
 
     it('rejects starting a step with unmet dependencies', () => {
       const run = sm.createRun([makeStep(1), makeStep(2, [1])]);
-      expect(() => sm.startStep(run.id, 2, 'coder')).toThrow('dependencies');
+      expect(() => startStepWithWorktree(sm, run.id, 2, 'coder')).toThrow('dependencies');
     });
 
     it('throws when step is already in coding status (prevents silent agent takeover)', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder-1');
+      startStepWithWorktree(sm, run.id, 1, 'coder-1');
       // A second agent trying to start the same step should be rejected
-      expect(() => sm.startStep(run.id, 1, 'coder-2')).toThrow('already being worked on');
+      expect(() => startStepWithWorktree(sm, run.id, 1, 'coder-2')).toThrow('already being worked on');
     });
 
     it('allows independent pairwise-disjoint steps to start immediately', () => {
@@ -103,9 +172,9 @@ describe('StateMachine', () => {
         makeStep(3, [], ['c.ts']),
       ]);
 
-      sm.startStep(run.id, 1, 'coder-1');
-      sm.startStep(run.id, 2, 'coder-2');
-      sm.startStep(run.id, 3, 'coder-3');
+      startStepWithWorktree(sm, run.id, 1, 'coder-1');
+      startStepWithWorktree(sm, run.id, 2, 'coder-2');
+      startStepWithWorktree(sm, run.id, 3, 'coder-3');
 
       expect(sm.getRun(run.id)!.steps.map((step) => step.status)).toEqual([
         'coding',
@@ -120,10 +189,10 @@ describe('StateMachine', () => {
         makeStep(2, [], ['shared-c.ts', 'shared-d.ts']),
         makeStep(3, [], ['shared-a.ts', 'shared-b.ts', 'shared-c.ts']),
       ]);
-      sm.startStep(run.id, 1, 'coder-1');
-      sm.startStep(run.id, 2, 'coder-2');
+      startStepWithWorktree(sm, run.id, 1, 'coder-1');
+      startStepWithWorktree(sm, run.id, 2, 'coder-2');
 
-      expect(() => sm.startStep(run.id, 3, 'coder-3')).toThrow(
+      expect(() => startStepWithWorktree(sm, run.id, 3, 'coder-3')).toThrow(
         'Step 3 has file conflicts: shared-a.ts (also claimed by step 1), shared-b.ts (also claimed by step 1), shared-c.ts (also claimed by step 2)'
       );
     });
@@ -133,10 +202,10 @@ describe('StateMachine', () => {
         makeStep(1, [], ['shared.ts']),
         makeStep(2, [], ['shared.ts']),
       ]);
-      sm.startStep(run.id, 1, 'coder-1');
+      startStepWithWorktree(sm, run.id, 1, 'coder-1');
       sm.submitResult(run.id, 1, { status: 'done', summary: 'implemented' });
 
-      expect(() => sm.startStep(run.id, 2, 'coder-2')).toThrow(
+      expect(() => startStepWithWorktree(sm, run.id, 2, 'coder-2')).toThrow(
         'Step 2 has file conflicts: shared.ts (also claimed by step 1)'
       );
       expect(sm.getRun(run.id)!.steps[0].claimedFiles).toEqual(['shared.ts']);
@@ -148,12 +217,13 @@ describe('StateMachine', () => {
         makeStep(1, [], ['shared.ts']),
         makeStep(2, [], ['shared.ts']),
       ]);
-      sm.startStep(run.id, 1, 'coder-1');
+      startStepWithWorktree(sm, run.id, 1, 'coder-1');
+      sm.setWorktree(run.id, 2, worktree(run.id, 2));
       const before = sm.getRun(run.id)!;
       const events: RunState[] = [];
       sm.on('state_update', (state: RunState) => events.push(state));
 
-      expect(() => sm.startStep(run.id, 2, 'coder-2')).toThrow('file conflicts');
+      expect(() => startStepWithWorktree(sm, run.id, 2, 'coder-2')).toThrow('file conflicts');
 
       expect(sm.getRun(run.id)).toEqual(before);
       expect(sm.getRun(run.id)!.updatedAt).toBe(before.updatedAt);
@@ -166,15 +236,64 @@ describe('StateMachine', () => {
         makeStep(2, [], ['./src/file.ts']),
       ]);
 
-      sm.startStep(run.id, 1, 'coder-1');
-      expect(() => sm.startStep(run.id, 2, 'coder-2')).not.toThrow();
+      startStepWithWorktree(sm, run.id, 1, 'coder-1');
+      expect(() => startStepWithWorktree(sm, run.id, 2, 'coder-2')).not.toThrow();
+    });
+  });
+
+  describe('setWorktree', () => {
+    it('rejects malformed contexts before persistence or events', () => {
+      const invalidContexts: WorktreeContext[] = [
+        { path: '.worktrees/placeholder/step-1' } as WorktreeContext,
+        { ...makeWorktree('placeholder', 1), path: '.worktrees/other-run/step-1' },
+        { ...makeWorktree('placeholder', 1), path: '.worktrees/placeholder/step-2' },
+        { ...makeWorktree('placeholder', 1), branch: 'team-other-run-step-1' },
+        { ...makeWorktree('placeholder', 1), branch: 'team-placeholder-step-2' },
+        { ...makeWorktree('placeholder', 1), targetBranch: '' },
+        { ...makeWorktree('placeholder', 1), targetCommit: '  ' },
+      ];
+
+      for (const context of invalidContexts) {
+        const run = sm.createRun([makeStep(1)]);
+        const candidate = {
+          ...context,
+          path: context.path?.replace('placeholder', run.id),
+          branch: context.branch?.replace('placeholder', run.id),
+        } as WorktreeContext;
+        const before = sm.getRun(run.id)!;
+        const updateSpy = vi.spyOn(db, 'updateRun');
+        const events: RunState[] = [];
+        sm.on('state_update', (state: RunState) => events.push(state));
+
+        expect(() => sm.setWorktree(run.id, 1, candidate)).toThrow();
+        expect(sm.getRun(run.id)).toEqual(before);
+        expect(updateSpy).not.toHaveBeenCalled();
+        expect(events).toHaveLength(0);
+
+        updateSpy.mockRestore();
+        sm.removeAllListeners('state_update');
+      }
+    });
+
+    it('performs structural admission without inspecting Git topology', () => {
+      for (const executionMode of ['code', 'read_only'] as const) {
+        const run = sm.createRun([makeStep(1, [], undefined, executionMode)]);
+        sm.setWorktree(run.id, 1, {
+          ...makeWorktree(run.id, 1),
+          targetBranch: 'branch-not-present-in-test-repository',
+          targetCommit: 'not-a-real-git-object',
+        });
+
+        expect(() => sm.startStep(run.id, 1, 'worker')).not.toThrow();
+        expect(sm.getRun(run.id)!.steps[0].status).toBe('coding');
+      }
     });
   });
 
   describe('submitResult', () => {
     it('transitions coding step to reviewing on done', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'done', summary: 'implemented' });
       const updated = sm.getRun(run.id)!;
       expect(updated.steps[0].status).toBe('reviewing');
@@ -182,7 +301,7 @@ describe('StateMachine', () => {
 
     it('marks step as escalated on blocked', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'blocked', summary: 'stuck' });
       const updated = sm.getRun(run.id)!;
       expect(updated.steps[0].status).toBe('escalated');
@@ -191,7 +310,7 @@ describe('StateMachine', () => {
 
     it('allows reviewer to submit result from reviewing state', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'done', summary: 'coded' });
       sm.submitResult(run.id, 1, { status: 'needs_revision', summary: 'missing validation' });
       const updated = sm.getRun(run.id)!;
@@ -203,7 +322,7 @@ describe('StateMachine', () => {
   describe('advanceStep', () => {
     it('marks a reviewing step as complete when result is done', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'done', summary: 'done' });
       sm.advanceStep(run.id, 1);
       const updated = sm.getRun(run.id)!;
@@ -212,7 +331,7 @@ describe('StateMachine', () => {
 
     it('allows advancing when result is done_with_concerns', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'done_with_concerns', summary: 'works but...' });
       sm.advanceStep(run.id, 1);
       expect(sm.getRun(run.id)!.steps[0].status).toBe('complete');
@@ -220,7 +339,7 @@ describe('StateMachine', () => {
 
     it('rejects advancing when result is needs_revision', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'done', summary: 'coded' });
       // Reviewer submits needs_revision
       sm.submitResult(run.id, 1, { status: 'needs_revision', summary: 'bad' });
@@ -229,7 +348,7 @@ describe('StateMachine', () => {
 
     it('sets run to complete when all steps complete', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'done', summary: 'done' });
       sm.advanceStep(run.id, 1);
       expect(sm.getRun(run.id)!.status).toBe('complete');
@@ -239,7 +358,7 @@ describe('StateMachine', () => {
   describe('requestRevision', () => {
     it('transitions reviewing step back to coding and increments retry', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'done', summary: 'done' });
       // Reviewer submits needs_revision before requestRevision
       sm.submitResult(run.id, 1, { status: 'needs_revision', summary: 'fix the types' });
@@ -252,7 +371,7 @@ describe('StateMachine', () => {
     it('allows 3 retries before escalation', () => {
       const run = sm.createRun([makeStep(1)]);
       // First attempt: startStep from pending
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
 
       // 3 full revision cycles — coder gets 3 more attempts
       // After requestRevision step is 'coding', so no re-startStep needed
@@ -272,7 +391,7 @@ describe('StateMachine', () => {
 
     it('throws when result status is not needs_revision', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'done', summary: 'done' });
       // result is 'done', not 'needs_revision'
       expect(() => sm.requestRevision(run.id, 1)).toThrow('needs_revision');
@@ -280,7 +399,7 @@ describe('StateMachine', () => {
 
     it('throws when result status is done_with_concerns', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'done_with_concerns', summary: 'works but concerns' });
       // result is 'done_with_concerns', not 'needs_revision'
       expect(() => sm.requestRevision(run.id, 1)).toThrow('needs_revision');
@@ -290,9 +409,9 @@ describe('StateMachine', () => {
   describe('pipeline parallelism', () => {
     it('allows starting step N+1 while step N is reviewing if no dependency', () => {
       const run = sm.createRun([makeStep(1), makeStep(2)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'done', summary: 'done' });
-      sm.startStep(run.id, 2, 'coder');
+      startStepWithWorktree(sm, run.id, 2, 'coder');
       const updated = sm.getRun(run.id)!;
       expect(updated.steps[0].status).toBe('reviewing');
       expect(updated.steps[1].status).toBe('coding');
@@ -300,9 +419,9 @@ describe('StateMachine', () => {
 
     it('blocks starting step N+1 if it depends on step N and N is not complete', () => {
       const run = sm.createRun([makeStep(1), makeStep(2, [1])]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'done', summary: 'done' });
-      expect(() => sm.startStep(run.id, 2, 'coder')).toThrow('dependencies');
+      expect(() => startStepWithWorktree(sm, run.id, 2, 'coder')).toThrow('dependencies');
     });
   });
 
@@ -311,7 +430,7 @@ describe('StateMachine', () => {
       const steps = Array.from({ length: 12 }, (_, i) => makeStep(i + 1));
       const run = sm.createRun(steps);
       for (let id = 1; id <= 12; id++) {
-        sm.startStep(run.id, id, 'coder');
+        startStepWithWorktree(sm, run.id, id, 'coder');
       }
       expect(sm.getRun(run.id)!.steps.every((s) => s.status === 'coding')).toBe(true);
     });
@@ -320,8 +439,8 @@ describe('StateMachine', () => {
   describe('resolveEscalation', () => {
     it('transitions escalated step back to coding', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.setWorktree(run.id, 1, worktree(1));
-      sm.startStep(run.id, 1, 'coder');
+      sm.setWorktree(run.id, 1, worktree(run.id, 1));
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'blocked', summary: 'stuck' });
       sm.resolveEscalation(run.id, 1);
       const updated = sm.getRun(run.id)!;
@@ -336,8 +455,8 @@ describe('StateMachine', () => {
         makeStep(1, [], ['shared.ts', 'other.ts']),
         makeStep(2, [], ['shared.ts']),
       ]);
-      sm.setWorktree(run.id, 1, worktree(1));
-      sm.startStep(run.id, 1, 'coder');
+      sm.setWorktree(run.id, 1, worktree(run.id, 1));
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'blocked', summary: 'stuck' });
       // Escalation clears claims
       expect(sm.getRun(run.id)!.steps[0].claimedFiles).toEqual([]);
@@ -347,7 +466,7 @@ describe('StateMachine', () => {
       const updated = sm.getRun(run.id)!;
       expect(updated.steps[0].claimedFiles).toEqual(['shared.ts', 'other.ts']);
       // The resumed step's claims must block an overlapping startStep
-      expect(() => sm.startStep(run.id, 2, 'coder-2')).toThrow(
+      expect(() => startStepWithWorktree(sm, run.id, 2, 'coder-2')).toThrow(
         'Step 2 has file conflicts: shared.ts (also claimed by step 1)'
       );
     });
@@ -357,12 +476,12 @@ describe('StateMachine', () => {
         makeStep(1, [], ['shared.ts']),
         makeStep(2, [], ['shared.ts']),
       ]);
-      sm.setWorktree(run.id, 1, worktree(1));
+      sm.setWorktree(run.id, 1, worktree(run.id, 1));
       // Step 1 escalates, releasing its claim on shared.ts
-      sm.startStep(run.id, 1, 'coder-1');
+      startStepWithWorktree(sm, run.id, 1, 'coder-1');
       sm.submitResult(run.id, 1, { status: 'blocked', summary: 'stuck' });
       // Step 2 starts coding and claims shared.ts
-      sm.startStep(run.id, 2, 'coder-2');
+      startStepWithWorktree(sm, run.id, 2, 'coder-2');
 
       const before = sm.getRun(run.id)!;
       const events: RunState[] = [];
@@ -385,10 +504,10 @@ describe('StateMachine', () => {
         makeStep(1, [], ['shared.ts']),
         makeStep(2, [], ['shared.ts']),
       ]);
-      sm.setWorktree(run.id, 1, worktree(1));
-      sm.startStep(run.id, 1, 'coder-1');
+      sm.setWorktree(run.id, 1, worktree(run.id, 1));
+      startStepWithWorktree(sm, run.id, 1, 'coder-1');
       sm.submitResult(run.id, 1, { status: 'blocked', summary: 'stuck' });
-      sm.startStep(run.id, 2, 'coder-2');
+      startStepWithWorktree(sm, run.id, 2, 'coder-2');
       sm.submitResult(run.id, 2, { status: 'done', summary: 'done' });
       // Step 2 is reviewing and still holds shared.ts
 
@@ -403,14 +522,14 @@ describe('StateMachine', () => {
         makeStep(1, [], ['active.ts']),
         makeStep(2, [], ['next.ts']),
       ]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
 
       const pause = sm.executeControl(run.id, {
         action: 'pause_run', target: { kind: 'run' }, commandId: 'pause-1', expectedRevision: 0,
       });
       expect(pause.outcome.controlPhase).toBe('pausing');
       expect(sm.getRun(run.id)!.steps[0].claimedFiles).toEqual(['active.ts']);
-      expect(() => sm.startStep(run.id, 2, 'coder')).toThrow("control phase is 'pausing'");
+      expect(() => startStepWithWorktree(sm, run.id, 2, 'coder')).toThrow("control phase is 'pausing'");
 
       // A worker admitted before the pause may drain and report its result.
       sm.submitResult(run.id, 1, { status: 'done', summary: 'drained' });
@@ -425,7 +544,7 @@ describe('StateMachine', () => {
         action: 'resume_run', target: { kind: 'run' }, commandId: 'resume-1', expectedRevision: 2,
       });
       expect(sm.getRun(run.id)!.lifecycle?.controlPhase).toBe('none');
-      expect(() => sm.startStep(run.id, 2, 'coder')).not.toThrow();
+      expect(() => startStepWithWorktree(sm, run.id, 2, 'coder')).not.toThrow();
     });
 
     it('pauses immediately when no workers need to drain', () => {
@@ -442,7 +561,7 @@ describe('StateMachine', () => {
         makeStep(1, [], ['shared.ts']),
         makeStep(2, [], ['shared.ts']),
       ]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.executeControl(run.id, {
         action: 'cancel_step', target: { kind: 'step', stepId: 1 }, commandId: 'cancel-step-1', expectedRevision: 0,
       });
@@ -452,7 +571,7 @@ describe('StateMachine', () => {
       expect(state.steps[0].claimedFiles).toEqual(['shared.ts']);
       expect(() => sm.submitResult(run.id, 1, { status: 'done', summary: 'late' }))
         .toThrow("cannot submit result from status 'cancelling'");
-      expect(() => sm.startStep(run.id, 2, 'coder')).toThrow('file conflicts');
+      expect(() => startStepWithWorktree(sm, run.id, 2, 'coder')).toThrow('file conflicts');
 
       sm.executeControl(run.id, {
         action: 'acknowledge_cancel', target: { kind: 'step', stepId: 1 }, commandId: 'cancel-ack-1', expectedRevision: 1,
@@ -461,7 +580,7 @@ describe('StateMachine', () => {
       expect(state.steps[0].status).toBe('cancelled');
       expect(state.steps[0].claimedFiles).toEqual([]);
       expect(state.steps[0].cancelledAt).toBeDefined();
-      expect(() => sm.startStep(run.id, 2, 'coder')).not.toThrow();
+      expect(() => startStepWithWorktree(sm, run.id, 2, 'coder')).not.toThrow();
       expect(state.status).toBe('escalated');
     });
 
@@ -480,16 +599,16 @@ describe('StateMachine', () => {
       expect(sm.getBlockingReasons(run.id, 2)).toEqual([
         'Blocked by cancelled dependency step 1: Step 1',
       ]);
-      expect(() => sm.startStep(run.id, 2, 'coder')).toThrow("step 1 is 'cancelled'");
-      expect(() => sm.startStep(run.id, 3, 'coder')).not.toThrow();
+      expect(() => startStepWithWorktree(sm, run.id, 2, 'coder')).toThrow("step 1 is 'cancelled'");
+      expect(() => startStepWithWorktree(sm, run.id, 3, 'coder')).not.toThrow();
       expect(sm.getRun(run.id)!.status).toBe('escalated');
     });
 
     it('cancels a run only after active workers drain while cancelling pending work immediately', () => {
       const run = sm.createRun([makeStep(1), makeStep(2), makeStep(3)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'done', summary: 'awaiting review' });
-      sm.startStep(run.id, 2, 'coder');
+      startStepWithWorktree(sm, run.id, 2, 'coder');
       sm.executeControl(run.id, {
         action: 'cancel_run', target: { kind: 'run' }, commandId: 'cancel-run-1', expectedRevision: 0,
       });
@@ -497,7 +616,7 @@ describe('StateMachine', () => {
       expect(state.lifecycle?.controlPhase).toBe('cancelling');
       expect(state.steps.map((step) => step.status)).toEqual(['cancelling', 'cancelling', 'cancelled']);
       expect(state.steps[0].claimedFiles).toEqual(['file1.ts']);
-      expect(() => sm.startStep(run.id, 3, 'coder')).toThrow("control phase is 'cancelling'");
+      expect(() => startStepWithWorktree(sm, run.id, 3, 'coder')).toThrow("control phase is 'cancelling'");
       expect(() => sm.submitResult(run.id, 2, { status: 'done', summary: 'late' }))
         .toThrow("cannot submit result from status 'cancelling'");
       expect(() => sm.executeControl(run.id, {
@@ -516,7 +635,7 @@ describe('StateMachine', () => {
 
     it('cancels an inactive run immediately and keeps completed steps immutable', () => {
       const run = sm.createRun([makeStep(1), makeStep(2)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'done', summary: 'done' });
       sm.advanceStep(run.id, 1);
 
@@ -535,8 +654,8 @@ describe('StateMachine', () => {
 
     it('retries only eligible escalated steps with durable worktrees and preserves attempt history', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.setWorktree(run.id, 1, worktree(1));
-      sm.startStep(run.id, 1, 'coder');
+      sm.setWorktree(run.id, 1, worktree(run.id, 1));
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'blocked', summary: 'first blocker' });
 
       const receipt = sm.executeControl(run.id, {
@@ -549,19 +668,22 @@ describe('StateMachine', () => {
       expect(step.claimedFiles).toEqual(['file1.ts']);
       expect(step.resultHistory?.at(-1)?.summary).toBe('first blocker');
       expect(step.result).toBeNull();
-      expect(step.worktree).toEqual(worktree(1));
+      expect(step.worktree).toEqual(worktree(run.id, 1));
     });
 
     it('rejects retry without a worktree, unmet dependencies, conflicts, or remaining manual attempts', () => {
-      const missing = sm.createRun([makeStep(1)]);
-      sm.startStep(missing.id, 1, 'coder');
-      sm.submitResult(missing.id, 1, { status: 'blocked', summary: 'blocked' });
+      const missingSource = sm.createRun([makeStep(1)]);
+      const missing = sm.getRun(missingSource.id)!;
+      missing.id = 'missing-worktree-retry';
+      missing.status = 'escalated';
+      missing.steps[0].status = 'escalated';
+      sm.restoreRun(missing);
       expect(() => sm.executeControl(missing.id, {
         action: 'retry_step', target: { kind: 'step', stepId: 1 }, commandId: 'retry-missing', expectedRevision: 0,
       })).toThrow('without persisted worktree');
 
       const dependent = sm.createRun([makeStep(1), makeStep(2, [1])]);
-      sm.setWorktree(dependent.id, 2, worktree(2));
+      sm.setWorktree(dependent.id, 2, worktree(dependent.id, 2));
       // Restore gives us a realistic escalated dependent whose prerequisite is incomplete.
       const dependentState = sm.getRun(dependent.id)!;
       dependentState.steps[1].status = 'escalated';
@@ -573,17 +695,17 @@ describe('StateMachine', () => {
       const conflicting = sm.createRun([
         makeStep(1, [], ['shared.ts']), makeStep(2, [], ['shared.ts']),
       ]);
-      sm.setWorktree(conflicting.id, 1, worktree(1));
-      sm.startStep(conflicting.id, 1, 'coder');
+      sm.setWorktree(conflicting.id, 1, worktree(conflicting.id, 1));
+      startStepWithWorktree(sm, conflicting.id, 1, 'coder');
       sm.submitResult(conflicting.id, 1, { status: 'blocked', summary: 'blocked' });
-      sm.startStep(conflicting.id, 2, 'coder');
+      startStepWithWorktree(sm, conflicting.id, 2, 'coder');
       expect(() => sm.executeControl(conflicting.id, {
         action: 'retry_step', target: { kind: 'step', stepId: 1 }, commandId: 'retry-conflict', expectedRevision: 0,
       })).toThrow('file conflicts');
 
       const exhausted = sm.createRun([makeStep(1)]);
-      sm.setWorktree(exhausted.id, 1, worktree(1));
-      sm.startStep(exhausted.id, 1, 'coder');
+      sm.setWorktree(exhausted.id, 1, worktree(exhausted.id, 1));
+      startStepWithWorktree(sm, exhausted.id, 1, 'coder');
       for (let attempt = 0; attempt < 3; attempt++) {
         sm.submitResult(exhausted.id, 1, { status: 'blocked', summary: `blocked ${attempt + 1}` });
         sm.executeControl(exhausted.id, {
@@ -703,7 +825,7 @@ describe('StateMachine', () => {
 
     it('restores in-flight lifecycle state and replays a durable receipt without another effect', () => {
       const run = sm.createRun([makeStep(1), makeStep(2)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       const command = {
         action: 'pause_run' as const,
         target: { kind: 'run' as const },
@@ -727,7 +849,7 @@ describe('StateMachine', () => {
 
     it('keeps completed and cancelled targets terminal with rejected commands side-effect-free', () => {
       const completed = sm.createRun([makeStep(1)]);
-      sm.startStep(completed.id, 1, 'coder');
+      startStepWithWorktree(sm, completed.id, 1, 'coder');
       sm.submitResult(completed.id, 1, { status: 'done', summary: 'done' });
       sm.advanceStep(completed.id, 1);
 
@@ -753,7 +875,7 @@ describe('StateMachine', () => {
       expect(() => sm.executeControl(cancelled.id, {
         action: 'resume_run', target: { kind: 'run' }, commandId: 'resume-cancelled', expectedRevision: 1,
       })).toThrow("cannot resume from control phase 'cancelled'");
-      expect(() => sm.startStep(cancelled.id, 1, 'coder')).toThrow("control phase is 'cancelled'");
+      expect(() => startStepWithWorktree(sm, cancelled.id, 1, 'coder')).toThrow("control phase is 'cancelled'");
       expect(sm.getRun(cancelled.id)).toEqual(cancelledBefore);
       expect(updateSpy).toHaveBeenCalledTimes(writesAfterCancel);
       expect(events).toHaveLength(eventsAfterCancel);
@@ -763,7 +885,7 @@ describe('StateMachine', () => {
   describe('markReviewed', () => {
     it('closes a coding read-only step directly to complete with a synthetic result', () => {
       const run = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
-      sm.startStep(run.id, 1, 'reviewer');
+      startStepWithWorktree(sm, run.id, 1, 'reviewer');
       sm.markReviewed(run.id, 1);
       const updated = sm.getRun(run.id)!;
       expect(updated.steps[0].status).toBe('complete');
@@ -776,30 +898,30 @@ describe('StateMachine', () => {
 
     it('uses a provided summary when given', () => {
       const run = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
-      sm.startStep(run.id, 1, 'reviewer');
+      startStepWithWorktree(sm, run.id, 1, 'reviewer');
       sm.markReviewed(run.id, 1, 'Security findings delivered.');
       expect(sm.getRun(run.id)!.steps[0].result?.summary).toBe('Security findings delivered.');
     });
 
     it('does not create resultHistory when no result was ever submitted', () => {
       const run = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
-      sm.startStep(run.id, 1, 'reviewer');
+      startStepWithWorktree(sm, run.id, 1, 'reviewer');
       sm.markReviewed(run.id, 1);
       expect(sm.getRun(run.id)!.steps[0].resultHistory).toBeUndefined();
     });
 
     it('rejects every non-read-only or non-pristine-coding state without side effects', () => {
       const code = sm.createRun([makeStep(1)]);
-      sm.startStep(code.id, 1, 'coder');
+      startStepWithWorktree(sm, code.id, 1, 'coder');
 
       const pending = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
 
       const reviewingDone = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
-      sm.startStep(reviewingDone.id, 1, 'reviewer');
+      startStepWithWorktree(sm, reviewingDone.id, 1, 'reviewer');
       sm.submitResult(reviewingDone.id, 1, { status: 'done', summary: 'submitted' });
 
       const reviewingRejected = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
-      sm.startStep(reviewingRejected.id, 1, 'reviewer');
+      startStepWithWorktree(sm, reviewingRejected.id, 1, 'reviewer');
       sm.submitResult(reviewingRejected.id, 1, { status: 'done', summary: 'submitted' });
       sm.submitResult(reviewingRejected.id, 1, {
         status: 'needs_revision',
@@ -807,17 +929,17 @@ describe('StateMachine', () => {
       });
 
       const codingWithResult = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
-      sm.startStep(codingWithResult.id, 1, 'reviewer');
+      startStepWithWorktree(sm, codingWithResult.id, 1, 'reviewer');
       const malformedCoding = sm.getRun(codingWithResult.id)!;
       malformedCoding.steps[0].result = { status: 'done', summary: 'unexpected submission' };
       db.updateRun(malformedCoding);
 
       const complete = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
-      sm.startStep(complete.id, 1, 'reviewer');
+      startStepWithWorktree(sm, complete.id, 1, 'reviewer');
       sm.markReviewed(complete.id, 1);
 
       const escalated = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
-      sm.startStep(escalated.id, 1, 'reviewer');
+      startStepWithWorktree(sm, escalated.id, 1, 'reviewer');
       sm.submitResult(escalated.id, 1, { status: 'blocked', summary: 'blocked' });
 
       const cancelled = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
@@ -982,7 +1104,7 @@ describe('StateMachine', () => {
         makeStep(1, [], ['a.ts']),
         makeStep(2, [], ['b.ts']),
       ]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       expect(sm.getFileConflicts(run.id, 2)).toEqual([]);
     });
 
@@ -991,7 +1113,7 @@ describe('StateMachine', () => {
         makeStep(1, [], ['shared.ts']),
         makeStep(2, [], ['shared.ts']),
       ]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       const conflicts = sm.getFileConflicts(run.id, 2);
       expect(conflicts).toHaveLength(1);
       expect(conflicts[0]).toContain('shared.ts');
@@ -1003,7 +1125,7 @@ describe('StateMachine', () => {
         makeStep(1, [], ['shared.ts']),
         makeStep(2, [], ['shared.ts']),
       ]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'done', summary: 'done' });
       // Step 1 is now reviewing with claimed files
       const conflicts = sm.getFileConflicts(run.id, 2);
@@ -1019,7 +1141,7 @@ describe('StateMachine', () => {
       ]);
       // Step 1 stays pending (no conflict)
       // Step 2 goes to complete
-      sm.startStep(run.id, 2, 'coder');
+      startStepWithWorktree(sm, run.id, 2, 'coder');
       sm.submitResult(run.id, 2, { status: 'done', summary: 'done' });
       sm.advanceStep(run.id, 2);
       // Step 3 should see no conflicts (1 is pending, 2 is complete)
@@ -1040,7 +1162,7 @@ describe('StateMachine', () => {
         makeStep(1, [], ['shared.ts']),
         makeStep(2, [], ['shared.ts']),
       ]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       const reasons = sm.getBlockingReasons(run.id, 2);
       expect(reasons.some(r => r.includes('File conflict'))).toBe(true);
     });
@@ -1054,7 +1176,7 @@ describe('StateMachine', () => {
   describe('stuck detection', () => {
     it('increments consecutiveSameError on repeated identical error summaries', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'needs_revision', summary: 'same error' });
       // After first error: consecutiveSameError = 1
       expect(sm.getRun(run.id)!.steps[0].consecutiveSameError).toBe(1);
@@ -1067,7 +1189,7 @@ describe('StateMachine', () => {
 
     it('resets consecutiveSameError when error signature changes', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'needs_revision', summary: 'error A' });
       expect(sm.getRun(run.id)!.steps[0].consecutiveSameError).toBe(1);
 
@@ -1080,7 +1202,7 @@ describe('StateMachine', () => {
 
     it('resets stuck tracking on successful result', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'needs_revision', summary: 'error' });
       expect(sm.getRun(run.id)!.steps[0].consecutiveSameError).toBe(1);
 
@@ -1100,7 +1222,7 @@ describe('StateMachine', () => {
 
     it('advanceStep throws from coding status', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       expect(() => sm.advanceStep(run.id, 1))
         .toThrow("cannot be advanced from status 'coding'");
     });
@@ -1113,14 +1235,14 @@ describe('StateMachine', () => {
 
     it('requestRevision throws from coding status', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       expect(() => sm.requestRevision(run.id, 1))
         .toThrow("cannot be revised from status 'coding'");
     });
 
     it('resolveEscalation throws from coding status', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       expect(() => sm.resolveEscalation(run.id, 1))
         .toThrow('not escalated');
     });
@@ -1161,7 +1283,7 @@ describe('StateMachine', () => {
   describe('result history', () => {
     it('preserves the displaced coder result when the reviewer verdict overwrites it', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'done', summary: 'coder finished' });
       sm.submitResult(run.id, 1, { status: 'done', summary: 'reviewer approved' });
       const step = sm.getRun(run.id)!.steps[0];
@@ -1172,7 +1294,7 @@ describe('StateMachine', () => {
 
     it('accumulates history across revision cycles', () => {
       const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
+      startStepWithWorktree(sm, run.id, 1, 'coder');
       sm.submitResult(run.id, 1, { status: 'done', summary: 'attempt 1' });
       sm.submitResult(run.id, 1, { status: 'needs_revision', summary: 'reviewer rejected' });
       sm.requestRevision(run.id, 1);
