@@ -116,6 +116,8 @@ Commit all changes to the required worktree branch before submitting.
 
 Log your progress via `team_send_message` with type `info` at each phase:
 
+**Hard rule:** in every `team_send_message` call, from MUST be your fixed roster role name — exactly `coder` — never a task/spawn label. Never use a step-scoped worker name, attempt-suffixed identifier, or filesystem path such as `coder_step_3_attempt_2` or `/root/workspace/...`; the dashboard attributes messages by roster name only.
+
 - **Start**: `"[CODER] Step 3: Starting. Reading context and 4 files."`
 - **Memory**: `"[CODER] Step 3: Found 2 relevant decisions in memory (JWT auth, Express middleware pattern)"`
 - **Implementation**: `"[CODER] Step 3: Implementing. Creating src/auth/middleware.ts, modifying src/routes/index.ts"`
