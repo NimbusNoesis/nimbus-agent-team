@@ -9,7 +9,7 @@ A Claude Code plugin that orchestrates a multi-agent coding team (coordinator, p
 - **MCP Server** (`server/src/index.ts`) — entry point, registers tools, starts dashboard, manages persistence
 - **Database** (`server/src/db/database.ts`) — in-memory SQLite database via sql.js (pure JS/WASM). Single backing store for runs, messages, and memory entries. Pure storage — no EventEmitter.
 - **State Machine** (`server/src/state/machine.ts`) — manages step lifecycle: `pending` -> `coding` -> `reviewing` -> `complete` / `escalated`. Every step is canonicalized to `executionMode: "code" | "read_only"` (default `code`, including legacy restore). `markReviewed` (`team_advance` action `mark_reviewed`) is allowed only for a `read_only` step still in `coding` with no submitted result; it records a synthetic `done` result and completes the step. Code steps must use the result/reviewer lifecycle. Enforces dependency ordering, file conflict detection, and stuck detection, and validates plans at `team_start` (duplicate step IDs, unknown dependencies, and dependency cycles are rejected). The server has no WIP cap; coordinators instead bound simultaneous workers by the host capacity, which `team_status` reports as `hostCapacity`. It manages workflow state only and never manages Git worktrees, branches, commits, switches, merges, or cleanup. Backed by Database.
-- **Message Bus** (`server/src/bus/message-bus.ts`) — append-only message log with EventEmitter, 10K cap per run. Backed by Database.
+- **Message Bus** (`server/src/bus/message-bus.ts`) — append-only message log with EventEmitter, 10K cap per run. Backed by Database. `MessageLogSync` (`server/src/bus/message-sync.ts`) tails sibling-process `messages.jsonl` appends into it via `ingestExternal`.
 - **Memory Store** (`server/src/memory/store.ts`) — key-value store in 5 namespaces (decisions, context, learnings, reviews, reflections). Extends EventEmitter, emits `entry_change` on writes and `entry_delete` on deletes (carrying the entry as it existed). Backed by Database.
 - **Tool Registry** (`server/src/tools/registry.ts`) — dispatches MCP tool calls to handlers
 - **Dashboard** (`server/src/dashboard/`) — Express + WebSocket server broadcasting state and message events to a Preact + Signals client
@@ -25,7 +25,7 @@ server/src/
   types.ts         All TypeScript types (StepState, RunState, Message, MemoryEntry, DashboardEvent)
   db/              Database (sql.js in-memory SQLite)
   state/           StateMachine + Persistence + PersistQueue
-  bus/             MessageBus
+  bus/             MessageBus + MessageLogSync (cross-instance feed sync)
   memory/          MemoryStore
   tools/           Tool handlers (workflow, results, messages, memory)
   dashboard/
@@ -40,7 +40,7 @@ cd server
 npm install          # install dependencies
 npm run typecheck    # type check with the TypeScript 7 native CLI
 npm run build        # build (ESM output to dist/)
-npm test             # run tests (442 tests across 20 files)
+npm test             # run tests (711 tests across 24 files)
 npx vitest           # watch mode
 npm run knip         # find unused files, exports, and dependencies
 ```
@@ -62,6 +62,8 @@ Each tools module (`tools/workflow.ts`, `tools/messages.ts`, `tools/memory.ts`, 
 
 ### EventEmitter pattern for cross-component communication
 StateMachine, MessageBus, and MemoryStore all extend EventEmitter. The dashboard server listens for events and broadcasts to WebSocket clients. When adding new observable state, follow this pattern: emit from the store -> listen in dashboard server -> broadcast to clients.
+
+One deliberate asymmetry: MessageBus emits `message` for locally posted messages and a DISTINCT `external_message` for messages ingested from sibling processes (`ingestExternal`). The dashboard broadcasts BOTH as the same `new_message` event, but `index.ts` binds `Persistence.appendMessage` ONLY to `message`. Never rebind persistence to `external_message` — that would re-append lines to a `messages.jsonl` the sibling process already owns (echo loop).
 
 ### Dashboard uses Preact with Signals
 The dashboard client is built with Preact and `@preact/signals` for reactive state management. Source lives in `server/src/dashboard/client/` with components organized by panel (header, steps, activity, status). State is managed via module-level signals in `state/store.ts`. The client is bundled by esbuild (invoked from tsup's `onSuccess` hook) into `dist/dashboard/public/app.js`. JSX auto-escaping handles XSS prevention. Styles live in `server/src/dashboard/public/style.css`; components reference stable CSS class names, so the stylesheet can be restyled without touching component markup (and tests that assert on class names stay green).
@@ -180,7 +182,7 @@ Startup restore uses `MemoryStore.restore()`, which writes the entry exactly as 
 
 ### Message log compaction spans restarts
 
-`Persistence.appendMessage` compacts a run's `messages.jsonl` every 2000 appends, but the append counter is in-memory only. So it also compacts on the first append per run per process lifetime — truncating over-cap files left by prior sessions — while keeping the hot path cheap.
+`Persistence.appendMessage` compacts a run's `messages.jsonl` every 2000 appends, but the append counter is in-memory only. So it also compacts on the first append per run per process lifetime — truncating over-cap files left by prior sessions — while keeping the hot path cheap. Compaction rewrites through a per-process unique temp name (`messages.jsonl.tmp.<pid>.<seq>`) plus atomic rename, so concurrent sibling compactions cannot corrupt the file. A bounded lost-append window remains: a sibling's `appendFile` landing between compaction's read and its rename is dropped from the on-disk log. That residual is accepted by design — the consequence is restart-restore-only (the live DB and dashboard feed already carry the message) — so do not "fix" it without revisiting the design decision.
 
 ### Message restore, filtering, and payload-safe logs
 
@@ -194,7 +196,12 @@ All production persistence event listeners enqueue synchronously. `PersistQueue.
 
 ### One live server per project
 
-The server writes its PID to `.team/server.lock` at startup and logs a prominent warning when another live server already holds the lock. This durability work does not change that advisory, warning-only behavior: the lock neither refuses startup nor serializes separate processes. Two concurrent sessions against the same project (a second Claude Code window, or Claude Code + Codex at once) each hold an independent in-memory DB, race last-writer-wins on `.team/` state, and cannot see each other's runs — use the hosts sequentially. Also launch from the project root: `TEAM_DIR` resolves from the server's cwd, so a session started in a subdirectory gets a different `.team`.
+The server writes its PID to `.team/server.lock` at startup and logs a prominent warning when another live server already holds the lock. The lock is advisory and warning-only: it neither refuses startup nor serializes separate processes. Two concurrent sessions against the same project (a second Claude Code window, or Claude Code + Codex at once) each hold an independent in-memory DB — still use the hosts sequentially. Precisely what concurrency means now:
+
+- **Run state stays last-writer-wins, but safely.** Every `state.json` write goes to a per-process unique temp name (`state.json.tmp.<pid>.<seq>`) followed by an atomic rename, eliminating the interleaved-content corruption two writers sharing one temp path used to produce. A lost update is now DETECTED, not silent: `saveRunState` embeds a top-level `writerStamp` `{pid, seq, savedAt}` (serialized into a copy — the live run object never gains the property) and re-reads the on-disk stamp just before rename; a mismatch logs a metadata-only warning once per run per process (debug thereafter) and proceeds. Detection never throws — an unreadable on-disk stamp (`stamp_unreadable`) skips detection rather than latching the fail-closed PersistQueue. `loadRunState` strips `writerStamp` before normalization, and salvages a legacy trailing-garbage `state.json` (a valid leading JSON document followed by junk from the historical shared-temp-path race) instead of skipping the run.
+- **Messages now sync cross-instance.** `MessageLogSync` (`bus/message-sync.ts`) tails sibling processes' appends to `.team/runs/*/messages.jsonl` (fs.watch plus a ~1.5s poll backstop) and feeds validated new lines through `MessageBus.ingestExternal`, so the dashboard-hosting process's feed shows messages persisted by sibling MCP server processes — the frozen-activity-feed incident class. Accepted limitation: a run created by a sibling process AFTER this process booted is never ingested (its `isKnownRun` gate stays false); acceptable because the dashboard-hosting coordinator creates the runs it displays.
+
+Also launch from the project root: `TEAM_DIR` resolves from the server's cwd, so a session started in a subdirectory gets a different `.team`.
 
 ### Use sql.js, not better-sqlite3
 better-sqlite3 requires native C++ compilation and is incompatible with Node v24+ (needs C++20). sql.js is a pure JS/WASM SQLite that works everywhere with no native dependencies. The Database class uses a static `Database.create()` factory method for async sql.js initialization.
