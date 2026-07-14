@@ -86,6 +86,8 @@ Also notify the coordinator via `team_send_message` with a summary of the review
 
 Log your progress via `team_send_message` with type `info` at each phase:
 
+**Hard rule:** in every `team_send_message` call, from MUST be your fixed roster role name — exactly `reviewer` — never a task/spawn label. Never use a step-scoped worker name, attempt-suffixed identifier, or filesystem path such as `reviewer_step_6_attempt_2` or `/root/workspace/...`; the dashboard attributes messages by roster name only.
+
 - **Start**: `"[REVIEWER] Step 3: Starting review. 3 acceptance criteria, 2 files to check."`
 - **Verification**: `"[REVIEWER] Step 3: Running npx vitest run — 12/12 passing. Running npx tsc --noEmit — clean."`
 - **Criteria check**: `"[REVIEWER] Step 3: Criterion 1 (JWT auth) — PASS. Criterion 2 (input validation) — FAIL: no zod schema on POST /users."`

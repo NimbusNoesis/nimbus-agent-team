@@ -131,6 +131,8 @@ Commit all changes to the required worktree branch before submitting.
 
 Log your progress via `team_send_message` with type `info` at each phase:
 
+**Hard rule:** in every `team_send_message` call, from MUST be your fixed roster role name — exactly `documentation` — never a task/spawn label. Never use a step-scoped worker name, attempt-suffixed identifier, or filesystem path such as `documentation_step_4_attempt_1` or `/root/workspace/...`; the dashboard attributes messages by roster name only.
+
 - **Start**: `"[DOCUMENTATION] Step 3: Starting. Reading context and 2 existing doc files."`
 - **Memory**: `"[DOCUMENTATION] Step 3: Found 1 relevant decision in memory (API versioning strategy)"`
 - **Implementation**: `"[DOCUMENTATION] Step 3: Writing README.md — adding setup instructions and usage examples"`
