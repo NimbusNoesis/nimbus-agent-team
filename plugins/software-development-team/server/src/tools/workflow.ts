@@ -27,18 +27,16 @@ const PlanStepSchema = z.object({
   executionMode: z.enum(['code', 'read_only']).default('code'),
 }).strict();
 
-// Raw shapes are exported for the legacy server.tool() registrations. Schemas
-// with object-level refinements must instead be registered through
-// server.registerTool({ inputSchema }) so the SDK enforces the complete schema
+// Keep the raw shape available for direct schema-parity tests. Production
+// registration must use the complete schema below so root strictness survives
 // at the public MCP boundary.
 export const teamStartShape = {
   task: z.string().optional().describe('Human-readable task description shown in the dashboard'),
   steps: z.array(PlanStepSchema).min(1),
 };
 
-// Export complete object schemas for registerTool() callers. Raw shapes remain
-// available for legacy server.tool() registrations, but they cannot retain
-// object-level strictness or refinements when spread into a new object.
+// A raw shape cannot retain object-level strictness when spread into a new
+// object, so production callers register this complete schema.
 export const teamStartSchema = z.object(teamStartShape).strict();
 
 export const teamStatusShape = {

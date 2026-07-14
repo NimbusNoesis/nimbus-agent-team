@@ -4,7 +4,7 @@ import { StateMachine } from './state/machine.js';
 import { MessageBus } from './bus/message-bus.js';
 import { MemoryStore } from './memory/store.js';
 import { ToolRegistry } from './tools/registry.js';
-import { teamStartShape, teamStatusShape, teamAdvanceShape, teamControlSchema } from './tools/workflow.js';
+import { teamStartSchema, teamStatusShape, teamAdvanceSchema, teamControlSchema } from './tools/workflow.js';
 import { teamSubmitResultShape } from './tools/results.js';
 import { teamSendMessageShape, teamGetMessagesShape } from './tools/messages.js';
 import { teamMemoryWriteShape, teamMemoryReadShape, teamMemoryDeleteShape } from './tools/memory.js';
@@ -90,13 +90,14 @@ async function main() {
 
   // --- Tool Definitions ---
 
-  // Tool input schemas are spread from the shapes exported by the handler
-  // modules (src/tools/*.ts), so the MCP validation layer and the handlers'
-  // own .parse() calls derive from one definition and cannot drift.
-  server.tool(
+  // Workflow schemas with object-level strictness or refinements use
+  // registerTool so the SDK validates the complete schema before dispatch.
+  server.registerTool(
     'team_start',
-    'Initialize a new task run with plan steps. Returns run ID.',
-    { ...teamStartShape },
+    {
+      description: 'Initialize a new task run with plan steps. Returns run ID.',
+      inputSchema: teamStartSchema,
+    },
     async (args) => {
       const result = await registry.handle('team_start', args);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
@@ -113,10 +114,12 @@ async function main() {
     }
   );
 
-  server.tool(
+  server.registerTool(
     'team_advance',
-    'Persist a set-once worktree context or advance a step through its lifecycle.',
-    { ...teamAdvanceShape },
+    {
+      description: 'Persist a set-once worktree context or advance a step through its lifecycle.',
+      inputSchema: teamAdvanceSchema,
+    },
     async (args) => {
       const result = await registry.handle('team_advance', args);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };

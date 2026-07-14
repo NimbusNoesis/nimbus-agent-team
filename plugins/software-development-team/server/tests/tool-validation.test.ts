@@ -441,10 +441,7 @@ describe('Zod schema validation', () => {
     });
   });
 
-  // index.ts spreads these exported shapes into server.tool(), so validating
-  // z.object(shape) here exercises exactly what the MCP layer enforces —
-  // guarding against the layers drifting apart again.
-  describe('exported shapes (MCP registration layer parity)', () => {
+  describe('exported workflow schemas', () => {
     it('team_start shape applies the canonical default and rejects unsupported modes', () => {
       const omitted = z.object(teamStartShape).parse({
         steps: [{ id: 1, description: 'x', files: [], acceptanceCriteria: [], dependsOn: [] }],

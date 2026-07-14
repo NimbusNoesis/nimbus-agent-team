@@ -177,6 +177,19 @@ describe('ToolRegistry', () => {
     expect(source).not.toMatch(/team_control'[\s\S]{0,300}teamControlShape/);
   });
 
+  it.each([
+    ['team_start', 'teamStartSchema'],
+    ['team_advance', 'teamAdvanceSchema'],
+  ])('registers %s with its complete schema in the production MCP entry point', (tool, schema) => {
+    const source = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8');
+    const registration = new RegExp(
+      `server\\.registerTool\\(\\s*'${tool}'[\\s\\S]{0,300}inputSchema:\\s*${schema}`,
+    );
+    expect(source.match(new RegExp(`server\\.registerTool\\(\\s*'${tool}'`, 'g'))).toHaveLength(1);
+    expect(source).toMatch(registration);
+    expect(source).not.toMatch(new RegExp(`server\\.tool\\(\\s*'${tool}'`));
+  });
+
   it('team_advance with resolve_escalation works on escalated step', async () => {
     const { runId } = await registry.handle('team_start', {
       steps: [{ id: 1, description: 'S1', files: [], acceptanceCriteria: [], dependsOn: [] }],
