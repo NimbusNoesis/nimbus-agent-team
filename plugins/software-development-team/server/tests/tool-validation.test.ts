@@ -366,6 +366,44 @@ describe('Zod schema validation', () => {
       const result = handleTeamGetMessages(bus, { runId: 'r1', to: 'all' });
       expect(result.messages).toEqual([]);
     });
+
+    it('accepts timezone offsets and rejects invalid since values at the MCP boundary', async () => {
+      const dispatches: unknown[] = [];
+      const server = new McpServer({ name: 'message-validation-server', version: '1.0.0' });
+      server.tool(
+        'team_get_messages',
+        'Read messages for an agent.',
+        { ...teamGetMessagesShape },
+        async (args) => {
+          dispatches.push(args);
+          return { content: [{ type: 'text' as const, text: 'ok' }] };
+        },
+      );
+
+      const client = new Client({ name: 'message-validation-client', version: '1.0.0' });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+
+      await expect(client.callTool({
+        name: 'team_get_messages',
+        arguments: { runId: 'r1', to: 'all', since: '2026-07-10T12:00:00+02:00' },
+      })).resolves.toMatchObject({ content: [{ type: 'text', text: 'ok' }] });
+      expect(dispatches).toEqual([{
+        runId: 'r1',
+        to: 'all',
+        since: '2026-07-10T12:00:00+02:00',
+      }]);
+
+      await expect(client.callTool({
+        name: 'team_get_messages',
+        arguments: { runId: 'r1', to: 'all', since: 'not-a-date' },
+      })).resolves.toMatchObject({ isError: true });
+      expect(dispatches).toHaveLength(1);
+
+      await client.close();
+      await server.close();
+    });
   });
 
   describe('TeamMemoryWriteSchema', () => {

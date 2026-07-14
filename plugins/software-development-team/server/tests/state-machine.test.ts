@@ -10,6 +10,7 @@ import type {
   WorktreeContext,
 } from '../src/types.js';
 import { makeWorktree, startStepWithWorktree } from './helpers.js';
+import { logger } from '../src/logger.js';
 
 const makeStep = (
   id: number,
@@ -974,6 +975,52 @@ describe('StateMachine', () => {
         expect(updateSpy).toHaveBeenCalledTimes(writesBefore);
         expect(events).toHaveLength(eventsBefore);
       }
+    });
+  });
+
+  describe('logging privacy', () => {
+    it('logs result and lifecycle metadata without result content or operator reasons', () => {
+      const summarySentinel = 'SECRET_RESULT_SUMMARY_CREDENTIAL_CODE_PROMPT';
+      const detailsSentinel = 'SECRET_RESULT_DETAILS_MEMORY_CONTENT';
+      const reasonSentinel = 'SECRET_OPERATOR_REASON';
+      const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => {});
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+
+      const blocked = sm.createRun([makeStep(1)]);
+      startStepWithWorktree(sm, blocked.id, 1, 'coder');
+      sm.submitResult(blocked.id, 1, {
+        status: 'blocked',
+        summary: summarySentinel,
+        details: detailsSentinel,
+      });
+
+      const controlled = sm.createRun([makeStep(1)]);
+      sm.executeControl(controlled.id, {
+        action: 'pause_run',
+        target: { kind: 'run' },
+        commandId: 'private-reason',
+        expectedRevision: 0,
+        summary: reasonSentinel,
+      });
+
+      const logged = JSON.stringify([
+        ...infoSpy.mock.calls,
+        ...warnSpy.mock.calls,
+        ...debugSpy.mock.calls,
+      ]);
+      expect(logged).not.toContain(summarySentinel);
+      expect(logged).not.toContain(detailsSentinel);
+      expect(logged).not.toContain(reasonSentinel);
+      expect(warnSpy).toHaveBeenCalledWith(
+        'StateMachine',
+        'Step 1 BLOCKED',
+        { runId: blocked.id, resultStatus: 'blocked' },
+      );
+
+      infoSpy.mockRestore();
+      warnSpy.mockRestore();
+      debugSpy.mockRestore();
     });
   });
 
