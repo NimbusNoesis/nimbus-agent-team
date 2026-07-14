@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Persistence, normalizeRunState } from '../src/state/persistence.js';
-import { MAX_MESSAGES_PER_RUN } from '../src/bus/message-bus.js';
+import { MessageBus, MAX_MESSAGES_PER_RUN } from '../src/bus/message-bus.js';
+import { Database } from '../src/db/database.js';
 import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +23,7 @@ describe('Persistence', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await rm(tmpDir, { recursive: true });
   });
 
@@ -182,7 +184,13 @@ describe('Persistence', () => {
     };
 
     await persistence.saveRunState(run);
-    expect(await persistence.loadRunState(run.id)).toEqual(run);
+    expect(await persistence.loadRunState(run.id)).toEqual({
+      ...run,
+      steps: run.steps.map((step) => ({
+        ...step,
+        step: { ...step.step, executionMode: 'code' },
+      })),
+    });
   });
 
   it('bounds restored command receipts and lifecycle history to their newest entries', async () => {
@@ -250,6 +258,67 @@ describe('Persistence', () => {
     expect((await persistence.loadRunState(run.id))?.steps[0].worktree).toEqual(run.steps[0].worktree);
   });
 
+  it('canonicalizes legacy execution modes at disk restore while retaining lifecycle normalization', async () => {
+    const base = {
+      id: 'execution-modes', status: 'ready',
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      steps: [{
+        step: { id: 1, description: 'legacy code', files: [], acceptanceCriteria: [], dependsOn: [] },
+        status: 'pending', retryCount: 0, assignedAgent: null, result: null,
+        claimedFiles: [], consecutiveSameError: 0,
+      }, {
+        step: {
+          id: 2, description: 'read-only review', files: [], acceptanceCriteria: [],
+          dependsOn: [], executionMode: 'read_only',
+        },
+        status: 'pending', retryCount: 0, assignedAgent: null, result: null,
+        claimedFiles: [], consecutiveSameError: 0,
+      }],
+    };
+
+    const dir = join(tmpDir, 'runs', base.id);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'state.json'), JSON.stringify(base));
+
+    const restored = await persistence.loadRunState(base.id);
+
+    expect(restored?.steps.map((step) => step.step.executionMode)).toEqual(['code', 'read_only']);
+    expect(restored?.lifecycle).toMatchObject({
+      version: RUN_LIFECYCLE_VERSION,
+      controlPhase: 'none',
+      revision: 0,
+    });
+  });
+
+  it('rejects unsupported persisted execution modes with a bounded error', async () => {
+    const maliciousMode = `unsupported-${'secret'.repeat(1_000)}`;
+    const persisted = {
+      id: 'bad-mode', status: 'ready',
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      steps: [{
+        step: {
+          id: 1, description: 'bad mode', files: [], acceptanceCriteria: [], dependsOn: [],
+          executionMode: maliciousMode,
+        },
+        status: 'pending', retryCount: 0, assignedAgent: null, result: null,
+        claimedFiles: [], consecutiveSameError: 0,
+      }],
+    };
+    const dir = join(tmpDir, 'runs', persisted.id);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'state.json'), JSON.stringify(persisted));
+
+    await expect(persistence.loadRunState(persisted.id)).rejects.toThrow(
+      'steps[0].step.executionMode must be code or read_only',
+    );
+    try {
+      await persistence.loadRunState(persisted.id);
+    } catch (error) {
+      expect(String(error).length).toBeLessThan(200);
+      expect(String(error)).not.toContain(maliciousMode);
+    }
+  });
+
   it('appends and loads messages', async () => {
     const msg: Message = {
       id: 'm1', runId: 'r1', from: 'coder', to: 'all',
@@ -259,6 +328,115 @@ describe('Persistence', () => {
     const loaded = await persistence.loadMessages('r1');
     expect(loaded).toHaveLength(1);
     expect(loaded[0].body).toBe('hello');
+  });
+
+  it('skips malformed message records independently and retains later valid records', async () => {
+    const { logger } = await import('../src/logger.js');
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const runId = 'message-recovery';
+    const dir = join(tmpDir, 'runs', runId);
+    await mkdir(dir, { recursive: true });
+    const valid = (id: string, timestamp: string): Message => ({
+      id, runId, from: 'reviewer', to: 'coordinator', type: 'review',
+      body: `valid ${id}`, timestamp,
+    });
+    const lines = [
+      JSON.stringify(valid('before', '2026-01-01T00:00:00.000Z')),
+      '{"body":"do not log this secret",',
+      JSON.stringify(['not', 'an', 'object']),
+      JSON.stringify({ id: 'missing-fields' }),
+      JSON.stringify({ ...valid('bad-type', '2026-01-01T00:00:01.000Z'), body: 42 }),
+      JSON.stringify({ ...valid('bad-message-type', '2026-01-01T00:00:02.000Z'), type: 'unknown' }),
+      JSON.stringify({ ...valid('bad-timestamp', 'not-a-timestamp'), body: 'private body' }),
+      JSON.stringify({ ...valid('wrong-run', '2026-01-01T00:00:03.000Z'), runId: 'another-run' }),
+      JSON.stringify(valid('after', '2026-01-01T01:00:04.000+01:00')),
+    ];
+    await writeFile(join(dir, 'messages.jsonl'), `${lines.join('\n')}\n`);
+
+    const loaded = await persistence.loadMessages(runId);
+
+    expect(loaded.map((message) => message.id)).toEqual(['before', 'after']);
+    expect(loaded[1].timestamp).toBe('2026-01-01T01:00:04.000+01:00');
+    expect(warnSpy.mock.calls.map((call) => call[2])).toEqual([
+      { runId, lineNumber: 2, reasonCode: 'malformed_json' },
+      { runId, lineNumber: 3, reasonCode: 'non_object' },
+      { runId, lineNumber: 4, reasonCode: 'missing_required_field' },
+      { runId, lineNumber: 5, reasonCode: 'invalid_field_type' },
+      { runId, lineNumber: 6, reasonCode: 'invalid_message_type' },
+      { runId, lineNumber: 7, reasonCode: 'invalid_timestamp' },
+      { runId, lineNumber: 8, reasonCode: 'mismatched_run_id' },
+    ]);
+    for (const call of warnSpy.mock.calls) {
+      expect(call[0]).toBe('Persistence');
+      expect(call[1]).toBe('Skipping invalid persisted message');
+      expect(Object.keys(call[2] ?? {}).sort()).toEqual(['lineNumber', 'reasonCode', 'runId']);
+      expect(JSON.stringify(call)).not.toMatch(/do not log|private body|parser|summary|details|memory/i);
+    }
+  });
+
+  it.each([
+    'not-a-date',
+    '2026-02-30T00:00:00.000Z',
+    '275760-09-13T00:00:00.000Z',
+  ])('rejects invalid persisted timestamp %s', async (timestamp) => {
+    const { logger } = await import('../src/logger.js');
+    vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const runId = 'invalid-timestamp';
+    const dir = join(tmpDir, 'runs', runId);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'messages.jsonl'), JSON.stringify({
+      id: 'invalid', runId, from: 'coder', to: 'all', type: 'info', body: 'hidden', timestamp,
+    }));
+
+    expect(await persistence.loadMessages(runId)).toEqual([]);
+  });
+
+  it('prevents invalid persisted timestamps from seeding MessageBus generation', async () => {
+    const { logger } = await import('../src/logger.js');
+    vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const runId = 'timestamp-seed';
+    const dir = join(tmpDir, 'runs', runId);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'messages.jsonl'), JSON.stringify({
+      id: 'invalid-seed', runId, from: 'coder', to: 'all', type: 'info',
+      body: 'must not reach the database', timestamp: 'Infinity',
+    }));
+    const db = await Database.create();
+    try {
+      for (const message of await persistence.loadMessages(runId)) db.insertMessage(message);
+      expect(db.getMaxMessageTimestamp(runId)).toBeUndefined();
+
+      const posted = new MessageBus(db).post({
+        runId, from: 'coordinator', to: 'all', type: 'info', body: 'safe timestamp',
+      });
+      expect(Number.isFinite(Date.parse(posted.timestamp))).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('applies the message cap after discarding invalid records', async () => {
+    const { logger } = await import('../src/logger.js');
+    vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const runId = 'valid-message-cap';
+    const dir = join(tmpDir, 'runs', runId);
+    await mkdir(dir, { recursive: true });
+    const validMessages = Array.from({ length: MAX_MESSAGES_PER_RUN + 2 }, (_, index): Message => ({
+      id: `valid-${index}`, runId, from: 'coder', to: 'all', type: 'info', body: `body-${index}`,
+      timestamp: new Date(Date.UTC(2026, 0, 1) + index).toISOString(),
+    }));
+    const lines = [
+      JSON.stringify(validMessages[0]),
+      '{malformed',
+      ...validMessages.slice(1).map((message) => JSON.stringify(message)),
+    ];
+    await writeFile(join(dir, 'messages.jsonl'), `${lines.join('\n')}\n`);
+
+    const loaded = await persistence.loadMessages(runId);
+
+    expect(loaded).toHaveLength(MAX_MESSAGES_PER_RUN);
+    expect(loaded[0].id).toBe('valid-2');
+    expect(loaded.at(-1)?.id).toBe(`valid-${MAX_MESSAGES_PER_RUN + 1}`);
   });
 
   it('saves and loads memory entries', async () => {
