@@ -64,6 +64,8 @@ export class PersistenceUnavailableError extends Error {
 export class PersistQueue {
   /** A rejection-safe chain used only to serialize work. */
   private tail: Promise<void> = Promise.resolve();
+  /** Serializes the complete admission -> mutation -> durability transaction. */
+  private mutationTail: Promise<void> = Promise.resolve();
   private nextSequence = 0;
   private failure: FailedPersistenceHealth | null = null;
 
@@ -77,6 +79,41 @@ export class PersistQueue {
     if (this.failure !== null) {
       throw new PersistenceUnavailableError();
     }
+  }
+
+  /**
+   * Admit one process-wide mutation at a time. The lane is intentionally owned
+   * by the persistence coordinator so every injected surface (MCP, dashboard,
+   * and future mutation adapters) shares the same admission boundary.
+   *
+   * A handler error still waits for the durability barrier before releasing
+   * the lane: a handler may have emitted persistence work before failing. A
+   * durability failure takes precedence so the global fail-closed state is
+   * never hidden by a local validation or lifecycle error.
+   */
+  runMutation<T>(mutation: () => Promise<T> | T): Promise<T> {
+    const operation = this.mutationTail.then(async () => {
+      this.assertHealthy();
+
+      let result!: T;
+      let mutationError: unknown;
+      let mutationFailed = false;
+      try {
+        result = await mutation();
+      } catch (err) {
+        mutationFailed = true;
+        mutationError = err;
+      }
+
+      await this.barrier();
+      if (mutationFailed) throw mutationError;
+      return result;
+    });
+
+    // Never poison the admission chain. Callers retain the rejecting operation
+    // while the next waiter always receives a settled predecessor.
+    this.mutationTail = operation.then(() => undefined, () => undefined);
+    return operation;
   }
 
   enqueue(

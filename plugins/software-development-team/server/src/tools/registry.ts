@@ -49,9 +49,9 @@ export class ToolRegistry {
     logger.debug('ToolRegistry', `→ ${tool}`, { keys: Object.keys(args) });
     try {
       const mutating = MUTATING_TOOLS.has(tool);
-      if (mutating) this.persistence.assertHealthy();
-      const result = await this.dispatch(tool, args);
-      if (mutating) await this.persistence.barrier();
+      const result = mutating
+        ? await this.persistence.runMutation(() => this.dispatch(tool, args))
+        : await this.dispatch(tool, args);
       logger.debug('ToolRegistry', `← ${tool} OK`);
       return result;
     } catch (err: any) {

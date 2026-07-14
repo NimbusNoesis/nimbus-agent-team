@@ -8,8 +8,9 @@ import { MessageBus } from '../src/bus/message-bus.js';
 import { MemoryStore } from '../src/memory/store.js';
 import { startDashboard } from '../src/dashboard/server.js';
 import { makeWorktree } from './helpers.js';
-import { PersistQueue } from '../src/state/persist-queue.js';
+import { PersistQueue, PersistenceUnavailableError } from '../src/state/persist-queue.js';
 import { logger } from '../src/logger.js';
+import { ToolRegistry } from '../src/tools/registry.js';
 
 describe('Dashboard server', () => {
   let sm: StateMachine;
@@ -661,6 +662,58 @@ describe('Dashboard persistence health', () => {
       const reads = await fetch(`${baseUrl}/api/runs`);
       expect(reads.status).toBe(200);
       expect(await reads.json()).toHaveLength(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('shares one mutation admission lane between dashboard and MCP requests', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    try {
+      const db = await Database.create();
+      const sm = new StateMachine(db);
+      const bus = new MessageBus(db);
+      const memory = new MemoryStore(db);
+      const persistence = new PersistQueue();
+      const registry = new ToolRegistry(sm, bus, memory, persistence);
+      const run = sm.createRun([{
+        id: 1, description: 'Cross-surface race', files: [], acceptanceCriteria: [], dependsOn: [],
+      }]);
+      let observeGuidance!: () => void;
+      const guidanceObserved = new Promise<void>((resolve) => { observeGuidance = resolve; });
+      let releaseFailure!: () => void;
+      const failureGate = new Promise<void>((resolve) => { releaseFailure = resolve; });
+
+      bus.on('message', (message) => {
+        observeGuidance();
+        persistence.enqueue(async () => {
+          await failureGate;
+          throw new Error('private cross-surface failure');
+        }, { kind: 'message', runId: message.runId });
+      });
+
+      const port = await startDashboard(sm, bus, memory, persistence);
+      const dashboardMutation = fetch(`http://localhost:${port}/api/guidance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId: run.id, body: 'volatile dashboard mutation' }),
+      });
+      await guidanceObserved;
+
+      const mcpMutation = registry.handle('team_memory_write', {
+        key: 'must-not-exist', namespace: 'decisions', value: 'blocked by shared lane',
+      });
+      const mcpOutcome = mcpMutation.then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      releaseFailure();
+
+      const dashboardResponse = await dashboardMutation;
+      expect(dashboardResponse.status).toBe(503);
+      expect(await mcpOutcome).toBeInstanceOf(PersistenceUnavailableError);
+      expect(bus.getAllMessages(run.id)).toHaveLength(1);
+      expect(memory.getAll()).toEqual([]);
     } finally {
       errorSpy.mockRestore();
     }

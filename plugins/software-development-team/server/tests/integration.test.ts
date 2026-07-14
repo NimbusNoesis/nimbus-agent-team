@@ -383,7 +383,7 @@ describe('Integration: concurrent durability failure', () => {
         if (result.status === 'rejected') expect(result.reason).toBeInstanceOf(PersistenceUnavailableError);
       }
       expect(persistenceAttempts).toBe(1);
-      expect(memory.getAll()).toHaveLength(2);
+      expect(memory.getAll()).toHaveLength(1);
       expect(persistence.health).toMatchObject({ status: 'failed', operationKind: 'memory_entry' });
     } finally {
       errorSpy.mockRestore();

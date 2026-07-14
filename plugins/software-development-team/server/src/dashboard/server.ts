@@ -306,28 +306,31 @@ export async function startDashboard(
           throw new ControlRequestError(404, 'target_not_found', `Step ${stepId} not found in run ${runId}`);
         }
       }
-      const replayed = existing.lifecycle?.commandReceipts.some((receipt) => receipt.commandId === body.commandId) ?? false;
-
-      let receipt;
+      let mutationResult;
       try {
-        persistence.assertHealthy();
-        receipt = sm.executeControl(runId, {
-          action: body.action,
-          target: body.target,
-          commandId: body.commandId,
-          expectedRevision: body.expectedRevision,
-          ...(body.reason === undefined ? {} : { summary: body.reason }),
+        mutationResult = await persistence.runMutation(() => {
+          const beforeMutation = sm.getRun(runId);
+          const replayed = beforeMutation?.lifecycle?.commandReceipts.some(
+            (receipt) => receipt.commandId === body.commandId,
+          ) ?? false;
+          const receipt = sm.executeControl(runId, {
+            action: body.action,
+            target: body.target,
+            commandId: body.commandId,
+            expectedRevision: body.expectedRevision,
+            ...(body.reason === undefined ? {} : { summary: body.reason }),
+          });
+          return { receipt, replayed, run: sm.getRun(runId) };
         });
-        await persistence.barrier();
       } catch (err) {
         throw stateMachineError(err);
       }
 
       res.json({
         success: true,
-        replayed,
-        receipt,
-        run: sm.getRun(runId),
+        replayed: mutationResult.replayed,
+        receipt: mutationResult.receipt,
+        run: mutationResult.run,
       });
     } catch (err) {
       const responseError = err instanceof ControlRequestError ? err : stateMachineError(err);
@@ -351,9 +354,9 @@ export async function startDashboard(
       return;
     }
     try {
-      persistence.assertHealthy();
-      bus.post({ runId, from: 'user', to: 'coordinator', type: 'guidance', body });
-      await persistence.barrier();
+      await persistence.runMutation(() => {
+        bus.post({ runId, from: 'user', to: 'coordinator', type: 'guidance', body });
+      });
       res.json({ success: true });
     } catch (err) {
       if (err instanceof PersistenceUnavailableError) {

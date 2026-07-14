@@ -575,6 +575,9 @@ describe('ToolRegistry persistence health', () => {
     expect(memory.read('decisions', 'durable')).toBeDefined();
     expect(durable).toBe(false);
     expect(responseSettled).toBe(false);
+    await expect(registry.handle('team_memory_read', {
+      namespace: 'decisions', key: 'durable',
+    })).resolves.toMatchObject({ entry: { value: 'persist me' } });
 
     release();
     await expect(response).resolves.toMatchObject({ success: true });
