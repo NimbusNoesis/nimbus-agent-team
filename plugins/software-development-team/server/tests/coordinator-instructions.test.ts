@@ -198,6 +198,23 @@ describe('coordinator instruction contract', () => {
   });
 
   it.each(beginPlanningSurfaces)(
+    '$host begin gives the initial planner an explicit pre-run, JSON-only handoff',
+    ({ content }) => {
+      const initialPlannerHandoff = sectionBetween(content, '3. Create plan steps', '**3a.');
+
+      expect(initialPlannerHandoff).toMatch(/initial planner/i);
+      expect(initialPlannerHandoff).toMatch(/no run(?: ID)? exists/i);
+      expect(initialPlannerHandoff).toMatch(/(?:do not|not to) require or fabricate a run ID/i);
+      expect(initialPlannerHandoff).toContain('`prerun-<task-slug>-draft-plan-reflection`');
+      expect(initialPlannerHandoff).toMatch(/progress, rationale, and reflection[\s\S]*`team_memory_write`/i);
+      expect(initialPlannerHandoff).toMatch(/never (?:call )?`team_send_message`/i);
+      expect(initialPlannerHandoff).toMatch(
+        /final (?:response|output)[\s\S]*only a valid JSON array[\s\S]*`id`[\s\S]*`description`[\s\S]*`files`[\s\S]*`acceptanceCriteria`[\s\S]*`dependsOn`[\s\S]*`executionMode`/i,
+      );
+    },
+  );
+
+  it.each(beginPlanningSurfaces)(
     '$host begin keeps both planning handoffs explicitly pre-run and execution-mode complete',
     ({ content }) => {
       const criticHandoff = sectionBetween(content, '**3a.', '**3b.');

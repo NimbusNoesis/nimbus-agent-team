@@ -155,6 +155,32 @@ Each agent dispatch consumes tokens independently. Token costs scale linearly wi
 2. Read shared memory (`team_memory_read` for all namespaces: `decisions`, `context`, `learnings`, `reviews`, `reflections`) for prior context.
 3. Create plan steps (yourself for quick tasks, or from planner output). **For planner-produced plans, run the adversarial review sub-phase (3a–3b) below before proceeding to step 4. For quick tasks you drafted yourself, skip directly to step 4.** Every ordinary implementation, research, or documentation step MUST declare `executionMode: "code"`; `read_only` is reserved for the dedicated standalone-review workflow above and is never inferred from the assigned agent role. Require every planner JSON step to contain all fields `id`, `description`, `files`, `acceptanceCriteria`, `dependsOn`, and `executionMode`.
 
+   For a planner-produced plan, first dispatch the initial planner using the Agent tool:
+
+   ```text
+   Agent(
+     subagent_type: "software-development-team:planner",
+     description: "Draft implementation plan",
+     prompt: """
+   You are being dispatched as the initial planner before a run exists.
+
+   ## Pre-run context
+   - No run exists yet. Do not require or fabricate a run ID.
+   - Reflection key override: `prerun-<task-slug>-draft-plan-reflection` (use this exact resolved key).
+
+   ## Task description
+   {original task description}
+
+   ## Relevant memory context
+   {paste decisions, context, and learnings entries from team_memory_read}
+
+   Produce the draft implementation plan. Every step must include all fields `id`, `description`, `files`, `acceptanceCriteria`, `dependsOn`, and `executionMode`; ordinary implementation, research, and documentation steps use `executionMode: "code"`.
+   Write all progress, rationale, and reflection with `team_memory_write`; never call `team_send_message` because no run exists yet.
+   Your final response must be only a valid JSON array of plan steps containing all fields `id`, `description`, `files`, `acceptanceCriteria`, `dependsOn`, and `executionMode`, with no prose, Markdown fence, or JSON comments.
+   """
+   )
+   ```
+
    **3a. Dispatch the plan-critic** (planner-produced plans only).
 
    No dashboard relay yet: the run does not exist until `team_start`, and `team_send_message` requires an existing run ID — the server rejects unknown ones. Planning-phase activity is relayed in one summary message right after `team_start` succeeds.
