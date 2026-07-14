@@ -14,12 +14,16 @@ type StepStatus =
 
 type RunStatus = 'ready' | 'in_progress' | 'escalated' | 'complete' | 'cancelled';
 
+export type ExecutionMode = 'code' | 'read_only';
+
 export interface PlanStep {
   id: number;
   description: string;
   files: string[];
   acceptanceCriteria: string[];
   dependsOn: number[];  // step IDs this depends on
+  /** Omitted by legacy callers; state-machine boundaries persist it canonically as `code`. */
+  executionMode?: ExecutionMode;
 }
 
 export interface WorktreeContext {

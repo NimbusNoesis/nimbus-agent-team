@@ -1,14 +1,20 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { StateMachine } from '../src/state/machine.js';
 import { Database } from '../src/db/database.js';
-import type { ExecutionControlAction, PlanStep, RunState, StepState } from '../src/types.js';
+import type { ExecutionControlAction, ExecutionMode, PlanStep, RunState, StepState } from '../src/types.js';
 
-const makeStep = (id: number, dependsOn: number[] = [], files?: string[]): PlanStep => ({
+const makeStep = (
+  id: number,
+  dependsOn: number[] = [],
+  files?: string[],
+  executionMode?: ExecutionMode,
+): PlanStep => ({
   id,
   description: `Step ${id}`,
   files: files ?? [`file${id}.ts`],
   acceptanceCriteria: [`criterion ${id}`],
   dependsOn,
+  ...(executionMode === undefined ? {} : { executionMode }),
 });
 
 describe('StateMachine', () => {
@@ -35,6 +41,30 @@ describe('StateMachine', () => {
       expect(run.steps).toHaveLength(2);
       expect(run.steps[0].status).toBe('pending');
       expect(run.steps[1].status).toBe('pending');
+      expect(run.steps.map(({ step }) => step.executionMode)).toEqual(['code', 'code']);
+    });
+
+    it('canonicalizes execution modes while preserving explicit read-only steps', () => {
+      const run = sm.createRun([makeStep(1), makeStep(2, [], undefined, 'read_only')]);
+
+      expect(run.steps[0].step.executionMode).toBe('code');
+      expect(run.steps[1].step.executionMode).toBe('read_only');
+      expect(sm.getRun(run.id)!.steps.map(({ step }) => step.executionMode)).toEqual([
+        'code',
+        'read_only',
+      ]);
+    });
+
+    it('rejects unsupported execution modes without inserting or emitting a run', () => {
+      const insertSpy = vi.spyOn(db, 'insertRun');
+      const events: RunState[] = [];
+      sm.on('state_update', (state: RunState) => events.push(state));
+      const invalid = { ...makeStep(1), executionMode: 'documentation' } as unknown as PlanStep;
+
+      expect(() => sm.createRun([invalid])).toThrow("unsupported execution mode \"documentation\"");
+      expect(insertSpy).not.toHaveBeenCalled();
+      expect(sm.getAllRuns()).toEqual([]);
+      expect(events).toHaveLength(0);
     });
 
     it('generates a unique run ID', () => {
@@ -731,8 +761,8 @@ describe('StateMachine', () => {
   });
 
   describe('markReviewed', () => {
-    it('closes a coding step directly to complete with a synthetic result', () => {
-      const run = sm.createRun([makeStep(1)]);
+    it('closes a coding read-only step directly to complete with a synthetic result', () => {
+      const run = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
       sm.startStep(run.id, 1, 'reviewer');
       sm.markReviewed(run.id, 1);
       const updated = sm.getRun(run.id)!;
@@ -745,50 +775,83 @@ describe('StateMachine', () => {
     });
 
     it('uses a provided summary when given', () => {
-      const run = sm.createRun([makeStep(1)]);
+      const run = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
       sm.startStep(run.id, 1, 'reviewer');
       sm.markReviewed(run.id, 1, 'Security findings delivered.');
       expect(sm.getRun(run.id)!.steps[0].result?.summary).toBe('Security findings delivered.');
     });
 
-    it('closes a reviewing step as well', () => {
-      const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
-      sm.submitResult(run.id, 1, { status: 'done', summary: 'implemented' });
-      sm.markReviewed(run.id, 1, 'reviewed');
-      expect(sm.getRun(run.id)!.steps[0].status).toBe('complete');
-    });
-
-    it('preserves a previously submitted result in resultHistory', () => {
-      const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'coder');
-      sm.submitResult(run.id, 1, { status: 'done', summary: 'coder finished' });
-      sm.markReviewed(run.id, 1, 'reviewed and closed');
-
-      const step = sm.getRun(run.id)!.steps[0];
-      expect(step.result?.status).toBe('done');
-      expect(step.result?.summary).toBe('reviewed and closed');
-      expect(step.resultHistory).toHaveLength(1);
-      expect(step.resultHistory![0]).toEqual({ status: 'done', summary: 'coder finished' });
-    });
-
     it('does not create resultHistory when no result was ever submitted', () => {
-      const run = sm.createRun([makeStep(1)]);
+      const run = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
       sm.startStep(run.id, 1, 'reviewer');
       sm.markReviewed(run.id, 1);
       expect(sm.getRun(run.id)!.steps[0].resultHistory).toBeUndefined();
     });
 
-    it('rejects marking a pending step as reviewed', () => {
-      const run = sm.createRun([makeStep(1)]);
-      expect(() => sm.markReviewed(run.id, 1)).toThrow("cannot be marked reviewed from status 'pending'");
-    });
+    it('rejects every non-read-only or non-pristine-coding state without side effects', () => {
+      const code = sm.createRun([makeStep(1)]);
+      sm.startStep(code.id, 1, 'coder');
 
-    it('rejects marking a complete step as reviewed', () => {
-      const run = sm.createRun([makeStep(1)]);
-      sm.startStep(run.id, 1, 'reviewer');
-      sm.markReviewed(run.id, 1);
-      expect(() => sm.markReviewed(run.id, 1)).toThrow("cannot be marked reviewed from status 'complete'");
+      const pending = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
+
+      const reviewingDone = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
+      sm.startStep(reviewingDone.id, 1, 'reviewer');
+      sm.submitResult(reviewingDone.id, 1, { status: 'done', summary: 'submitted' });
+
+      const reviewingRejected = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
+      sm.startStep(reviewingRejected.id, 1, 'reviewer');
+      sm.submitResult(reviewingRejected.id, 1, { status: 'done', summary: 'submitted' });
+      sm.submitResult(reviewingRejected.id, 1, {
+        status: 'needs_revision',
+        summary: 'rejected',
+      });
+
+      const codingWithResult = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
+      sm.startStep(codingWithResult.id, 1, 'reviewer');
+      const malformedCoding = sm.getRun(codingWithResult.id)!;
+      malformedCoding.steps[0].result = { status: 'done', summary: 'unexpected submission' };
+      db.updateRun(malformedCoding);
+
+      const complete = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
+      sm.startStep(complete.id, 1, 'reviewer');
+      sm.markReviewed(complete.id, 1);
+
+      const escalated = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
+      sm.startStep(escalated.id, 1, 'reviewer');
+      sm.submitResult(escalated.id, 1, { status: 'blocked', summary: 'blocked' });
+
+      const cancelled = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
+      sm.executeControl(cancelled.id, {
+        action: 'cancel_run',
+        target: { kind: 'run' },
+        commandId: 'cancel-read-only',
+        expectedRevision: 0,
+      });
+
+      const cases = [
+        { runId: code.id, error: "execution mode 'code'" },
+        { runId: pending.id, error: "status 'pending'" },
+        { runId: reviewingDone.id, error: "status 'reviewing'" },
+        { runId: reviewingRejected.id, error: "status 'reviewing'" },
+        { runId: codingWithResult.id, error: 'after a result has been submitted' },
+        { runId: complete.id, error: "status 'complete'" },
+        { runId: escalated.id, error: "status 'escalated'" },
+        { runId: cancelled.id, error: "status 'cancelled'" },
+      ];
+      const updateSpy = vi.spyOn(db, 'updateRun');
+      const events: RunState[] = [];
+      sm.on('state_update', (state: RunState) => events.push(state));
+
+      for (const testCase of cases) {
+        const before = sm.getRun(testCase.runId)!;
+        const writesBefore = updateSpy.mock.calls.length;
+        const eventsBefore = events.length;
+
+        expect(() => sm.markReviewed(testCase.runId, 1)).toThrow(testCase.error);
+        expect(sm.getRun(testCase.runId)).toEqual(before);
+        expect(updateSpy).toHaveBeenCalledTimes(writesBefore);
+        expect(events).toHaveLength(eventsBefore);
+      }
     });
   });
 
@@ -822,6 +885,71 @@ describe('StateMachine', () => {
       expect(retrieved).toBeDefined();
       expect(retrieved!.status).toBe('in_progress');
       expect(retrieved!.steps[0].assignedAgent).toBe('coder');
+      expect(retrieved!.steps[0].step.executionMode).toBe('code');
+    });
+
+    it('preserves explicit read-only mode while restoring', () => {
+      const source = sm.createRun([makeStep(1, [], undefined, 'read_only')]);
+      const restored = sm.getRun(source.id)!;
+      restored.id = 'restored-read-only';
+
+      sm.restoreRun(restored);
+
+      expect(sm.getRun(restored.id)!.steps[0].step.executionMode).toBe('read_only');
+    });
+
+    it('canonicalizes a legacy step without changing lifecycle-v2 or result history', () => {
+      const source = sm.createRun([makeStep(1)]);
+      sm.executeControl(source.id, {
+        action: 'pause_run',
+        target: { kind: 'run' },
+        commandId: 'legacy-pause',
+        expectedRevision: 0,
+      });
+      sm.executeControl(source.id, {
+        action: 'resume_run',
+        target: { kind: 'run' },
+        commandId: 'legacy-resume',
+        expectedRevision: 1,
+      });
+      const legacy = sm.getRun(source.id)!;
+      legacy.id = 'legacy-execution-mode';
+      delete legacy.steps[0].step.executionMode;
+      legacy.status = 'in_progress';
+      legacy.steps[0].status = 'reviewing';
+      legacy.steps[0].result = { status: 'done', summary: 'current result' };
+      legacy.steps[0].resultHistory = [
+        { status: 'done', summary: 'first result' },
+        { status: 'needs_revision', summary: 'review feedback' },
+      ];
+      const expectedLifecycle = structuredClone(legacy.lifecycle);
+      const expectedHistory = structuredClone(legacy.steps[0].resultHistory);
+
+      sm.restoreRun(legacy);
+      const restored = sm.getRun(legacy.id)!;
+
+      expect(restored.steps[0].step.executionMode).toBe('code');
+      expect(restored.status).toBe('in_progress');
+      expect(restored.steps[0].status).toBe('reviewing');
+      expect(restored.steps[0].result).toEqual({ status: 'done', summary: 'current result' });
+      expect(restored.steps[0].resultHistory).toEqual(expectedHistory);
+      expect(restored.lifecycle).toEqual(expectedLifecycle);
+    });
+
+    it('rejects unsupported execution modes without inserting or emitting a restored run', () => {
+      const source = sm.createRun([makeStep(1)]);
+      const invalid = sm.getRun(source.id)!;
+      invalid.id = 'invalid-restored-mode';
+      invalid.steps[0].step.executionMode = 'documentation' as ExecutionMode;
+      const insertSpy = vi.spyOn(db, 'insertRun');
+      insertSpy.mockClear();
+      const events: RunState[] = [];
+      sm.on('state_update', (state: RunState) => events.push(state));
+
+      expect(() => sm.restoreRun(invalid)).toThrow("unsupported execution mode \"documentation\"");
+      expect(insertSpy).not.toHaveBeenCalled();
+      expect(sm.getRun(invalid.id)).toBeUndefined();
+      expect(events).toHaveLength(0);
     });
 
     it('does not emit state_update on restore', () => {
