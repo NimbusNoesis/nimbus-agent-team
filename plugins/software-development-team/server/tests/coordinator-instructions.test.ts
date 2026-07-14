@@ -757,4 +757,42 @@ describe('coordinator instruction contract', () => {
   it.each(agents.filter(({ role }) => role === 'reviewer'))('$file requires reviewer commit inspection', ({ content }) => {
     expect(content).toMatch(/(?:check|checking).*coder commits.*branch/i);
   });
+
+  it.each(agents.filter(({ role }) => role !== 'plan-critic'))(
+    '$file pins the team_send_message from label to the fixed $role roster name',
+    ({ role, content }) => {
+      expect(content).toContain('from MUST be your fixed roster role name');
+      expect(content).toContain('never a task/spawn label');
+      expect(content).toContain(`exactly \`${role}\``);
+    },
+  );
+
+  it.each(instructions)('$file pins relayed from labels to roster names inside the relay section', ({ content }) => {
+    const relay = sectionBetween(content, '## Agent Message Relay', '## Debug Logging');
+    expect(relay).toContain('MUST be a fixed roster role name');
+    expect(relay).toContain('never a task/spawn label');
+  });
+
+  it.each(instructions.filter(({ file }) => file.endsWith('/begin.md') || file.endsWith('/begin/SKILL.md')))(
+    '$file re-anchors the relay contract inside the scheduler loop',
+    ({ content }) => {
+      const loopEnd = content.includes('## Spawn Context Checklist')
+        ? '## Spawn Context Checklist'
+        : '## Dispatch Context Checklist';
+      const loop = sectionBetween(content, '## The Loop', loopEnd);
+      expect(loop).toContain('Relay contract re-anchor (every scheduler pass):');
+      expect(loop).toContain('re-read the Agent Message Relay section and resume relaying immediately');
+      // Fixed role names remain valid from values — the pre-existing plan-critic
+      // relay example must never be rejected as a task/spawn label.
+      expect(content).toContain('from: "plan-critic"');
+    },
+  );
+
+  it.each([...instructions, ...agents.filter(({ role }) => role !== 'plan-critic')])(
+    '$file never demonstrates a task/spawn label or filesystem path as a from value',
+    ({ content }) => {
+      expect(content).not.toContain('from: "coder_step');
+      expect(content).not.toContain('from: "/root/');
+    },
+  );
 });
