@@ -26,6 +26,7 @@ import type {
   MemoryEntry,
 } from '../types.js';
 import { logger } from '../logger.js';
+import { PersistQueue, PersistenceUnavailableError } from '../state/persist-queue.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -65,7 +66,7 @@ type ControlRequestBody = {
 
 class ControlRequestError extends Error {
   constructor(
-    readonly status: 400 | 403 | 404 | 409,
+    readonly status: 400 | 403 | 404 | 409 | 503,
     readonly code: string,
     message: string,
   ) {
@@ -205,6 +206,9 @@ function enforceMutationOrigin(req: Request): void {
 }
 
 function stateMachineError(err: unknown): ControlRequestError {
+  if (err instanceof PersistenceUnavailableError) {
+    return new ControlRequestError(503, err.code, err.message);
+  }
   const message = err instanceof Error ? err.message : 'Execution control failed';
   if (/Run .+ not found|Step \d+ not found/.test(message)) {
     return new ControlRequestError(404, 'target_not_found', message);
@@ -241,6 +245,7 @@ export async function startDashboard(
   sm: StateMachine,
   bus: MessageBus,
   memoryStore: MemoryStore,
+  persistence: PersistQueue = new PersistQueue(),
 ): Promise<number> {
   const app = express();
 
@@ -278,7 +283,7 @@ export async function startDashboard(
     res.json(bus.getAllMessages(req.params.runId));
   });
 
-  app.post('/api/runs/:runId/control', (req, res) => {
+  app.post('/api/runs/:runId/control', async (req, res) => {
     try {
       enforceMutationOrigin(req);
       if (!req.is('application/json')) {
@@ -305,6 +310,7 @@ export async function startDashboard(
 
       let receipt;
       try {
+        persistence.assertHealthy();
         receipt = sm.executeControl(runId, {
           action: body.action,
           target: body.target,
@@ -312,6 +318,7 @@ export async function startDashboard(
           expectedRevision: body.expectedRevision,
           ...(body.reason === undefined ? {} : { summary: body.reason }),
         });
+        await persistence.barrier();
       } catch (err) {
         throw stateMachineError(err);
       }
@@ -333,7 +340,7 @@ export async function startDashboard(
     }
   });
 
-  app.post('/api/guidance', (req, res) => {
+  app.post('/api/guidance', async (req, res) => {
     const { runId, body } = req.body;
     if (!runId || !body) {
       res.status(400).json({ error: 'runId and body required' });
@@ -344,10 +351,16 @@ export async function startDashboard(
       return;
     }
     try {
+      persistence.assertHealthy();
       bus.post({ runId, from: 'user', to: 'coordinator', type: 'guidance', body });
+      await persistence.barrier();
       res.json({ success: true });
     } catch (err) {
-      logger.error('Dashboard', 'Failed to post guidance message', { error: String(err) });
+      if (err instanceof PersistenceUnavailableError) {
+        res.status(503).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      logger.error('Dashboard', 'Failed to post guidance message');
       res.status(500).json({ error: 'Failed to post message' });
     }
   });

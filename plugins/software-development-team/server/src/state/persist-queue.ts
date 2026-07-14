@@ -28,6 +28,8 @@ interface QueuedOperation {
 const SAFE_OPERATION_KINDS: ReadonlySet<string> = new Set([
   'run_state',
   'message',
+  'memory_entry',
+  'memory_delete',
   'shutdown_run_state',
 ]);
 

@@ -111,6 +111,20 @@ describe('PersistQueue', () => {
     }
   });
 
+  it.each(['memory_entry', 'memory_delete'])('retains the safe %s operation kind', async (kind) => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    try {
+      const queue = new PersistQueue();
+      await expect(queue.enqueue(
+        async () => { throw new Error('write failed'); },
+        context(kind),
+      )).rejects.toBeInstanceOf(PersistenceUnavailableError);
+      expect(queue.health).toMatchObject({ status: 'failed', operationKind: kind });
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('preserves the first failure and rejects later work before side effects', async () => {
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
     try {

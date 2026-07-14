@@ -1,10 +1,12 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { StateMachine } from '../src/state/machine.js';
 import { MessageBus } from '../src/bus/message-bus.js';
 import { MemoryStore } from '../src/memory/store.js';
 import { ToolRegistry } from '../src/tools/registry.js';
 import { Database } from '../src/db/database.js';
 import { makeWorktree } from './helpers.js';
+import { PersistQueue, PersistenceUnavailableError } from '../src/state/persist-queue.js';
+import { logger } from '../src/logger.js';
 
 describe('Integration: Full workflow', () => {
   let registry: ToolRegistry;
@@ -345,5 +347,46 @@ describe('Integration: Full workflow', () => {
       expect(status.steps[index].startedAt).toBeTruthy();
     }
     expect(status.updatedAt).toBeTruthy();
+  });
+});
+
+describe('Integration: concurrent durability failure', () => {
+  it('makes concurrent mutation responses fail globally and skips queued work after the first failure', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    try {
+      const db = await Database.create();
+      const sm = new StateMachine(db);
+      const bus = new MessageBus(db);
+      const memory = new MemoryStore(db);
+      const persistence = new PersistQueue();
+      const registry = new ToolRegistry(sm, bus, memory, persistence);
+      let persistenceAttempts = 0;
+
+      memory.on('entry_change', () => {
+        persistence.enqueue(async () => {
+          persistenceAttempts += 1;
+          throw new Error('first write failed');
+        }, { kind: 'memory_entry' });
+      });
+
+      const first = registry.handle('team_memory_write', {
+        key: 'first', namespace: 'context', value: 'volatile one',
+      });
+      const second = registry.handle('team_memory_write', {
+        key: 'second', namespace: 'context', value: 'volatile two',
+      });
+
+      const results = await Promise.allSettled([first, second]);
+      expect(results).toHaveLength(2);
+      for (const result of results) {
+        expect(result.status).toBe('rejected');
+        if (result.status === 'rejected') expect(result.reason).toBeInstanceOf(PersistenceUnavailableError);
+      }
+      expect(persistenceAttempts).toBe(1);
+      expect(memory.getAll()).toHaveLength(2);
+      expect(persistence.health).toMatchObject({ status: 'failed', operationKind: 'memory_entry' });
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

@@ -15,7 +15,7 @@ import { Database } from './db/database.js';
 import { resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { logger } from './logger.js';
-import type { RunState } from './types.js';
+import type { MemoryEntry, RunState } from './types.js';
 import { claimServerLock, releaseServerLock } from './state/server-lock.js';
 
 const teamDir = resolve(process.env.TEAM_DIR ?? '.team');
@@ -86,7 +86,10 @@ async function main() {
   const bus = new MessageBus(db);
   const memory = new MemoryStore(db);
   const persistence = new Persistence(teamDir);
-  const registry = new ToolRegistry(sm, bus, memory);
+  // Create the process-wide durability latch before exposing either MCP or
+  // dashboard mutation surfaces. Every mutating request shares this queue.
+  const persistQueue = new PersistQueue();
+  const registry = new ToolRegistry(sm, bus, memory, persistQueue);
 
   // --- Tool Definitions ---
 
@@ -174,13 +177,6 @@ async function main() {
     { ...teamMemoryWriteShape },
     async (args) => {
       const result = await registry.handle('team_memory_write', args);
-      await persistence.saveMemoryEntry({
-        key: args.key,
-        namespace: args.namespace,
-        value: args.value,
-        runId: args.runId,
-        updatedAt: result.updatedAt,
-      });
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
     }
   );
@@ -201,7 +197,6 @@ async function main() {
     { ...teamMemoryDeleteShape },
     async (args) => {
       const result = await registry.handle('team_memory_delete', args);
-      await persistence.deleteMemoryEntry(args.namespace, args.key);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
     }
   );
@@ -238,15 +233,6 @@ async function main() {
   }
   logger.info('Server', `Restored ${runStates.length} run states and ${restoredMessageCount} messages from disk`);
 
-  const dashboardPort = await startDashboard(sm, bus, memory);
-  registry.setDashboardUrl(`http://localhost:${dashboardPort}`);
-  logger.info('Server', `Dashboard URL: http://localhost:${dashboardPort}`);
-
-  // Serialized persistence — one queue for run states AND message appends, so
-  // shutdown can await everything in flight (previously message appends were
-  // fire-and-forget and could be lost on SIGTERM).
-  const persistQueue = new PersistQueue();
-
   // Event-driven persistence — state saved on every transition
   sm.on('state_update', (run) => {
     persistQueue.enqueue(() => persistence.saveRunState(run), { kind: 'run_state', runId: run.id });
@@ -255,6 +241,26 @@ async function main() {
   bus.on('message', (msg) => {
     persistQueue.enqueue(() => persistence.appendMessage(msg.runId, msg), { kind: 'message', runId: msg.runId });
   });
+
+  memory.on('entry_change', (entry: MemoryEntry) => {
+    persistQueue.enqueue(() => persistence.saveMemoryEntry(entry), {
+      kind: 'memory_entry',
+      namespace: entry.namespace,
+      key: entry.key,
+    });
+  });
+
+  memory.on('entry_delete', (entry: MemoryEntry) => {
+    persistQueue.enqueue(() => persistence.deleteMemoryEntry(entry.namespace, entry.key), {
+      kind: 'memory_delete',
+      namespace: entry.namespace,
+      key: entry.key,
+    });
+  });
+
+  const dashboardPort = await startDashboard(sm, bus, memory, persistQueue);
+  registry.setDashboardUrl(`http://localhost:${dashboardPort}`);
+  logger.info('Server', `Dashboard URL: http://localhost:${dashboardPort}`);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
@@ -269,12 +275,19 @@ async function main() {
   async function shutdown() {
     if (shuttingDown) return;
     shuttingDown = true;
-    for (const run of sm.getAllRuns()) {
-      persistQueue.enqueue(() => persistence.saveRunState(run), { kind: 'shutdown_run_state', runId: run.id });
+    let exitCode = 0;
+    try {
+      for (const run of sm.getAllRuns()) {
+        persistQueue.enqueue(() => persistence.saveRunState(run), { kind: 'shutdown_run_state', runId: run.id });
+      }
+      await persistQueue.drain();
+    } catch {
+      exitCode = 1;
+      logger.error('Server', 'Shutdown could not confirm durable state; exiting with failure');
+    } finally {
+      releaseLock();
+      process.exit(exitCode);
     }
-    await persistQueue.drain();
-    releaseLock();
-    process.exit(0);
   }
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
