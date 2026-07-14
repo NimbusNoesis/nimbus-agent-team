@@ -1,12 +1,21 @@
+import { randomUUID } from 'node:crypto';
+import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import WebSocket from 'ws';
 import { StateMachine } from '../src/state/machine.js';
 import { MessageBus } from '../src/bus/message-bus.js';
+import { MessageLogSync } from '../src/bus/message-sync.js';
 import { MemoryStore } from '../src/memory/store.js';
 import { ToolRegistry } from '../src/tools/registry.js';
 import { Database } from '../src/db/database.js';
 import { makeWorktree } from './helpers.js';
+import { Persistence } from '../src/state/persistence.js';
 import { PersistQueue, PersistenceUnavailableError } from '../src/state/persist-queue.js';
+import { startDashboard } from '../src/dashboard/server.js';
 import { logger } from '../src/logger.js';
+import type { Message } from '../src/types.js';
 
 describe('Integration: Full workflow', () => {
   let registry: ToolRegistry;
@@ -347,6 +356,104 @@ describe('Integration: Full workflow', () => {
       expect(status.steps[index].startedAt).toBeTruthy();
     }
     expect(status.updatedAt).toBeTruthy();
+  });
+});
+
+describe('Integration: cross-instance message sync', () => {
+  it('syncs a sibling on-disk append to a live WS client without echoing it back to the jsonl', async () => {
+    const teamDir = await mkdtemp(join(tmpdir(), 'team-sync-e2e-'));
+    let ws: WebSocket | undefined;
+    const sync = { current: undefined as MessageLogSync | undefined };
+    try {
+      // Compose the production chain exactly as index.ts wires it: one
+      // Persistence + PersistQueue, appendMessage bound ONLY to 'message',
+      // dashboard listening to both 'message' and 'external_message', and a
+      // MessageLogSync ingesting via bus.ingestExternal.
+      const db = await Database.create();
+      const sm = new StateMachine(db);
+      const bus = new MessageBus(db);
+      const memory = new MemoryStore(db);
+      const persistence = new Persistence(teamDir);
+      const persistQueue = new PersistQueue();
+      bus.on('message', (msg) => {
+        persistQueue.enqueue(() => persistence.appendMessage(msg.runId, msg), {
+          kind: 'message',
+          runId: msg.runId,
+        });
+      });
+      sync.current = new MessageLogSync({
+        runsDir: join(teamDir, 'runs'),
+        isKnownRun: (runId) => Boolean(sm.getRun(runId)),
+        ingest: (message) => bus.ingestExternal(message),
+      });
+
+      const run = sm.createRun([{
+        id: 1, description: 'Sync step', files: [], acceptanceCriteria: [], dependsOn: [],
+      }], 'Cross-instance sync');
+      const logFile = join(teamDir, 'runs', run.id, 'messages.jsonl');
+
+      // One local message creates the on-disk log; the first sync pass then
+      // primes the per-run offset at the current file size (history is
+      // already in the local DB — startup restore's job, not the sync's).
+      bus.post({ runId: run.id, from: 'coordinator', to: 'all', type: 'info', body: 'local message' });
+      await persistQueue.drain();
+      await sync.current.syncNow();
+
+      const port = await startDashboard(sm, bus, memory, persistQueue);
+      ws = await new Promise<WebSocket>((resolve, reject) => {
+        const socket = new WebSocket(`ws://localhost:${port}`);
+        socket.on('open', () => resolve(socket));
+        socket.on('error', reject);
+      });
+      const frames: any[] = [];
+      ws.on('message', (data) => frames.push(JSON.parse(data.toString())));
+
+      // Simulate the incident's sibling server process: it appends its own
+      // durably-owned line (own id/timestamp) directly to the shared jsonl.
+      const siblingMessage: Message = {
+        id: randomUUID(),
+        runId: run.id,
+        from: 'coder',
+        to: 'coordinator',
+        type: 'info',
+        body: 'written by a sibling process',
+        timestamp: new Date().toISOString(),
+      };
+      await appendFile(logFile, JSON.stringify(siblingMessage) + '\n');
+
+      // Deterministic sync pass — never rely on fs.watch/poll timing.
+      await sync.current.syncNow();
+
+      // The live WS client received new_message with the ORIGINAL id and
+      // timestamp (never restamped).
+      await vi.waitFor(() => {
+        expect(frames.some((frame) => frame.type === 'new_message')).toBe(true);
+      });
+      const newMessages = frames.filter((frame) => frame.type === 'new_message');
+      expect(newMessages).toHaveLength(1);
+      expect(newMessages[0].message).toEqual(siblingMessage);
+
+      // Ingested exactly once into the local DB alongside the local message.
+      expect(bus.getAllMessages(run.id).map((m) => m.body)).toEqual([
+        'local message',
+        'written by a sibling process',
+      ]);
+
+      // Anti-echo: ingestion emitted 'external_message', not 'message', so
+      // the appendMessage listener never re-appended the sibling's line.
+      await persistQueue.drain();
+      const lines = (await readFile(logFile, 'utf-8')).split('\n').filter((line) => line.trim() !== '');
+      expect(lines).toHaveLength(2);
+      expect(lines.filter((line) => line.includes(siblingMessage.id))).toHaveLength(1);
+
+      // And a further pass stays quiet: offset advanced, nothing re-ingested.
+      await sync.current.syncNow();
+      expect(bus.getAllMessages(run.id)).toHaveLength(2);
+    } finally {
+      sync.current?.stop();
+      ws?.close();
+      await rm(teamDir, { recursive: true, force: true });
+    }
   });
 });
 

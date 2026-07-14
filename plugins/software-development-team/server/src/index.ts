@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StateMachine } from './state/machine.js';
 import { MessageBus } from './bus/message-bus.js';
+import { MessageLogSync } from './bus/message-sync.js';
 import { MemoryStore } from './memory/store.js';
 import { ToolRegistry } from './tools/registry.js';
 import { teamStartSchema, teamStatusShape, teamAdvanceSchema, teamControlSchema } from './tools/workflow.js';
@@ -12,7 +13,7 @@ import { startDashboard } from './dashboard/server.js';
 import { Persistence } from './state/persistence.js';
 import { PersistQueue } from './state/persist-queue.js';
 import { Database } from './db/database.js';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { logger } from './logger.js';
 import type { MemoryEntry, RunState } from './types.js';
@@ -262,19 +263,39 @@ async function main() {
   registry.setDashboardUrl(`http://localhost:${dashboardPort}`);
   logger.info('Server', `Dashboard URL: http://localhost:${dashboardPort}`);
 
+  // Cross-instance feed sync: tail sibling processes' appends to
+  // .team/runs/*/messages.jsonl into this process's volatile DB and dashboard
+  // feed. Started only AFTER startup restore completed (first sight of a log
+  // primes its offset to the current file size — history is already in the
+  // DB) and after every event listener above is registered. Ingestion goes
+  // through MessageBus.ingestExternal, which emits 'external_message' — NEVER
+  // 'message' — so the appendMessage persistence listener above (bound only
+  // to 'message') can never re-append a line the sibling already owns
+  // (anti-echo invariant).
+  const messageSync = new MessageLogSync({
+    runsDir: join(teamDir, 'runs'),
+    isKnownRun: (runId) => Boolean(sm.getRun(runId)),
+    ingest: (message) => bus.ingestExternal(message),
+  });
+  messageSync.start();
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   logger.info('Server', 'MCP stdio transport connected — ready for tool calls');
 
-  // Graceful shutdown — save all state before exit. Final saves go through
-  // the same serialized queue (a direct saveRunState could race a queued save
-  // for the same run — both write state.json.tmp then rename), and drain()
+  // Graceful shutdown — save all state before exit. The message-log sync is
+  // stopped FIRST so no watcher/poll pass ingests external messages while the
+  // process is tearing down. Final saves go through the same serialized queue
+  // (a direct saveRunState could race a queued save for the same run — the
+  // PersistQueue still serializes same-run saves within this process, so an
+  // older in-process snapshot cannot rename over a newer one), and drain()
   // loops until the tail settles so saves enqueued after shutdown begins are
   // awaited too.
   let shuttingDown = false;
   async function shutdown() {
     if (shuttingDown) return;
     shuttingDown = true;
+    messageSync.stop();
     let exitCode = 0;
     try {
       for (const run of sm.getAllRuns()) {

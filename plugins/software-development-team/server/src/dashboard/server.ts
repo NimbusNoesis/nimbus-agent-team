@@ -421,12 +421,18 @@ export async function startDashboard(
   };
 
   bus.on('message', onMessage);
+  // Messages ingested from sibling server processes (MessageBus.ingestExternal
+  // via MessageLogSync) arrive on a DISTINCT bus event — never 'message', so
+  // persistence cannot re-append them — but broadcast the SAME new_message
+  // frame: the dashboard client does not distinguish local from synced.
+  bus.on('external_message', onMessage);
   sm.on('state_update', onStateUpdate);
   memoryStore.on('entry_change', onEntryChange);
   memoryStore.on('entry_delete', onEntryDelete);
 
   httpServer.once('close', () => {
     bus.off('message', onMessage);
+    bus.off('external_message', onMessage);
     sm.off('state_update', onStateUpdate);
     memoryStore.off('entry_change', onEntryChange);
     memoryStore.off('entry_delete', onEntryDelete);
