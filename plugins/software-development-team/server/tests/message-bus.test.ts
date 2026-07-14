@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { MessageBus } from '../src/bus/message-bus.js';
 import { Database } from '../src/db/database.js';
+import { logger } from '../src/logger.js';
 
 describe('MessageBus', () => {
   let bus: MessageBus;
@@ -44,6 +45,43 @@ describe('MessageBus', () => {
     const msgs = bus.getMessages({ runId: 'r1', to: 'coder', since: cutoff });
     expect(msgs).toHaveLength(1);
     expect(msgs[0].body).toBe('new');
+  });
+
+  it('compares equivalent Z and offset since instants by epoch with an exclusive cutoff', () => {
+    const atCutoff = bus.post({ runId: 'r1', from: 'coder', to: 'all', type: 'info', body: 'cutoff' });
+    const afterCutoff = bus.post({ runId: 'r1', from: 'coder', to: 'all', type: 'info', body: 'after' });
+    const cutoffEpoch = Date.parse(atCutoff.timestamp);
+    const plusTwo = new Date(cutoffEpoch + 2 * 60 * 60 * 1_000).toISOString().replace('Z', '+02:00');
+    const minusFive = new Date(cutoffEpoch - 5 * 60 * 60 * 1_000).toISOString().replace('Z', '-05:00');
+
+    const idsFor = (since: string) => bus
+      .getMessages({ runId: 'r1', to: 'coder', since })
+      .map((message) => message.id);
+
+    expect(idsFor(atCutoff.timestamp)).toEqual([afterCutoff.id]);
+    expect(idsFor(plusTwo)).toEqual([afterCutoff.id]);
+    expect(idsFor(minusFive)).toEqual([afterCutoff.id]);
+  });
+
+  it('logs message metadata without persisting agent-controlled bodies', () => {
+    const sentinel = 'SECRET_CREDENTIAL_CODE_PROMPT_MEMORY_MESSAGE_BODY';
+    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+
+    const message = bus.post({
+      runId: 'r1',
+      from: 'coder',
+      to: 'coordinator',
+      type: 'result',
+      body: sentinel,
+    });
+
+    expect(debugSpy).toHaveBeenCalledWith(
+      'MessageBus',
+      'coder → coordinator [result]',
+      { runId: 'r1', messageId: message.id },
+    );
+    expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(sentinel);
+    debugSpy.mockRestore();
   });
 
   it('emits events on post', () => {

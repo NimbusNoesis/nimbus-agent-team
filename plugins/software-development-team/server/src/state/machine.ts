@@ -291,7 +291,10 @@ export class StateMachine extends EventEmitter {
     if (result.status === 'blocked') {
       stepState.status = 'escalated';
       stepState.claimedFiles = [];
-      logger.warn('StateMachine', `Step ${stepId} BLOCKED`, { runId, summary: result.summary });
+      logger.warn('StateMachine', `Step ${stepId} BLOCKED`, {
+        runId,
+        resultStatus: result.status,
+      });
     } else if (stepState.status === 'coding') {
       stepState.status = 'reviewing';
       logger.info('StateMachine', `Step ${stepId} submitted → reviewing`, { runId, resultStatus: result.status });

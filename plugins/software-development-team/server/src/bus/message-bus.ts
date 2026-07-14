@@ -61,17 +61,21 @@ export class MessageBus extends EventEmitter {
     this.db.insertMessage(message);
     // Enforce per-run message cap; evict oldest messages for this run if exceeded
     this.db.enforceMessageCap(input.runId, MAX_MESSAGES_PER_RUN);
-    logger.debug('MessageBus', `${input.from} → ${input.to} [${input.type}]`, { runId: input.runId, body: input.body.slice(0, 100) });
+    logger.debug('MessageBus', `${input.from} → ${input.to} [${input.type}]`, {
+      runId: input.runId,
+      messageId: message.id,
+    });
     this.emit('message', { ...message });
     return message;
   }
 
   getMessages(filter: GetMessagesFilter): Message[] {
     const all = this.db.getMessagesByRun(filter.runId);
+    const sinceEpoch = filter.since === undefined ? undefined : Date.parse(filter.since);
     return all.filter((msg) => {
       if (msg.to !== filter.to && msg.to !== 'all') return false;
       if (filter.type && msg.type !== filter.type) return false;
-      if (filter.since && msg.timestamp <= filter.since) return false;
+      if (sinceEpoch !== undefined && Date.parse(msg.timestamp) <= sinceEpoch) return false;
       return true;
     });
   }
