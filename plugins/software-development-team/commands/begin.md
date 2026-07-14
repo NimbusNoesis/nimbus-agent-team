@@ -237,6 +237,8 @@ Repeat until all steps are complete:
 3. Check for **stuck detection**: if `consecutiveSameError >= 2` for any step, escalate immediately.
 4. Schedule a deterministic runnable set as described in **Deterministic Runnable-Set Scheduling** below. Do not pause or cancel steps merely because another step is active: dependencies and file claims determine eligibility.
 
+**Relay contract re-anchor (every scheduler pass):** after each admission, worker return, review verdict, and escalation, post the corresponding relay message with the roster `from` name — `from` MUST be a fixed roster role name, never a task/spawn label. If recent scheduler passes produced no relay messages, treat that as a signal that context was lost (e.g., compaction): re-read the Agent Message Relay section and resume relaying immediately.
+
 ### Step is PENDING → Start it
 
 Do BOTH of these in the same response:
@@ -556,6 +558,8 @@ Each memory namespace has designated writer agents. All agents can read all name
 When an agent's result mentions information that belongs in a namespace it cannot write to (e.g., coder discovers an architectural decision), the coordinator should either write it via `team_memory_write` or note it for the appropriate agent.
 
 ## Agent Message Relay
+
+**Hard rule:** in every relayed `team_send_message` call, the `from` value MUST be a fixed roster role name — `planner`, `coder`, `reviewer`, `researcher`, or `documentation` — or `coordinator` for the coordinator's own messages — never a task/spawn label, spawn identifier, attempt-suffixed worker name, or filesystem path such as `coder_step_3_attempt_2` or `/root/workspace/...`. The dashboard attributes messages by roster name only. (The plan-critic relay below keeps its fixed `plan-critic` label — a fixed role name, not a spawn label.)
 
 The coordinator MUST relay messages on behalf of agents at every lifecycle point so the dashboard shows activity from all agents, not just the coordinator. Agents can call MCP tools directly (they inherit the MCP connection), but the coordinator relays messages for dashboard observability — agents focus on their work, the coordinator keeps the feed populated.
 
