@@ -168,9 +168,9 @@ Each agent dispatch consumes tokens independently. Token costs scale linearly wi
      prompt: """
    You are being dispatched as the plan-critic for an adversarial review pass.
 
-   ## Run context
-   - runId: {runId}
-   - Run ID prefix (for reflection key): {runId-short}
+   ## Pre-run context
+   - No run exists yet. Do not require or fabricate a run ID.
+   - Reflection key override: `prerun-<task-slug>-plan-critique-reflection` (use this exact resolved key).
 
    ## Task description
    {original task description}
@@ -182,6 +182,7 @@ Each agent dispatch consumes tokens independently. Token costs scale linearly wi
    {paste decisions, context, and learnings entries from team_memory_read}
 
    Produce a structured critique following your Critique Output Format. Do NOT output a replacement plan. Do NOT call team_start.
+   Write any progress or reflection with `team_memory_write`; never call `team_send_message` because no run exists yet.
    """
    )
    ```
@@ -190,7 +191,7 @@ Each agent dispatch consumes tokens independently. Token costs scale linearly wi
 
    **3b. Re-dispatch the planner with the critique.**
 
-   Dispatch the planner again using the Agent tool (`subagent_type: "software-development-team:planner"`), passing the original task, the draft plan, and the full critique. Instruct the planner to produce a **final plan** that either addresses each concern or explicitly rejects it with rationale. The planner's output from this pass replaces the draft — use it as the plan for the approval gate.
+   Dispatch the planner again using the Agent tool (`subagent_type: "software-development-team:planner"`), passing the original task, the draft plan, and the full critique. Explicitly state that no run exists yet, no run ID may be required or fabricated, and its reflection key override is `prerun-<task-slug>-final-plan-reflection` (use the exact resolved key). Instruct the planner to produce a **final plan** that either addresses each concern or explicitly rejects it with rationale. Every returned implementation, research, or documentation step must explicitly retain `executionMode: "code"`. Any rationale, progress update, or reflection must be written with `team_memory_write` before the final response (never `team_send_message` — no run exists yet). The final response must be only a valid JSON array of plan steps containing `executionMode`, with no prose, Markdown fence, or JSON comments. The planner's output from this pass replaces the draft — use it as the plan for the approval gate.
 
 4. **Plan approval gate**: Present the final plan to the user and wait for approval. Show steps, files, dependencies, and estimated scope. For quick tasks (1-3 steps), ask "Ready to proceed?" For large tasks, ask the user to review the full plan.
 5. Only after user approval: validate that every approved step contains an explicit supported `executionMode` and call `team_start` with the approved steps. Normal code, research, and documentation steps use `code`; only the standalone-review shape above uses `read_only`.

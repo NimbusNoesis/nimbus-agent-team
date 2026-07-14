@@ -68,6 +68,10 @@ const normalPlanSurfaces = [
   readRepositoryFile('plugins/software-development-team/commands/plan.md'),
   readRepositoryFile('codex/skills/plan/SKILL.md'),
 ] as const;
+const beginPlanningSurfaces = [
+  { host: 'Claude', content: readRepositoryFile('plugins/software-development-team/commands/begin.md') },
+  { host: 'Codex', content: readRepositoryFile('codex/skills/begin/SKILL.md') },
+] as const;
 
 const sectionBetween = (content: string, start: string, end?: string) => {
   const startIndex = content.indexOf(start);
@@ -192,6 +196,29 @@ describe('coordinator instruction contract', () => {
     expect(planner).toMatch(/prerun-<task-slug>-(?:draft|final)-plan-reflection/);
     expect(critic).toMatch(/prerun-<task-slug>-plan-critique-reflection/);
   });
+
+  it.each(beginPlanningSurfaces)(
+    '$host begin keeps both planning handoffs explicitly pre-run and execution-mode complete',
+    ({ content }) => {
+      const criticHandoff = sectionBetween(content, '**3a.', '**3b.');
+      const finalPlannerHandoff = sectionBetween(content, '**3b.', '4. **Plan approval gate**');
+
+      expect(criticHandoff).toContain('No run exists yet. Do not require or fabricate a run ID.');
+      expect(criticHandoff).toContain(
+        'Reflection key override: `prerun-<task-slug>-plan-critique-reflection` (use this exact resolved key).',
+      );
+      expect(criticHandoff).toMatch(
+        /No dashboard relay yet:[\s\S]*team_send_message` requires an existing run ID[\s\S]*server rejects unknown ones/i,
+      );
+
+      expect(finalPlannerHandoff).toMatch(/no run exists yet, no run ID may be required or fabricated/i);
+      expect(finalPlannerHandoff).toContain(
+        '`prerun-<task-slug>-final-plan-reflection` (use the exact resolved key)',
+      );
+      expect(finalPlannerHandoff).toMatch(/never `team_send_message` — no run exists yet/i);
+      expect(finalPlannerHandoff).toMatch(/final response must be only a valid JSON array[\s\S]*containing `executionMode`/i);
+    },
+  );
 
   it('defines equivalent host-native recursive-planner protocols and read-only boundaries', () => {
     expect(claudeRecursivePlanner).toMatch(/^---\nname: recursive-planner\n/);
