@@ -284,6 +284,23 @@ describe('Database', () => {
       expect(messages[1].id).toBe('m2');
     });
 
+    it('hasMessage returns true for an existing message id', () => {
+      db.insertMessage(makeMessage({ id: 'm1', runId: 'r1' }));
+      expect(db.hasMessage('m1')).toBe(true);
+    });
+
+    it('hasMessage returns false for an unknown message id', () => {
+      db.insertMessage(makeMessage({ id: 'm1', runId: 'r1' }));
+      expect(db.hasMessage('m2')).toBe(false);
+    });
+
+    it('hasMessage matches by id regardless of run', () => {
+      db.insertMessage(makeMessage({ id: 'm1', runId: 'r1' }));
+      // Dedupe is by message id (globally unique UUIDs), not (run, id).
+      expect(db.hasMessage('m1')).toBe(true);
+      expect(db.getMessages('r2')).toEqual([]);
+    });
+
     it('getMessagesByRun maps column names correctly', () => {
       db.insertMessage(makeMessage({ id: 'm1', runId: 'r1', from: 'coder', to: 'reviewer' }));
       const messages = db.getMessagesByRun('r1');

@@ -69,6 +69,68 @@ export class MessageBus extends EventEmitter {
     return message;
   }
 
+  /**
+   * Ingest a message written by a sibling server process (observed in that
+   * process's messages.jsonl). Volatile-DB-only: this never touches
+   * Persistence or the PersistQueue mutation lane — the sibling already owns
+   * the durable append.
+   *
+   * Returns true when the message was ingested, false when it was a
+   * duplicate (already present by id). Duplicates cause no insert and no
+   * event — the log watcher re-observes this process's own appends, and the
+   * id dedupe makes that harmless.
+   */
+  ingestExternal(message: Message): boolean {
+    if (this.db.hasMessage(message.id)) {
+      logger.debug('MessageBus', 'external message deduped', {
+        runId: message.runId,
+        messageId: message.id,
+        deduped: true,
+      });
+      return false;
+    }
+
+    // Preserve the ORIGINAL id and timestamp — never restamp. The sibling
+    // process already stamped this message; restamping would diverge from the
+    // durable log.
+    this.db.insertMessage(message);
+
+    // Bump the per-run watermark so a subsequent post() still produces a
+    // STRICTLY greater timestamp. nextTimestamp() seeds from the DB only on
+    // FIRST use per run, so an already-seeded run needs this explicit bump.
+    // Comparison is ISO-8601 string lexicographic, exactly like post()'s
+    // monotonicity check — valid because every producer emits Z-suffixed
+    // toISOString values.
+    if (!this.lastTimestamp.has(message.runId)) {
+      const persistedMax = this.db.getMaxMessageTimestamp(message.runId);
+      if (persistedMax) this.lastTimestamp.set(message.runId, persistedMax);
+    }
+    const current = this.lastTimestamp.get(message.runId) ?? '';
+    if (message.timestamp > current) {
+      this.lastTimestamp.set(message.runId, message.timestamp);
+    }
+
+    this.db.enforceMessageCap(message.runId, MAX_MESSAGES_PER_RUN);
+
+    logger.debug('MessageBus', 'external message ingested', {
+      runId: message.runId,
+      messageId: message.id,
+      deduped: false,
+    });
+
+    // Emit a DISTINCT event — NEVER 'message'. index.ts binds
+    // Persistence.appendMessage to 'message'; re-emitting it would re-append
+    // the line the sibling already wrote (echo loop).
+    //
+    // Deliberate accepted quirk: emitted AFTER cap enforcement, so at the cap
+    // an ingested message older than this run's current oldest may be evicted
+    // immediately yet still broadcast once to the live feed — a transient
+    // feed-only inconsistency. team_get_messages reads the capped DB, so
+    // nothing durable diverges.
+    this.emit('external_message', { ...message });
+    return true;
+  }
+
   getMessages(filter: GetMessagesFilter): Message[] {
     const all = this.db.getMessagesByRun(filter.runId);
     const sinceEpoch = filter.since === undefined ? undefined : Date.parse(filter.since);

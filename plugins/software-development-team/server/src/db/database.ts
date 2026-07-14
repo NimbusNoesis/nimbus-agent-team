@@ -137,6 +137,15 @@ export class Database {
     return this.getMessagesByRun(runId);
   }
 
+  /** Whether a message with this id already exists (any run). Used for cross-instance ingest dedupe. */
+  hasMessage(id: string): boolean {
+    const row = this.selectOne<{ one: number }>(
+      'SELECT 1 AS one FROM messages WHERE id = ? LIMIT 1',
+      [id]
+    );
+    return row !== undefined;
+  }
+
   /** Latest message timestamp for a run, or undefined if the run has none. */
   getMaxMessageTimestamp(runId: string): string | undefined {
     const row = this.selectOne<{ ts: string | null }>(
