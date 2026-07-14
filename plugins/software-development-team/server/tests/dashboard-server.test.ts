@@ -11,6 +11,7 @@ import { makeWorktree } from './helpers.js';
 import { PersistQueue, PersistenceUnavailableError } from '../src/state/persist-queue.js';
 import { logger } from '../src/logger.js';
 import { ToolRegistry } from '../src/tools/registry.js';
+import type { Message } from '../src/types.js';
 
 describe('Dashboard server', () => {
   let sm: StateMachine;
@@ -573,6 +574,58 @@ describe('Dashboard server', () => {
         expect(event.type).toBe('new_message');
         expect(event.message.body).toBe('ws broadcast test');
       } finally {
+        ws.close();
+      }
+    });
+
+    it('broadcasts exactly one new_message for an externally ingested message and never re-emits message (no echo loop)', async () => {
+      const run = sm.createRun([{
+        id: 1, description: 'S1', files: [], acceptanceCriteria: [], dependsOn: [],
+      }]);
+      const ws = await connectWs();
+      // In production index.ts binds Persistence.appendMessage to 'message'
+      // only. Zero 'message' emissions from ingestExternal is the anti-echo
+      // invariant: an ingested sibling line can never be re-appended to disk.
+      const messageSpy = vi.fn();
+      bus.on('message', messageSpy);
+      try {
+        const frames: any[] = [];
+        ws.on('message', (data) => frames.push(JSON.parse(data.toString())));
+
+        // Drive the REAL ingest path end-to-end (never emit 'external_message'
+        // directly — that would make this test vacuous).
+        const external: Message = {
+          id: randomUUID(),
+          runId: run.id,
+          from: 'coder',
+          to: 'coordinator',
+          type: 'info',
+          body: 'appended by a sibling server process',
+          timestamp: new Date().toISOString(),
+        };
+        expect(bus.ingestExternal(external)).toBe(true);
+
+        // MessageBus emits synchronously: if ingestExternal had (wrongly)
+        // emitted 'message', the spy would already have fired here.
+        expect(messageSpy).not.toHaveBeenCalled();
+
+        // Ordered-frame sentinel: a memory write broadcasts on the same WS
+        // connection AFTER anything the ingest produced, so once the sentinel
+        // frame arrives, every new_message frame the ingest caused is in.
+        memoryStore.write({ key: 'echo-loop-sentinel', namespace: 'decisions', value: 'sentinel' });
+        await vi.waitFor(() => {
+          expect(frames.some(
+            (frame) => frame.type === 'memory_entry_update' && frame.entry.key === 'echo-loop-sentinel',
+          )).toBe(true);
+        });
+
+        const newMessages = frames.filter((frame) => frame.type === 'new_message');
+        expect(newMessages).toHaveLength(1);
+        // Original id and timestamp preserved — never restamped.
+        expect(newMessages[0].message).toEqual(external);
+        expect(messageSpy).not.toHaveBeenCalled();
+      } finally {
+        bus.off('message', messageSpy);
         ws.close();
       }
     });
