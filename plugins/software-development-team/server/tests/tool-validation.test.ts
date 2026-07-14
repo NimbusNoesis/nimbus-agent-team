@@ -8,7 +8,10 @@ import {
   handleTeamStatus,
   handleTeamAdvance,
   handleTeamControl,
+  teamStartShape,
+  teamStartSchema,
   teamAdvanceShape,
+  teamAdvanceSchema,
   teamControlSchema,
 } from '../src/tools/workflow.js';
 import { handleTeamSubmitResult } from '../src/tools/results.js';
@@ -71,6 +74,7 @@ describe('Zod schema validation', () => {
         steps: [{ id: 1, description: 'Do stuff', files: [], acceptanceCriteria: [], dependsOn: [] }],
       });
       expect(result.runId).toBeDefined();
+      expect(sm.getRun(result.runId)!.steps[0].step.executionMode).toBe('code');
     });
 
     it('accepts valid input with task provided', () => {
@@ -79,6 +83,50 @@ describe('Zod schema validation', () => {
         steps: [{ id: 1, description: 'Do stuff', files: [], acceptanceCriteria: [], dependsOn: [] }],
       });
       expect(result.task).toBe('Build feature');
+    });
+
+    it.each(['code', 'read_only'] as const)('accepts and persists the %s execution mode', (executionMode) => {
+      const result = handleTeamStart(sm, {
+        steps: [{
+          id: 1,
+          description: 'Do stuff',
+          files: [],
+          acceptanceCriteria: [],
+          dependsOn: [],
+          executionMode,
+        }],
+      });
+      expect(sm.getRun(result.runId)!.steps[0].step.executionMode).toBe(executionMode);
+    });
+
+    it('rejects unsupported execution modes before creating a run', () => {
+      const before = sm.getAllRuns();
+      expect(() => handleTeamStart(sm, {
+        steps: [{
+          id: 1,
+          description: 'Do stuff',
+          files: [],
+          acceptanceCriteria: [],
+          dependsOn: [],
+          executionMode: 'documentation',
+        }],
+      })).toThrow(ZodError);
+      expect(sm.getAllRuns()).toEqual(before);
+    });
+
+    it('preserves complete object-level validation before creating a run', () => {
+      const before = sm.getAllRuns();
+      expect(() => handleTeamStart(sm, {
+        steps: [{
+          id: 1,
+          description: 'Do stuff',
+          files: [],
+          acceptanceCriteria: [],
+          dependsOn: [],
+          unexpected: true,
+        }],
+      })).toThrow(ZodError);
+      expect(sm.getAllRuns()).toEqual(before);
     });
   });
 
@@ -133,6 +181,19 @@ describe('Zod schema validation', () => {
       expect(() => handleTeamAdvance(sm, {
         runId: 'r1', stepId: 1, action: 'set_worktree',
       })).toThrow(ZodError);
+    });
+
+    it('rejects malformed worktree objects before mutating a step', () => {
+      const { runId } = handleTeamStart(sm, {
+        steps: [{ id: 1, description: 'x', files: [], acceptanceCriteria: [], dependsOn: [] }],
+      });
+      expect(() => handleTeamAdvance(sm, {
+        runId,
+        stepId: 1,
+        action: 'set_worktree',
+        worktree: { ...makeWorktree(runId, 1), unexpected: true },
+      })).toThrow(ZodError);
+      expect(sm.getRun(runId)!.steps[0].worktree).toBeUndefined();
     });
 
     it('rejects empty summary string', () => {
@@ -384,6 +445,25 @@ describe('Zod schema validation', () => {
   // z.object(shape) here exercises exactly what the MCP layer enforces —
   // guarding against the layers drifting apart again.
   describe('exported shapes (MCP registration layer parity)', () => {
+    it('team_start shape applies the canonical default and rejects unsupported modes', () => {
+      const omitted = z.object(teamStartShape).parse({
+        steps: [{ id: 1, description: 'x', files: [], acceptanceCriteria: [], dependsOn: [] }],
+      });
+      expect(omitted.steps[0].executionMode).toBe('code');
+
+      const invalid = z.object(teamStartShape).safeParse({
+        steps: [{
+          id: 1,
+          description: 'x',
+          files: [],
+          acceptanceCriteria: [],
+          dependsOn: [],
+          executionMode: 'documentation',
+        }],
+      });
+      expect(invalid.success).toBe(false);
+    });
+
     it('team_advance shape rejects an empty summary at the MCP layer', () => {
       const result = z.object(teamAdvanceShape).safeParse({
         runId: 'r1', stepId: 1, action: 'mark_reviewed', summary: '',
@@ -403,6 +483,64 @@ describe('Zod schema validation', () => {
         runId: 'r1', to: 'all', since: 'not-a-date',
       });
       expect(result.success).toBe(false);
+    });
+
+    it('complete workflow schemas reject malformed input before registered MCP dispatch', async () => {
+      const dispatches: string[] = [];
+      const server = new McpServer({ name: 'workflow-validation-server', version: '1.0.0' });
+      server.registerTool('team_start', { inputSchema: teamStartSchema }, async (args) => {
+        dispatches.push('team_start');
+        const result = handleTeamStart(sm, args);
+        return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+      });
+      server.registerTool('team_advance', { inputSchema: teamAdvanceSchema }, async (args) => {
+        dispatches.push('team_advance');
+        const result = handleTeamAdvance(sm, args);
+        return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+      });
+
+      const client = new Client({ name: 'workflow-validation-client', version: '1.0.0' });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+
+      const planStep = {
+        id: 1,
+        description: 'x',
+        files: [],
+        acceptanceCriteria: [],
+        dependsOn: [],
+      };
+      const before = sm.getAllRuns();
+      await expect(client.callTool({
+        name: 'team_start',
+        arguments: { steps: [{ ...planStep, executionMode: 'documentation' }] },
+      })).resolves.toMatchObject({ isError: true });
+      await expect(client.callTool({
+        name: 'team_start',
+        arguments: { steps: [{ ...planStep, unexpected: true }] },
+      })).resolves.toMatchObject({ isError: true });
+      expect(sm.getAllRuns()).toEqual(before);
+
+      const { runId } = handleTeamStart(sm, { steps: [planStep] });
+      await expect(client.callTool({
+        name: 'team_advance',
+        arguments: {
+          runId,
+          stepId: 1,
+          action: 'set_worktree',
+          worktree: { ...makeWorktree(runId, 1), unexpected: true },
+        },
+      })).resolves.toMatchObject({ isError: true });
+      await expect(client.callTool({
+        name: 'team_advance',
+        arguments: { runId, stepId: 1, action: 'set_worktree' },
+      })).resolves.toMatchObject({ isError: true });
+      expect(sm.getRun(runId)!.steps[0].worktree).toBeUndefined();
+      expect(dispatches).toEqual([]);
+
+      await client.close();
+      await server.close();
     });
   });
 });
