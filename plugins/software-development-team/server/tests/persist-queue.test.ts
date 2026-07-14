@@ -89,6 +89,28 @@ describe('PersistQueue', () => {
     }
   });
 
+  it('maps an agent-controlled operation kind to a non-sensitive fallback', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    try {
+      const queue = new PersistQueue();
+      const secret = 'sentinel-secret-in-operation-kind';
+
+      await expect(queue.enqueue(
+        async () => { throw new Error('write failed'); },
+        context(secret),
+      )).rejects.toBeInstanceOf(PersistenceUnavailableError);
+
+      expect(queue.health).toMatchObject({
+        status: 'failed',
+        operationKind: 'unknown',
+      });
+      expect(JSON.stringify(queue.health)).not.toContain(secret);
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(secret);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('preserves the first failure and rejects later work before side effects', async () => {
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
     try {
@@ -132,7 +154,7 @@ describe('PersistQueue', () => {
       expect(successfulWriteRan).toBe(true);
       expect(queue.health).toMatchObject({
         status: 'failed',
-        operationKind: 'failed_write',
+        operationKind: 'unknown',
       });
     } finally {
       errorSpy.mockRestore();

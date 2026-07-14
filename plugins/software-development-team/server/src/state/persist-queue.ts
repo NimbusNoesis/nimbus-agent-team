@@ -5,7 +5,7 @@ export interface PersistenceOperationContext {
   [key: string]: unknown;
 }
 
-export interface HealthyPersistenceHealth {
+interface HealthyPersistenceHealth {
   status: 'healthy';
   restartRequired: false;
 }
@@ -24,6 +24,12 @@ interface QueuedOperation {
   sequence: number;
   operationKind: string;
 }
+
+const SAFE_OPERATION_KINDS: ReadonlySet<string> = new Set([
+  'run_state',
+  'message',
+  'shutdown_run_state',
+]);
 
 /**
  * Public failure raised after persistence becomes unavailable. Keep this error
@@ -148,6 +154,6 @@ export class PersistQueue {
 
   private safeOperationKind(kind: string): string {
     const trimmed = kind.trim();
-    return trimmed.length > 0 ? trimmed : 'unknown';
+    return SAFE_OPERATION_KINDS.has(trimmed) ? trimmed : 'unknown';
   }
 }
