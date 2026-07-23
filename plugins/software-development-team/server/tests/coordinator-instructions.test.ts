@@ -25,11 +25,24 @@ const codexAgents = codexAgentFiles.map((file, index) => ({
   content: readRepositoryFile(file),
 }));
 
+const cursorCommandFiles = ['begin', 'deep-plan', 'plan', 'resume', 'status', 'memory', 'research', 'review'].map(
+  (name) => `cursor/commands/${name}.md`,
+);
+const cursorAgentFiles = codexAgentRoles.map((role) => `cursor/agents/${role}.md`);
+const cursorCommands = cursorCommandFiles.map((file) => ({ file, content: readRepositoryFile(file) }));
+const cursorAgents = cursorAgentFiles.map((file, index) => ({
+  file,
+  role: codexAgentRoles[index],
+  content: readRepositoryFile(file),
+}));
+
 const instructionFiles = [
   'codex/skills/begin/SKILL.md',
   'codex/skills/resume/SKILL.md',
   'plugins/software-development-team/commands/begin.md',
   'plugins/software-development-team/commands/resume.md',
+  'cursor/commands/begin.md',
+  'cursor/commands/resume.md',
 ] as const;
 
 const instructions = instructionFiles.map((file) => ({
@@ -42,6 +55,7 @@ const roles = ['planner', 'plan-critic', 'coder', 'reviewer', 'researcher', 'doc
 const agentFiles = roles.flatMap((role) => [
   { role, file: `codex/agents/${role}.toml` },
   { role, file: `plugins/software-development-team/agents/${role}.md` },
+  { role, file: `cursor/agents/${role}.md` },
 ]);
 const agents = agentFiles.map(({ role, file }) => ({
   role,
@@ -51,15 +65,19 @@ const agents = agentFiles.map(({ role, file }) => ({
 
 const claudeDeepPlan = readRepositoryFile('plugins/software-development-team/commands/deep-plan.md');
 const codexDeepPlan = readRepositoryFile('codex/skills/deep-plan/SKILL.md');
+const cursorDeepPlan = readRepositoryFile('cursor/commands/deep-plan.md');
 const deepPlanSurfaces = [
   { host: 'Claude', content: claudeDeepPlan },
   { host: 'Codex', content: codexDeepPlan },
+  { host: 'Cursor', content: cursorDeepPlan },
 ] as const;
 const claudeRecursivePlanner = readRepositoryFile('plugins/software-development-team/agents/recursive-planner.md');
 const codexRecursivePlanner = readRepositoryFile('codex/agents/recursive-planner.toml');
+const cursorRecursivePlanner = readRepositoryFile('cursor/agents/recursive-planner.md');
 const recursivePlannerSurfaces = [
   { host: 'Claude', content: claudeRecursivePlanner },
   { host: 'Codex', content: codexRecursivePlanner },
+  { host: 'Cursor', content: cursorRecursivePlanner },
 ] as const;
 const dashboardAgentConstants = readRepositoryFile(
   'plugins/software-development-team/server/src/dashboard/client/utils/constants.ts',
@@ -67,10 +85,12 @@ const dashboardAgentConstants = readRepositoryFile(
 const normalPlanSurfaces = [
   readRepositoryFile('plugins/software-development-team/commands/plan.md'),
   readRepositoryFile('codex/skills/plan/SKILL.md'),
+  readRepositoryFile('cursor/commands/plan.md'),
 ] as const;
 const beginPlanningSurfaces = [
   { host: 'Claude', content: readRepositoryFile('plugins/software-development-team/commands/begin.md') },
   { host: 'Codex', content: readRepositoryFile('codex/skills/begin/SKILL.md') },
+  { host: 'Cursor', content: readRepositoryFile('cursor/commands/begin.md') },
 ] as const;
 
 const sectionBetween = (content: string, start: string, end?: string) => {
@@ -104,6 +124,63 @@ describe('coordinator instruction contract', () => {
     ]);
     for (const { file, content } of [...codexSkills, ...codexAgents]) {
       expect(content, `${file} must not be empty`).not.toHaveLength(0);
+    }
+  });
+
+  it('covers every Cursor command and subagent definition', () => {
+    expect(cursorCommandFiles).toEqual([
+      'cursor/commands/begin.md',
+      'cursor/commands/deep-plan.md',
+      'cursor/commands/plan.md',
+      'cursor/commands/resume.md',
+      'cursor/commands/status.md',
+      'cursor/commands/memory.md',
+      'cursor/commands/research.md',
+      'cursor/commands/review.md',
+    ]);
+    expect(cursorAgentFiles).toEqual([
+      'cursor/agents/planner.md',
+      'cursor/agents/plan-critic.md',
+      'cursor/agents/recursive-planner.md',
+      'cursor/agents/coder.md',
+      'cursor/agents/reviewer.md',
+      'cursor/agents/researcher.md',
+      'cursor/agents/documentation.md',
+    ]);
+    for (const { file, content } of [...cursorCommands, ...cursorAgents]) {
+      expect(content, `${file} must not be empty`).not.toHaveLength(0);
+    }
+  });
+
+  it('uses Cursor single-underscore MCP namespaces and named-subagent dispatch', () => {
+    const expectedNamespace = 'mcp_software-development-team_';
+    const forbiddenNamespaces = [
+      'mcp__software_development_team__',
+      'mcp__software-development-team__',
+      'mcp__plugin_software-development-team_software-development-team__',
+    ];
+    const mcpCommands = cursorCommands.filter(({ file }) => !file.endsWith('/review.md'));
+
+    for (const { file, content } of [...mcpCommands, ...cursorAgents]) {
+      expect(content, `${file} must use the Cursor MCP namespace`).toContain(expectedNamespace);
+    }
+    for (const { file, content } of [...cursorCommands, ...cursorAgents]) {
+      for (const namespace of forbiddenNamespaces) {
+        expect(content, `${file} must not use ${namespace}`).not.toContain(namespace);
+      }
+      // Cursor commands are plain Markdown with named-subagent dispatch — never the
+      // Claude Agent-tool contract, the Codex native spawn contract, or $ARGUMENTS.
+      expect(content, `${file} must not use Claude Agent-tool dispatch`).not.toContain('subagent_type');
+      expect(content, `${file} must not use Codex native spawn dispatch`).not.toContain('spawn_agent');
+      expect(content, `${file} must not use $ARGUMENTS templating`).not.toContain('$ARGUMENTS');
+    }
+    for (const { file, content } of cursorCommands) {
+      expect(content, `${file} must not carry command frontmatter`).not.toMatch(/^---\n/);
+    }
+
+    const cursorBegin = cursorCommands.find(({ file }) => file.endsWith('/begin.md'))!.content;
+    for (const role of roles) {
+      expect(cursorBegin, `begin must list the ${role} subagent`).toContain(`~/.cursor/agents/${role}.md`);
     }
   });
 
@@ -255,6 +332,12 @@ describe('coordinator instruction contract', () => {
     expect(codexRecursivePlanner).toContain('mcp__software_development_team__team_memory_read');
     expect(codexRecursivePlanner).not.toContain('mcp__software-development-team__');
 
+    expect(cursorRecursivePlanner).toMatch(/^---\nname: recursive-planner\n/);
+    expect(cursorRecursivePlanner).toContain('readonly: true');
+    expect(cursorRecursivePlanner).toContain('mcp_software-development-team_team_memory_read');
+    expect(cursorRecursivePlanner).toContain('mcp_software-development-team_team_memory_write');
+    expect(cursorRecursivePlanner).not.toContain('mcp__');
+
     const envelopeOrder = [
       '"protocolVersion"',
       '"round"',
@@ -327,6 +410,13 @@ describe('coordinator instruction contract', () => {
     }
     expect(codexDeepPlan).toContain('mcp__software_development_team__team_memory_read');
     expect(codexDeepPlan).not.toContain('mcp__software-development-team__');
+
+    expect(cursorDeepPlan).toMatch(/^# Deep Plan a Task \(Cursor\)/);
+    for (const role of ['recursive-planner', 'researcher', 'plan-critic']) {
+      expect(cursorDeepPlan).toContain(`\`${role}\` subagent`);
+    }
+    expect(cursorDeepPlan).toContain('mcp_software-development-team_team_memory_read');
+    expect(cursorDeepPlan).not.toContain('mcp__');
 
     for (const { host, content } of deepPlanSurfaces) {
       expect(content, `${host} empty-task bootstrap`).toMatch(/What would you like to deep-plan\?/);
@@ -595,7 +685,9 @@ describe('coordinator instruction contract', () => {
       .replace(/`/g, '')
       .replace(/\s+/g, ' ');
 
-    expect(content).toMatch(/team_control.*mcp__.*team_control/i);
+    // The host MCP prefix differs (mcp__… on Claude/Codex, mcp_… on Cursor); every
+    // host must still map the short team_control name to its full callable name.
+    expect(content).toMatch(/team_control.*mcp_.*team_control/i);
     expect(lifecycle).toMatch(/team_status.*authority.*every coordinator pass/is);
     for (const field of ['lifecycleVersion', 'capabilities', 'actionAvailability', 'revision', 'phase', 'workers']) {
       expect(lifecycle).toContain(field);
@@ -664,7 +756,7 @@ describe('coordinator instruction contract', () => {
       '### Lifecycle-v2 controls are coordinator-drained and revisioned',
       '### Coordinator message relay for dashboard visibility',
     ).replace(/`/g, '').replace(/\s+/g, ' ');
-    expect(lifecycle).toMatch(/both hosts implement the same lifecycle-v2 protocol/i);
+    expect(lifecycle).toMatch(/(?:both|all) hosts implement the same lifecycle-v2 protocol/i);
     expect(lifecycle).toMatch(/team_status[\s\S]*lifecycleVersion[\s\S]*capabilities[\s\S]*actionAvailability[\s\S]*revision/i);
     expect(lifecycle).toMatch(/same-fingerprint command replay is idempotent[\s\S]*stale revision[\s\S]*status refresh/i);
     expect(lifecycle).toMatch(/pause_run freezes all admissions immediately[\s\S]*cooperative drain[\s\S]*never kill[\s\S]*acknowledge_pause/i);
