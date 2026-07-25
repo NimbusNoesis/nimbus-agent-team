@@ -1,17 +1,18 @@
 # Coding Team
 
-A multi-agent **coding team** you can run from either [Claude Code](https://claude.ai/claude-code)
-or the [OpenAI Codex CLI](https://developers.openai.com/codex/cli). A coordinator
+A multi-agent **coding team** you can run from [Claude Code](https://claude.ai/claude-code),
+the [OpenAI Codex CLI](https://developers.openai.com/codex/cli), or
+[Cursor](https://cursor.com). A coordinator
 dispatches planner, plan-critic, coder, reviewer, researcher, and documentation
 agents that work autonomously through a structured plan — with shared memory, a
 message bus, quality-gated review loops, and a real-time web dashboard.
 
-For difficult work that is not ready to execute, both hosts also ship a standalone
+For difficult work that is not ready to execute, every host also ships a standalone
 `recursive-planner` and `deep-plan` entry point. It builds an exhaustive,
 resumable planning dossier through bounded refinement without starting a team run
 or modifying the repository.
 
-Both hosts run the **same** MCP server ([`plugins/software-development-team/server`](plugins/software-development-team/server));
+All three hosts run the **same** MCP server ([`plugins/software-development-team/server`](plugins/software-development-team/server));
 only the host-specific glue differs. They can be installed side by side.
 
 ## Repository layout
@@ -26,16 +27,23 @@ only the host-specific glue differs. They can be installed side by side.
 │       ├── commands/                 Slash commands (begin, deep-plan, status, memory, resume, plan, research, review)
 │       ├── hooks/                    SessionStart pre-warm hook
 │       └── server/                   Host-agnostic MCP server (SQLite + bus + memory + dashboard)
-└── codex/                            The OpenAI Codex CLI distribution
-    ├── agents/                       Role templates used in spawn prompts (.toml)
-    ├── skills/                       Skills (begin, deep-plan, status, memory, resume, plan, research, review)
-    ├── install.sh                    Wires the above into ~/.codex
-    ├── test-install.sh               Codex installer/configuration smoke test
-    └── config.snippet.toml           MCP server config block
+├── codex/                            The OpenAI Codex CLI distribution
+│   ├── agents/                       Role templates used in spawn prompts (.toml)
+│   ├── skills/                       Skills (begin, deep-plan, status, memory, resume, plan, research, review)
+│   ├── install.sh                    Wires the above into ~/.codex
+│   ├── test-install.sh               Codex installer/configuration smoke test
+│   └── config.snippet.toml           MCP server config block
+└── cursor/                           The Cursor distribution
+    ├── agents/                       Subagent definitions (.md + YAML frontmatter)
+    ├── commands/                     Commands (begin, deep-plan, status, memory, resume, plan, research, review)
+    ├── install.sh                    Wires the above into ~/.cursor
+    ├── test-install.sh               Cursor installer/configuration smoke test
+    └── mcp.snippet.json              MCP server config entry
 ```
 
-The `codex/` distribution is **additive** — it reuses `plugins/software-development-team/server`
-unchanged and does not modify or disable the Claude Code plugin.
+The `codex/` and `cursor/` distributions are **additive** — they reuse
+`plugins/software-development-team/server` unchanged and do not modify or disable
+the Claude Code plugin.
 
 ## Run it in Claude Code
 
@@ -71,9 +79,33 @@ To validate the Codex distribution without changing your normal configuration:
 sh codex/test-install.sh
 ```
 
+## Run it in Cursor
+
+From a checkout of this repo:
+
+```bash
+sh cursor/install.sh
+```
+
+Restart Cursor (or reload the window), then in the agent chat:
+
+```
+/begin Implement a REST API for user management with CRUD endpoints
+/deep-plan Design a zero-downtime multi-tenant data migration
+```
+
+See [`cursor/README.md`](cursor/README.md) for install details, the command list,
+and how the Cursor port maps to the other hosts.
+
+To validate the Cursor distribution without changing your normal configuration:
+
+```bash
+sh cursor/test-install.sh
+```
+
 ## Deep planning without execution
 
-Use `/deep-plan <task>` in Claude Code or `$deep-plan <task>` in Codex for an
+Use `/deep-plan <task>` in Claude Code or Cursor, or `$deep-plan <task>` in Codex, for an
 ambiguous, cross-cutting, architecture-heavy, security-sensitive, migration-sensitive,
 or otherwise high-risk task. The main session transparently controls at most three
 `recursive-planner` refinement passes, five one-at-a-time material questions, and two
@@ -137,10 +169,10 @@ npx tsup             # build (ESM output to dist/)
 npx vitest run       # run tests
 ```
 
-When changing coordinator logic or an agent's instructions, update **both** the
-`plugins/software-development-team/` source and its `codex/` counterpart so the two
-hosts stay in sync (the `server/` is shared, so server changes apply to both
-automatically).
+When changing coordinator logic or an agent's instructions, update the
+`plugins/software-development-team/` source **and** its `codex/` and `cursor/`
+counterparts so all hosts stay in sync (the `server/` is shared, so server changes
+apply to every host automatically).
 
 ## License
 

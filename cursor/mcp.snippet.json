@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "software-development-team": {
+      "type": "stdio",
+      "command": "sh",
+      "args": [
+        "<SERVER_DIR>/launch.sh",
+        "<SERVER_DIR>",
+        "<DATA_DIR>"
+      ]
+    }
+  }
+}

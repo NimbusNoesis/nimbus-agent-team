@@ -37,6 +37,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ALLOWED_WS_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 const JSON_BODY_LIMIT_BYTES = 16 * 1024;
 const MAX_CONTROL_REASON_LENGTH = 500;
+const MAX_GUIDANCE_BODY_LENGTH = 10_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CONTROL_ACTIONS = new Set<ExecutionControlAction>([
   'pause_run',
@@ -169,6 +170,37 @@ function parseControlBody(value: unknown, runId: string): ControlRequestBody {
     ...(reason === undefined ? {} : { reason }),
     ...(typeof value.confirmation === 'string' ? { confirmation: value.confirmation } : {}),
   };
+}
+
+/**
+ * Guidance text is injected into the coordinator's feed as USER INSTRUCTIONS,
+ * so it is validated as strictly as an execution control. `req.body` is `any`,
+ * while the bus contract (`PostMessageInput.body`) is `string`: before this
+ * check a non-string reached sql.js directly — an object threw a bind error
+ * with no message (opaque 500), and an array was stored as a non-string that
+ * was broadcast and persisted, then silently dropped by restore validation.
+ */
+function parseGuidanceBody(value: unknown): { runId: string; body: string } {
+  if (!isPlainObject(value)) {
+    throw new ControlRequestError(400, 'invalid_body', 'Request body must be a JSON object');
+  }
+  rejectUnknownFields(value, ['runId', 'body'], 'Request body');
+  // runId is only shape-checked here; existence is the authority (404 below),
+  // so a syntactically valid but unknown id keeps returning 404, not 400.
+  if (typeof value.runId !== 'string' || value.runId.trim().length === 0) {
+    throw new ControlRequestError(400, 'invalid_run_id', 'runId must be a non-empty string');
+  }
+  if (typeof value.body !== 'string' || value.body.trim().length === 0) {
+    throw new ControlRequestError(400, 'invalid_guidance_body', 'body must be a non-empty string');
+  }
+  if (value.body.length > MAX_GUIDANCE_BODY_LENGTH) {
+    throw new ControlRequestError(
+      400,
+      'invalid_guidance_body',
+      `body must be at most ${MAX_GUIDANCE_BODY_LENGTH} characters`,
+    );
+  }
+  return { runId: value.runId, body: value.body };
 }
 
 /**
@@ -343,28 +375,36 @@ export async function startDashboard(
     }
   });
 
+  // Guidance carries the SAME origin and validation posture as /control. It is
+  // deliberately not weaker: control pauses a run, whereas guidance injects text
+  // the coordinator acts on as user instruction — the higher-impact primitive.
   app.post('/api/guidance', async (req, res) => {
-    const { runId, body } = req.body;
-    if (!runId || !body) {
-      res.status(400).json({ error: 'runId and body required' });
-      return;
-    }
-    if (!sm.getRun(runId)) {
-      res.status(404).json({ error: `Run ${runId} not found` });
-      return;
-    }
     try {
+      enforceMutationOrigin(req);
+      if (!req.is('application/json')) {
+        throw new ControlRequestError(400, 'unsupported_content_type', 'Content-Type must be application/json');
+      }
+
+      const { runId, body } = parseGuidanceBody(req.body as unknown);
+      if (!sm.getRun(runId)) {
+        throw new ControlRequestError(404, 'target_not_found', `Run ${runId} not found`);
+      }
+
       await persistence.runMutation(() => {
         bus.post({ runId, from: 'user', to: 'coordinator', type: 'guidance', body });
       });
       res.json({ success: true });
     } catch (err) {
+      if (err instanceof ControlRequestError) {
+        res.status(err.status).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
       if (err instanceof PersistenceUnavailableError) {
         res.status(503).json({ error: { code: err.code, message: err.message } });
         return;
       }
       logger.error('Dashboard', 'Failed to post guidance message');
-      res.status(500).json({ error: 'Failed to post message' });
+      res.status(500).json({ error: { code: 'guidance_failed', message: 'Failed to post message' } });
     }
   });
 

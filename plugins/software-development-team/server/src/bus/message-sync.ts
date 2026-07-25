@@ -5,6 +5,17 @@ import type { Message } from '../types.js';
 import { restoreMessage } from '../state/persistence.js';
 import { logger } from '../logger.js';
 
+/**
+ * Bounded, payload-free descriptor for a filesystem error. Bus logs stay
+ * metadata-only, so never log the raw message — it embeds absolute paths.
+ */
+function errorReasonCode(err: unknown): string {
+  const code: unknown = (err as { code?: unknown } | null)?.code;
+  if (typeof code === 'string' && /^[A-Z_]{1,32}$/.test(code)) return code;
+  if (err instanceof Error && /^[A-Za-z]{1,32}$/.test(err.name)) return err.name;
+  return 'unknown';
+}
+
 interface MessageLogSyncOptions {
   /** The .team/runs directory containing one subdirectory per run. */
   runsDir: string;
@@ -81,8 +92,10 @@ export class MessageLogSync {
         this.requestSync();
       });
       this.watcher.on('error', (err) => {
+        // Metadata-only, like every other bus log: an fs error's raw text can
+        // carry absolute paths. The error name/code is enough to diagnose.
         logger.warn('MessageLogSync', 'fs.watch failed; relying on poll backstop', {
-          error: String(err),
+          reasonCode: errorReasonCode(err),
         });
         this.watcher?.close();
         this.watcher = null;
@@ -91,7 +104,7 @@ export class MessageLogSync {
       // The runs directory may not exist yet (no run persisted). The poll
       // backstop still detects appends; watching is a latency optimization.
       logger.debug('MessageLogSync', 'fs.watch unavailable; relying on poll backstop', {
-        error: String(err),
+        reasonCode: errorReasonCode(err),
       });
       this.watcher = null;
     }
