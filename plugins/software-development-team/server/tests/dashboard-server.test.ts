@@ -151,6 +151,80 @@ describe('Dashboard server', () => {
       });
       expect(res.status).toBe(404);
     });
+
+    // Guidance injects text the coordinator acts on as user instruction, so it
+    // carries the same origin posture as /control rather than a weaker one.
+    it('allows no-Origin local clients but rejects cross-origin browsers', async () => {
+      const run = sm.createRun([{
+        id: 1, description: 'Guidance origin', files: [], acceptanceCriteria: [], dependsOn: [],
+      }]);
+      const post = (headers: Record<string, string>) => fetch(`${baseUrl}/api/guidance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({ runId: run.id, body: 'origin probe' }),
+      });
+
+      expect((await post({})).status).toBe(200);
+      expect((await post({ Origin: baseUrl })).status).toBe(200);
+
+      for (const origin of ['http://evil.example', 'http://localhost.evil.example', 'null']) {
+        const res = await post({ Origin: origin });
+        expect(res.status, `origin ${origin} must be rejected`).toBe(403);
+        expect(await res.json()).toMatchObject({ error: { code: 'invalid_origin' } });
+      }
+    });
+
+    it('rejects a non-string body instead of persisting it', async () => {
+      const run = sm.createRun([{
+        id: 1, description: 'Guidance types', files: [], acceptanceCriteria: [], dependsOn: [],
+      }]);
+      // An array previously bound into sql.js as a non-string, was broadcast and
+      // persisted, then vanished at restore; an object threw an opaque 500.
+      for (const body of [[], {}, 123, null, '   ']) {
+        const res = await fetch(`${baseUrl}/api/guidance`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ runId: run.id, body }),
+        });
+        expect(res.status, `body ${JSON.stringify(body)} must be rejected`).toBe(400);
+      }
+      expect(bus.getAllMessages(run.id)).toEqual([]);
+    });
+
+    it('rejects unknown fields and oversized bodies', async () => {
+      const run = sm.createRun([{
+        id: 1, description: 'Guidance limits', files: [], acceptanceCriteria: [], dependsOn: [],
+      }]);
+      const extra = await fetch(`${baseUrl}/api/guidance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId: run.id, body: 'ok', from: 'coordinator' }),
+      });
+      expect(extra.status).toBe(400);
+      expect(await extra.json()).toMatchObject({ error: { code: 'unknown_fields' } });
+
+      const oversized = await fetch(`${baseUrl}/api/guidance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId: run.id, body: 'x'.repeat(10_001) }),
+      });
+      expect(oversized.status).toBe(400);
+      expect(bus.getAllMessages(run.id)).toEqual([]);
+    });
+
+    it('requires a JSON content type', async () => {
+      const run = sm.createRun([{
+        id: 1, description: 'Guidance content type', files: [], acceptanceCriteria: [], dependsOn: [],
+      }]);
+      const res = await fetch(`${baseUrl}/api/guidance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ runId: run.id, body: 'plain text' }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: { code: 'unsupported_content_type' } });
+      expect(bus.getAllMessages(run.id)).toEqual([]);
+    });
   });
 
   describe('POST /api/runs/:runId/control', () => {

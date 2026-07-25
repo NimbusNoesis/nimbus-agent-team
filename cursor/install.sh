@@ -55,6 +55,11 @@ mkdir -p "$CURSOR_HOME" "$AGENTS_DIR" "$COMMANDS_DIR" "$DATA_DIR"
 # --- 1. Wire the MCP server into mcp.json ----------------------------------
 # JSON.stringify handles all path escaping, so hostile characters in the
 # checkout or CURSOR_HOME path cannot corrupt or inject into mcp.json.
+#
+# The rewrite goes through a temp file + atomic rename, matching the server's
+# own durability convention (state/persistence.ts). This file is the user's
+# GLOBAL MCP config: a truncating in-place write that died midway would take
+# every other server they have configured with it.
 node - "$CONFIG_FILE" "$SERVER_DIR" "$DATA_DIR" "$SERVER_NAME" <<'JS'
 const fs = require('node:fs');
 const [, configFile, serverDir, dataDir, serverName] = process.argv.slice(1);
@@ -91,7 +96,23 @@ config.mcpServers[serverName] = {
   command: 'sh',
   args: [`${serverDir}/launch.sh`, serverDir, dataDir],
 };
-fs.writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`);
+
+// Atomic replace: write a sibling temp file, then rename over the original.
+// rename(2) within a directory is atomic, so a reader either sees the old
+// config or the new one — never a truncated file.
+const tmpFile = `${configFile}.tmp.${process.pid}`;
+try {
+  fs.writeFileSync(tmpFile, `${JSON.stringify(config, null, 2)}\n`);
+  fs.renameSync(tmpFile, configFile);
+} catch (error) {
+  try {
+    fs.unlinkSync(tmpFile);
+  } catch {
+    // Nothing to clean up if the temp file was never created.
+  }
+  console.error(`[install] ERROR: could not write ${configFile}: ${error.message}`);
+  process.exit(1);
+}
 console.log(`[install] Added mcpServers["${serverName}"] to ${configFile}`);
 JS
 

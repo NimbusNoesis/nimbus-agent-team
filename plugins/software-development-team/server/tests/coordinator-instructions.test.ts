@@ -333,10 +333,17 @@ describe('coordinator instruction contract', () => {
     expect(codexRecursivePlanner).not.toContain('mcp__software-development-team__');
 
     expect(cursorRecursivePlanner).toMatch(/^---\nname: recursive-planner\n/);
-    expect(cursorRecursivePlanner).toContain('readonly: true');
     expect(cursorRecursivePlanner).toContain('mcp_software-development-team_team_memory_read');
     expect(cursorRecursivePlanner).toContain('mcp_software-development-team_team_memory_write');
     expect(cursorRecursivePlanner).not.toContain('mcp__');
+    // Cursor's `readonly` frontmatter flag is NOT the analog of Codex's
+    // sandbox_mode: it is documented only as "restrict write permissions", so
+    // it may cover MCP tools and block the mandatory team_memory_write
+    // reflection this role performs on every pass. No Cursor agent may declare
+    // it — the mutation boundary is instruction-enforced instead.
+    for (const { file, content } of cursorAgents) {
+      expect(content, `${file} must not declare Cursor's readonly flag`).not.toMatch(/^readonly:/m);
+    }
 
     const envelopeOrder = [
       '"protocolVersion"',

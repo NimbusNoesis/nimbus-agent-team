@@ -93,9 +93,14 @@ for (const [file, text] of Object.entries({ ...commandTexts, ...agentTexts })) {
   assert.ok(!text.includes('spawn_agent'), `${file} must not use the Codex native spawn dispatch`);
 }
 
-// The one fully read-only, no-shell role mirrors Codex sandbox_mode="read-only"
-// with Cursor's readonly frontmatter flag.
-assert.ok(/\nreadonly: true\n/.test(agentTexts['recursive-planner.md']));
+// No Cursor agent may declare the `readonly` frontmatter flag: it is documented
+// only as "restrict write permissions" and may cover MCP tools, which would
+// block recursive-planner's mandatory team_memory_write reflection. Read-only
+// boundaries are instruction-enforced on this host.
+for (const [file, text] of Object.entries(agentTexts)) {
+  assert.ok(!/^readonly:/m.test(text), `${file} must not declare Cursor's readonly flag`);
+}
+assert.ok(agentTexts['recursive-planner.md'].includes('team_memory_write'));
 assert.ok(agentTexts['recursive-planner.md'].includes('pre-run, pre-approval, read-only specialist'));
 assert.ok(agentTexts['recursive-planner.md'].includes('never recurse or dispatch another agent yourself'));
 

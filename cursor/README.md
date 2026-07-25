@@ -75,14 +75,16 @@ The team roles are Cursor subagents in `~/.cursor/agents/`: `planner`,
 `plan-critic`, `recursive-planner`, `coder`, `reviewer`, `researcher`, and
 `documentation`. The coordinator (the main session running a command) dispatches
 them by name and passes the full per-step context in each dispatch prompt —
-subagents inherit no conversation context. `recursive-planner` is marked
-`readonly: true`; the other read-only roles (planner, plan-critic, reviewer,
-researcher) enforce their mutation boundaries by instruction because they still
-need to run verification commands or MCP memory writes.
+subagents inherit no conversation context.
 
 Cursor subagents inherit all session tools, including the team's MCP tools —
 there is no per-agent tool allowlist (unlike the Claude Code plugin's `tools:`
-frontmatter), so each agent's instructions define its tool boundaries.
+frontmatter), so each agent's instructions define its tool boundaries. That
+applies to the read-only roles too (planner, plan-critic, recursive-planner,
+reviewer, researcher): none of them sets Cursor's `readonly: true` frontmatter
+flag, because every one still needs to write MCP memory or run verification
+commands, and `readonly` is documented only as "restrict write permissions" —
+too coarse to rely on without blocking those writes.
 
 ## How this maps to the other hosts
 
@@ -108,6 +110,20 @@ sequentially on a given project; concurrent sessions race on `.team/` state.
   `software-development-team` entry, open Cursor Settings → MCP to see the
   server's status, and reload Cursor. First launch compiles the server — give it
   ~30-60s.
+- **Commands don't appear when you type `/`:** some Cursor builds fail to pick up
+  the *global* command library — reported [in general](https://forum.cursor.com/t/commands-are-not-detected-in-the-global-cursor-directory/150967)
+  and [specifically over SSH/remote](https://forum.cursor.com/t/ssh-global-commands-from-remote-cursor-commands-not-loaded-rules-work/150941),
+  where rules load but commands don't. Both the agents and the MCP server are
+  unaffected; only command discovery is. Work around it by installing the
+  commands per-project instead:
+
+  ```bash
+  mkdir -p .cursor/commands && cp cursor/commands/*.md .cursor/commands/
+  ```
+
+  Project commands and global commands use the same plain-Markdown format, so
+  the copies need no edits. Subagents stay in `~/.cursor/agents/` (or copy them
+  to `.cursor/agents/` alongside, which takes project scope).
 - **Dashboard URL:** only the registered `team_dashboard_url` tool returns a
   usable URL. A localhost URL in `.team/logs/server.log` merely shows the server
   is listening; it cannot register tools into an already-running session.
