@@ -1,0 +1,13 @@
+// Add this to the "mcp" object of ~/.config/kilo/kilo.jsonc (global) or a
+// project .kilo/kilo.jsonc. install.sh does this for you. <SERVER_DIR> and
+// <DATA_DIR> are absolute paths the installer fills in.
+{
+  "mcp": {
+    "software-development-team": {
+      "type": "local",
+      "command": ["sh", "<SERVER_DIR>/launch.sh", "<SERVER_DIR>", "<DATA_DIR>"],
+      "enabled": true,
+      "timeout": 60000
+    }
+  }
+}
